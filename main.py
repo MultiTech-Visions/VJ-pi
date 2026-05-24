@@ -29,37 +29,55 @@ def parse_args():
     return p.parse_args()
 
 
-def _set_sdl_hints(display_idx):
-    """Tell SDL where the output window goes — must run BEFORE pygame.init().
+def _set_sdl_hints():
+    """SDL behaviour hints — must be set BEFORE pygame.init().
 
-    `display=N` on pygame.display.set_mode() is unreliable for fullscreen on
-    several pygame/SDL combos; the env-var route works consistently.
+    Output window position / display is handled via set_mode(display=N) and
+    NOFRAME (see _open_output_window), so no SDL_VIDEO_FULLSCREEN_DISPLAY
+    or SDL_VIDEO_WINDOW_POS needed any more.
     """
-    os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_idx)
-    # SDL_WINDOWPOS_CENTERED_DISPLAY(N) — also use this in windowed mode
-    # so the non-fullscreen output window opens on the chosen display.
-    centered = 0x2FFF0000 | (display_idx & 0xFFFF)
-    os.environ.setdefault("SDL_VIDEO_WINDOW_POS", f"{centered},{centered}")
-    # Don't let the fullscreen window steal keyboard focus from other windows
-    # on the same X server — this is what makes clicks on the control HUD
-    # actually land on the control HUD instead of yanking focus back.
+    # Don't grab the keyboard exclusively — the control HUD window needs
+    # to receive its own clicks without focus getting yanked away.
     os.environ.setdefault("SDL_HINT_GRAB_KEYBOARD", "0")
     os.environ.setdefault("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0")
 
 
-def _open_output_window(cfg):
-    flags = pygame.FULLSCREEN | pygame.SCALED if cfg.fullscreen else 0
+def _display_size(display_idx, fallback):
+    """Pixel size of display `display_idx`, or `fallback` if unavailable."""
     try:
-        return pygame.display.set_mode(
-            (cfg.width, cfg.height), flags, display=cfg.display
-        )
+        sizes = pygame.display.get_desktop_sizes()
+        return sizes[display_idx]
+    except (pygame.error, IndexError, AttributeError):
+        return fallback
+
+
+def _open_output_window(cfg):
+    """Open the output window.
+
+    For "fullscreen" we open a *borderless window sized to the target
+    display* rather than using SDL_WINDOW_FULLSCREEN. SDL2 has a long-
+    standing bug (https://github.com/libsdl-org/SDL/issues/3192) where
+    its fullscreen flags don't honour a specific display reliably and
+    can't be moved between monitors at runtime. A NOFRAME window with
+    `display=N` and size = display N's resolution works on every SDL
+    build and can be re-opened on any monitor by calling set_mode again.
+
+    Manual frame scaling already happens in Engine.blit_to_output, so
+    rendering at 854x480 onto a display-sized surface is fine.
+    """
+    if cfg.fullscreen:
+        dw, dh = _display_size(cfg.display, (cfg.width, cfg.height))
+        flags = pygame.NOFRAME
+        size = (dw, dh)
+    else:
+        flags = 0
+        size = (cfg.width, cfg.height)
+    try:
+        return pygame.display.set_mode(size, flags, display=cfg.display)
     except (TypeError, pygame.error, ValueError) as exc:
-        # display=N kwarg unsupported, or that display doesn't exist
-        # (projector unplugged, monitor reconfigured, etc). Fall back to
-        # the default display rather than crashing the whole launcher.
         print(f"[vj] set_mode(display={cfg.display}) failed: {exc!r}; "
               f"falling back to default display")
-        return pygame.display.set_mode((cfg.width, cfg.height), flags)
+        return pygame.display.set_mode(size, flags)
 
 
 def _open_control_window(size, display_idx):
@@ -97,7 +115,7 @@ def _resolve_output_display(args):
 def main():
     args = parse_args()
     display = _resolve_output_display(args)
-    _set_sdl_hints(display)
+    _set_sdl_hints()
 
     pygame.init()
     pygame.font.init()
@@ -113,7 +131,6 @@ def main():
         print(f"[vj] saved output display {display} not available "
               f"(only {num} display(s) attached); using 0")
         display = 0
-        _set_sdl_hints(0)
 
     cfg = Config(
         width=args.width, height=args.height, fps=args.fps,

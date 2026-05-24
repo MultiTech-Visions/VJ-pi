@@ -254,14 +254,6 @@ class ControlWindow:
         surface.blit(info, (x, y))
         y += 18
 
-        if getattr(e, "restart_pending", False):
-            warn = self.font_s.render(
-                "⚠ Shift+Esc and re-launch to apply on the fullscreen output",
-                True, (255, 200, 90),
-            )
-            surface.blit(warn, (x, y))
-            y += 16
-
         self._display_btn_rects = []
         bx = x
         btn_h = 22

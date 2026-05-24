@@ -84,9 +84,6 @@ class Engine:
         except pygame.error:
             self.num_displays = 1
         self.pending_display = cfg.display
-        # Set to True after an apply that we can't enact live (fullscreen
-        # display switch). HUD shows a "restart to apply" hint when set.
-        self.restart_pending = False
 
         # Favourite slots (1-0 for clips, Q-P for overlays). Saved by
         # filename stem so they survive re-orderings of the library.
@@ -239,15 +236,14 @@ class Engine:
             self.switch_output_display(self.pending_display)
 
     def switch_output_display(self, new_idx):
-        """Persist the choice, attempt the move, flag a restart if fullscreen.
+        """Move the output window to a different display, live.
 
-        pygame's `display=N` kwarg works for windowed `set_mode`, so for the
-        test-mode HUD this actually moves the window. For fullscreen mode the
-        pygame/SDL combo is unreliable — and earlier attempts to drive it
-        from ctypes either hung X11 or made the window close on click. So
-        we just persist the new display and ask the operator to restart;
-        the next launch starts on the new monitor via SDL_VIDEO_FULLSCREEN_DISPLAY
-        and pygame.display.set_mode(display=N).
+        Uses the borderless-windowed approach (NOFRAME + display=N + size
+        matching the target display) because SDL2's fullscreen flags are
+        broken for multi-monitor switching — see
+        https://github.com/libsdl-org/SDL/issues/3192. A regular borderless
+        window targeted at `display=N` works on every SDL build and can
+        be re-issued any number of times.
         """
         if new_idx < 0 or new_idx >= self.num_displays:
             return
@@ -258,30 +254,26 @@ class Engine:
         state["output_display"] = new_idx
         save_state(state)
 
-        os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(new_idx)
-        centered = 0x2FFF0000 | (new_idx & 0xFFFF)
-        os.environ["SDL_VIDEO_WINDOW_POS"] = f"{centered},{centered}"
-
         if self.cfg.fullscreen:
-            # Don't fight pygame/SDL for a live fullscreen move — every
-            # variation either flashed the window away or hung the X server.
-            # The choice is saved; next launch will respect it.
-            self.restart_pending = True
-            print(f"[vj] saved output_display = {new_idx}; "
-                  f"restart (Shift+Esc, then re-launch) to apply on the projector")
-            return
+            try:
+                sizes = pygame.display.get_desktop_sizes()
+                dw, dh = sizes[new_idx]
+            except (pygame.error, IndexError, AttributeError):
+                dw, dh = self.w, self.h
+            flags = pygame.NOFRAME
+            size = (dw, dh)
+        else:
+            flags = 0
+            size = (self.w, self.h)
 
-        # Windowed mode — this part is reliable.
         try:
-            self.screen = pygame.display.set_mode(
-                (self.w, self.h), 0, display=new_idx
-            )
+            self.screen = pygame.display.set_mode(size, flags, display=new_idx)
             pygame.display.set_caption("pi-paint VJ — Output")
-            pygame.mouse.set_visible(True)
-            print(f"[vj] moved windowed output to display {new_idx}")
-        except (TypeError, pygame.error) as exc:
-            print(f"[vj] windowed set_mode(display={new_idx}) failed: {exc!r}")
-            self.restart_pending = True
+            pygame.mouse.set_visible(not self.cfg.fullscreen)
+            print(f"[vj] output → display {new_idx} ({size[0]}x{size[1]}, "
+                  f"borderless={self.cfg.fullscreen})")
+        except (TypeError, pygame.error, ValueError) as exc:
+            print(f"[vj] switch_output_display({new_idx}) failed: {exc!r}")
 
     def update_params_from_keys(self, dt):
         """Arrow keys nudge param_x / param_y while held."""
