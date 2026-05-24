@@ -13,7 +13,9 @@ OVERLAY_KEYS = [
     pygame.K_y, pygame.K_u, pygame.K_i, pygame.K_o, pygame.K_p,
 ]
 
-# Home row → generative base layers (only first 3 active in MVP)
+# Home row → generative base layers.
+# Indices match engine.GENERATIVES:
+#   A=plasma  S=tunnel  D=starfield  F=warp  G=waves  H=cells
 GEN_KEYS = [
     pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_f, pygame.K_g,
     pygame.K_h, pygame.K_j, pygame.K_k, pygame.K_l,
@@ -55,6 +57,12 @@ def dispatch(engine, key, mod):
 
     if key == pygame.K_BACKSPACE:
         engine.toggle_freeze()
+        return
+
+    # Arrow keys are sampled continuously each frame in Engine.run() — no
+    # KEYDOWN handling here so a held key produces smooth motion instead of
+    # one-shot steps.
+    if key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN):
         return
 
     if key in CLIP_KEYS:

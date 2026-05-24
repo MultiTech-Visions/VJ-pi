@@ -50,10 +50,16 @@ text editor and swap `OUTPUT_DISPLAY` and `CONTROL_DISPLAY` at the top.
 
 The keyboard sends keys to whichever window has focus — click into the
 **control HUD** window once when you start a set and leave it focused.
-Mouse / trackpad XY (for tuning live FX) also reports relative to the
-focused window, so if you hover over the HUD the FX will respond to
-where your cursor is in the HUD. Hover over the output window instead
-if you want the cursor position to map to the projected image.
+Live FX parameters are tuned with the **arrow keys** (← → for PARAM X,
+↑ ↓ for PARAM Y) so you don't have to fight the trackpad/mouse cursor
+mid-set. The current values show as bars in the HUD.
+
+### Switching the output display on the fly
+
+The HUD has an **OUTPUT DISPLAY** picker — click one of the `Display N`
+buttons to choose a target, then click **APPLY** to move the fullscreen
+output. Handy if your projector ends up on a different HDMI port than
+expected (no need to restart or edit `Start VJ.sh`).
 
 ### If "Execute" doesn't appear
 
@@ -91,24 +97,26 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 |---------------------|-----------------------------------------------------|
 | `1 2 3 4 5 6 7 8 9 0` | Pick base clip from `assets/clips/` (slot 1-10)   |
 | `Q W E R T Y U I O P` | Toggle overlay from `assets/overlays/` (slot 1-10) |
-| `A S D`             | Generative base: plasma / tunnel / starfield (toggle) |
+| `A S D F G H`       | Generative base: plasma / tunnel / starfield / warp / waves / cells (toggle) |
+| `J K L`             | Generative base: lissajous / moiré / metaballs (toggle) |
 | `Z`                 | HIT: strobe flash                                  |
 | `X`                 | HIT: black flash                                   |
 | `C`                 | HIT: invert flash                                  |
 | `V`                 | HIT: zoom punch                                    |
 | `B`                 | HIT: RGB smash                                     |
-| `F1`                | FX: kaleidoscope (segments controlled by mouse X)  |
+| `F1`                | FX: kaleidoscope (segments = PARAM X)              |
 | `F2`                | FX: horizontal mirror                              |
-| `F3`                | FX: feedback / trails (mouse XY = zoom / rotate)   |
+| `F3`                | FX: feedback / trails (PARAM X = zoom, Y = rotate) |
 | `F4`                | FX: invert (persistent)                            |
-| `F5`                | FX: posterize (mouse Y = levels)                   |
+| `F5`                | FX: posterize (levels = PARAM Y)                   |
 | `F6`                | FX: edge detect                                    |
-| `F7`                | FX: RGB split / chromatic aberration               |
+| `F7`                | FX: RGB split / chromatic aberration (offset = PARAM X) |
+| `← →`               | Adjust PARAM X (active-FX horizontal control)      |
+| `↑ ↓`               | Adjust PARAM Y (active-FX vertical control)        |
 | `Space`             | Blackout toggle (panic button)                     |
 | `Backspace`         | Freeze frame toggle                                |
 | `Esc`               | Kill all FX, overlays, hits — back to clean base   |
 | `Shift+Esc`         | Quit                                               |
-| **Trackpad XY**     | Controls active-FX parameters (kaleido segments, feedback zoom/rotate, etc.) |
 
 Press a clip key (1-0) and a generative key (A/S/D) — last one wins.
 Press an overlay key once to turn it on, again to turn it off.
