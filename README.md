@@ -62,19 +62,20 @@ The HUD has an **OUTPUT DISPLAY** picker. Two ways to drive it:
   Works from either window because keyboard focus reaches the engine
   regardless of the WM's mood.
 - **Mouse:** click a `Display N` button to set the pending display, then
-  click `APPLY`. (In fullscreen mode some window managers yank focus
-  back to the projector when you click the HUD — use the keyboard
-  shortcuts instead if that happens.)
+  click `APPLY`. In fullscreen mode some window managers may yank focus
+  back to the output; the keyboard shortcuts always work.
 
-In **windowed test mode** the picker moves the output window
-immediately. In **fullscreen mode** the picker can't reliably move a
-running fullscreen window (pygame/SDL pins it to its original monitor
-on most setups, and aggressive workarounds tend to hang or close the
-window). Instead, the apply just **persists the choice to
-`vj_state.json`** and shows a `⚠ Shift+Esc and re-launch` hint in the
-HUD — the next launch starts fullscreen on the new monitor. The
-launcher script's `OUTPUT_DISPLAY` only seeds the very first run; the
-HUD picker wins after that.
+Switching is **live** in both windowed test mode and fullscreen mode.
+Under the hood "fullscreen" is implemented as a borderless window
+(`NOFRAME`) sized to fill the chosen display — this sidesteps the
+[long-standing SDL2 bug](https://github.com/libsdl-org/SDL/issues/3192)
+where `SDL_WINDOW_FULLSCREEN` can't be reliably retargeted between
+monitors. The output covers the full display the same way a true
+fullscreen window would.
+
+The applied choice is **persisted to `vj_state.json`** and used by every
+subsequent launch. The launcher script's `OUTPUT_DISPLAY` only seeds
+the very first run; the HUD picker wins after that.
 
 ### If "Execute" doesn't appear
 
