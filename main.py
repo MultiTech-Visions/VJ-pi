@@ -172,7 +172,7 @@ def main():
     print(f"[vj] clips dir:    {cfg.clips_dir}")
     print(f"[vj] overlays dir: {cfg.overlays_dir}")
     print(f"[vj] {len(engine.clips)} clip(s), {len(engine.overlays)} overlay(s) loaded")
-    print("[vj] keys: -/= cycle clips · [/] cycle overlays · 1-0 clip favs (tap=play, hold=assign) · Q-P overlay favs · ASDFGHJKL generative · ZXCVB hits · F1-F7 FX · ←→↑↓ params · F11/F12 display · Space blackout · Esc panic (keeps clip) · Shift+Esc quit")
+    print("[vj] keys: -/= cycle clips · [/] cycle overlays · 1-0 clip favs (tap=play, hold=assign) · Q-P overlay favs · ASDFGHJKL generative · ZXCVB hits · F1-F7 FX · ←→↑↓ params · Enter Enter autopilot · F11/F12 display · Space blackout · Esc panic · Shift+Esc quit")
 
     try:
         engine.run(control=control)
