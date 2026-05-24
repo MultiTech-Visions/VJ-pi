@@ -144,6 +144,15 @@ Recommended pre-processing (one-time, on a desktop):
 ffmpeg -i input.mp4 -vf scale=854:480 -c:v libx264 -preset slow -crf 22 -an output.mp4
 ```
 
+…or just drop the raw files into `assets/clips/` and `assets/overlays/`
+and double-click **`assets/Process Assets.sh`** — it scans both folders,
+normalises anything that isn't already H.264 / target resolution /
+audio-free, stashes the originals in a `_originals/` sub-folder, and
+skips files that are already good (so you can re-run it any time).
+Clips are scaled + centre-cropped to fill the frame; overlays are
+scaled and pad-letterboxed with black (which the screen-blend
+compositor treats as transparent).
+
 ## Architecture
 
 ```
