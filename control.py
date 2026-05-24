@@ -15,6 +15,7 @@ KEY_CHEAT = [
     ("F1 - F7",      "Persistent FX toggles"),
     ("← →",          "Tune PARAM X (active-FX horizontal control)"),
     ("↑ ↓",          "Tune PARAM Y (active-FX vertical control)"),
+    ("F11 / F12",    "Cycle output display / APPLY"),
     ("Space",        "Blackout (panic)"),
     ("Backspace",    "Freeze frame"),
     ("Esc",          "Kill all FX"),
@@ -48,12 +49,8 @@ class ControlWindow:
         self.font_h = pygame.font.SysFont("Sans,Arial,DejaVuSans", 18, bold=True)
         self.font_m = pygame.font.SysFont("Sans,Arial,DejaVuSans", 14)
         self.font_s = pygame.font.SysFont("Sans,Arial,DejaVuSans", 12)
-        try:
-            self.num_displays = max(1, pygame.display.get_num_displays())
-        except pygame.error:
-            self.num_displays = 1
-        # Pending selection — committed when the operator clicks APPLY.
-        self.pending_display = engine.cfg.display
+        # Pending-display state lives on the engine so keyboard shortcuts
+        # (F11/F12) and click handlers stay in sync.
 
         # Hit-test rects, populated each frame in render().
         self._display_btn_rects = []  # [(idx, pygame.Rect), ...]
@@ -80,10 +77,10 @@ class ControlWindow:
             return
         for idx, rect in self._display_btn_rects:
             if rect.collidepoint(pos):
-                self.pending_display = idx
+                self.engine.pending_display = idx
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
-            self.engine.switch_output_display(self.pending_display)
+            self.engine.apply_pending_display()
 
     def _event_is_ours(self, event):
         """True if the mouse event came from the control window.
@@ -183,10 +180,13 @@ class ControlWindow:
         e = self.engine
         title = self.font_h.render("OUTPUT DISPLAY", True, (220, 220, 240))
         surface.blit(title, (x, y))
+        hint = self.font_s.render("(F11 cycle · F12 apply)", True, (140, 140, 170))
+        surface.blit(hint, (x + title.get_width() + 8,
+                            y + (title.get_height() - hint.get_height())))
         y += 22
 
         info = self.font_s.render(
-            f"current: display {e.cfg.display}    pending: display {self.pending_display}",
+            f"current: display {e.cfg.display}    pending: display {e.pending_display}    (saved to vj_state.json)",
             True, (170, 170, 195),
         )
         surface.blit(info, (x, y))
@@ -195,11 +195,11 @@ class ControlWindow:
         self._display_btn_rects = []
         bx = x
         btn_h = 22
-        for idx in range(self.num_displays):
+        for idx in range(e.num_displays):
             label = self.font_m.render(f" Display {idx} ", True, (240, 240, 255))
             rect = pygame.Rect(bx, y, label.get_width() + 12, btn_h)
             is_current = idx == e.cfg.display
-            is_pending = idx == self.pending_display
+            is_pending = idx == e.pending_display
             if is_pending:
                 bg = (70, 130, 200)
                 border = (140, 200, 255)
@@ -219,7 +219,7 @@ class ControlWindow:
         apply_label = self.font_m.render(" APPLY ", True, (20, 22, 30))
         apply_rect = pygame.Rect(0, y, apply_label.get_width() + 14, btn_h)
         apply_rect.right = x + width
-        enabled = self.pending_display != e.cfg.display
+        enabled = e.pending_display != e.cfg.display
         bg = (120, 220, 140) if enabled else (60, 70, 60)
         pygame.draw.rect(surface, bg, apply_rect, border_radius=4)
         pygame.draw.rect(surface, (40, 80, 40), apply_rect, 1, border_radius=4)

@@ -6,6 +6,7 @@ import numpy as np
 import cv2
 
 from clips import ClipPool
+from state import load_state, save_state
 from effects import (
     EffectContext, plasma, tunnel, starfield, warp, waves, cells,
     lissajous, moire, metaballs,
@@ -65,6 +66,14 @@ class Engine:
         self.param_x = 0.5
         self.param_y = 0.5
 
+        # Display picker state lives on the engine so both the HUD click
+        # handler and the keyboard shortcuts can drive it.
+        try:
+            self.num_displays = max(1, pygame.display.get_num_displays())
+        except pygame.error:
+            self.num_displays = 1
+        self.pending_display = cfg.display
+
         self.running = True
 
     # ── Public actions ────────────────────────────────────────────────
@@ -119,22 +128,47 @@ class Engine:
     def quit(self):
         self.running = False
 
+    def cycle_pending_display(self):
+        if self.num_displays <= 1:
+            return
+        self.pending_display = (self.pending_display + 1) % self.num_displays
+
+    def apply_pending_display(self):
+        if self.pending_display != self.cfg.display:
+            self.switch_output_display(self.pending_display)
+
     def switch_output_display(self, new_idx):
-        """Re-open the fullscreen output window on a different display."""
-        try:
-            num = pygame.display.get_num_displays()
-        except pygame.error:
-            num = 1
-        if new_idx < 0 or new_idx >= num or new_idx == self.cfg.display:
+        """Re-open the output window on a different display + persist choice.
+
+        The persisted value (vj_state.json) is what subsequent launches read
+        as the default. SDL env vars are also refreshed so a fullscreen
+        re-init (or the next launch) targets the right monitor.
+        """
+        if new_idx < 0 or new_idx >= self.num_displays:
             return
         self.cfg.display = new_idx
+        self.pending_display = new_idx
+
+        state = load_state()
+        state["output_display"] = new_idx
+        save_state(state)
+
+        os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(new_idx)
+        centered = 0x2FFF0000 | (new_idx & 0xFFFF)
+        os.environ["SDL_VIDEO_WINDOW_POS"] = f"{centered},{centered}"
+
         flags = pygame.FULLSCREEN | pygame.SCALED if self.cfg.fullscreen else 0
         try:
+            if self.cfg.fullscreen:
+                # Two-step: drop fullscreen, hop to the new display
+                # windowed, then re-enable fullscreen there. This works
+                # around SDL versions that pin a fullscreen window to its
+                # original display.
+                pygame.display.set_mode((self.w, self.h), 0, display=new_idx)
             self.screen = pygame.display.set_mode(
                 (self.w, self.h), flags, display=new_idx
             )
         except TypeError:
-            os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(new_idx)
             self.screen = pygame.display.set_mode((self.w, self.h), flags)
         pygame.display.set_caption("pi-paint VJ — Output")
         pygame.mouse.set_visible(not self.cfg.fullscreen)

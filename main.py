@@ -6,6 +6,7 @@ import pygame
 
 from config import Config
 from engine import Engine
+from state import load_state, save_state
 
 
 def parse_args():
@@ -16,9 +17,9 @@ def parse_args():
                    help="Output frame height")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--fullscreen", action="store_true",
-                   help="Run the OUTPUT window fullscreen on --output-display")
-    p.add_argument("--output-display", type=int, default=0,
-                   help="Display index for the projector output (0 = primary)")
+                   help="Run the OUTPUT window fullscreen on the chosen display")
+    p.add_argument("--output-display", type=int, default=None,
+                   help="Display index for the projector output (overrides saved state)")
     p.add_argument("--control", action="store_true",
                    help="Also open a Control HUD window with live preview + keys")
     p.add_argument("--control-display", type=int, default=0,
@@ -28,6 +29,24 @@ def parse_args():
     return p.parse_args()
 
 
+def _set_sdl_hints(display_idx):
+    """Tell SDL where the output window goes — must run BEFORE pygame.init().
+
+    `display=N` on pygame.display.set_mode() is unreliable for fullscreen on
+    several pygame/SDL combos; the env-var route works consistently.
+    """
+    os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_idx)
+    # SDL_WINDOWPOS_CENTERED_DISPLAY(N) — also use this in windowed mode
+    # so the non-fullscreen output window opens on the chosen display.
+    centered = 0x2FFF0000 | (display_idx & 0xFFFF)
+    os.environ.setdefault("SDL_VIDEO_WINDOW_POS", f"{centered},{centered}")
+    # Don't let the fullscreen window steal keyboard focus from other windows
+    # on the same X server — this is what makes clicks on the control HUD
+    # actually land on the control HUD instead of yanking focus back.
+    os.environ.setdefault("SDL_HINT_GRAB_KEYBOARD", "0")
+    os.environ.setdefault("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0")
+
+
 def _open_output_window(cfg):
     flags = pygame.FULLSCREEN | pygame.SCALED if cfg.fullscreen else 0
     try:
@@ -35,14 +54,12 @@ def _open_output_window(cfg):
             (cfg.width, cfg.height), flags, display=cfg.display
         )
     except TypeError:
-        os.environ.setdefault("SDL_VIDEO_FULLSCREEN_DISPLAY", str(cfg.display))
         return pygame.display.set_mode((cfg.width, cfg.height), flags)
 
 
 def _open_control_window(size, display_idx):
     """Create a second SDL2 window + renderer for the control HUD."""
     from pygame._sdl2.video import Window, Renderer
-    # SDL's SDL_WINDOWPOS_CENTERED_DISPLAY(N) macro
     centered_on_display = 0x2FFF0000 | (display_idx & 0xFFFF)
     win = Window(
         "VJ Control",
@@ -55,11 +72,28 @@ def _open_control_window(size, display_idx):
     return win, renderer
 
 
+def _resolve_output_display(args):
+    """CLI explicit > persisted state > argparse fallback (0).
+
+    Once the operator picks a display in the HUD, that choice is written to
+    vj_state.json and wins on subsequent launches. Pass --output-display on
+    the command line to override the saved value (and re-seed it).
+    """
+    state = load_state()
+    if args.output_display is not None:
+        save_state({**state, "output_display": args.output_display})
+        return args.output_display
+    return int(state.get("output_display", 0))
+
+
 def main():
     args = parse_args()
+    display = _resolve_output_display(args)
+    _set_sdl_hints(display)
+
     cfg = Config(
         width=args.width, height=args.height, fps=args.fps,
-        fullscreen=args.fullscreen, display=args.output_display,
+        fullscreen=args.fullscreen, display=display,
     )
 
     pygame.init()
@@ -94,7 +128,7 @@ def main():
     print(f"[vj] clips dir:    {cfg.clips_dir}")
     print(f"[vj] overlays dir: {cfg.overlays_dir}")
     print(f"[vj] {len(engine.clips)} clip(s), {len(engine.overlays)} overlay(s) loaded")
-    print("[vj] keys: 1-0 clips · QWERTY overlays · ASDFGHJKL generative · ZXCVB hits · F1-F7 FX · ←→↑↓ params · Space blackout · Esc kill · Shift+Esc quit")
+    print("[vj] keys: 1-0 clips · QWERTY overlays · ASDFGHJKL generative · ZXCVB hits · F1-F7 FX · ←→↑↓ params · F11 cycle display · F12 apply · Space blackout · Esc kill · Shift+Esc quit")
 
     try:
         engine.run(control=control)
