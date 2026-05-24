@@ -56,10 +56,19 @@ mid-set. The current values show as bars in the HUD.
 
 ### Switching the output display on the fly
 
-The HUD has an **OUTPUT DISPLAY** picker — click one of the `Display N`
-buttons to choose a target, then click **APPLY** to move the fullscreen
-output. Handy if your projector ends up on a different HDMI port than
-expected (no need to restart or edit `Start VJ.sh`).
+The HUD has an **OUTPUT DISPLAY** picker. Two ways to drive it:
+
+- **Keyboard (most reliable in fullscreen):** `F11` cycles the pending
+  display, `F12` applies the pick. Works from either window because
+  keyboard focus reaches the engine regardless.
+- **Mouse:** click a `Display N` button to set the pending display, then
+  click `APPLY`. (In fullscreen mode some window managers will yank focus
+  back to the projector window when you click the HUD — use the
+  keyboard shortcuts instead if that happens to you.)
+
+The applied choice is **persisted to `vj_state.json`** and reused on
+every subsequent launch. The launcher script's `OUTPUT_DISPLAY` only
+seeds the very first run (or whenever you delete `vj_state.json`).
 
 ### If "Execute" doesn't appear
 
@@ -113,6 +122,8 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `F7`                | FX: RGB split / chromatic aberration (offset = PARAM X) |
 | `← →`               | Adjust PARAM X (active-FX horizontal control)      |
 | `↑ ↓`               | Adjust PARAM Y (active-FX vertical control)        |
+| `F11`               | Cycle the pending output display                   |
+| `F12`               | Apply the pending output display (and persist it)  |
 | `Space`             | Blackout toggle (panic button)                     |
 | `Backspace`         | Freeze frame toggle                                |
 | `Esc`               | Kill all FX, overlays, hits — back to clean base   |

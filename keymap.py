@@ -59,6 +59,16 @@ def dispatch(engine, key, mod):
         engine.toggle_freeze()
         return
 
+    # Output-display picker (works regardless of which window has focus,
+    # since these fire wherever keyboard focus happens to land — important
+    # for fullscreen mode where the control HUD is hard to click into).
+    if key == pygame.K_F11:
+        engine.cycle_pending_display()
+        return
+    if key == pygame.K_F12:
+        engine.apply_pending_display()
+        return
+
     # Arrow keys are sampled continuously each frame in Engine.run() — no
     # KEYDOWN handling here so a held key produces smooth motion instead of
     # one-shot steps.
