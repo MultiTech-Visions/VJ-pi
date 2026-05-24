@@ -1,5 +1,12 @@
+import random
 from pathlib import Path
 import cv2
+
+
+# How many OpenCV VideoCapture handles to keep open per pool. Each one
+# pins decoder state + a few MB of buffers; an LRU avoids burning a few
+# GB on a 200-clip library while the operator scrubs through.
+MAX_OPEN = 12
 
 
 class Clip:
@@ -23,36 +30,106 @@ class Clip:
 
 
 class ClipPool:
-    """Sorted list of MP4s in a directory, indexed 0..N. Lazy-loaded."""
+    """Sorted list of videos in a directory, indexed 0..N. Lazy-loaded.
 
-    def __init__(self, directory, target_size):
+    The pool keeps at most MAX_OPEN decoders open at once and LRU-evicts
+    older ones as the operator browses through a large library.
+    """
+
+    def __init__(self, directory, target_size, max_open=MAX_OPEN):
         self.target_w, self.target_h = target_size
-        self.paths = sorted(Path(directory).glob("*.mp4")) + sorted(Path(directory).glob("*.mov"))
+        self.paths = (
+            sorted(Path(directory).glob("*.mp4"))
+            + sorted(Path(directory).glob("*.mov"))
+        )
         self.clips = [None] * len(self.paths)
         self.active_idx = None
+        self.max_open = max_open
+        self._open_order = []  # least-recent first, most-recent last
 
     def __len__(self):
         return len(self.paths)
 
     def name(self, idx):
-        if 0 <= idx < len(self.paths):
-            return self.paths[idx].stem
-        return None
+        if idx is None or not 0 <= idx < len(self.paths):
+            return None
+        return self.paths[idx].stem
+
+    # ── Selection ────────────────────────────────────────────────────
 
     def select(self, idx):
         if not 0 <= idx < len(self.paths):
             return
         if self.clips[idx] is None:
             self.clips[idx] = Clip(self.paths[idx])
+            self._touch_lru(idx)
+            self._evict_lru(protect=idx)
+        else:
+            self._touch_lru(idx)
         self.active_idx = idx
 
     def deselect(self):
         self.active_idx = None
 
+    def step(self, n):
+        """Move active_idx by n positions, wrapping around the list."""
+        if not self.paths:
+            return
+        if self.active_idx is None:
+            idx = 0 if n >= 0 else len(self.paths) - 1
+        else:
+            idx = (self.active_idx + n) % len(self.paths)
+        self.select(idx)
+
+    def first(self):
+        if self.paths:
+            self.select(0)
+
+    def last(self):
+        if self.paths:
+            self.select(len(self.paths) - 1)
+
+    def pick_random(self):
+        if self.paths:
+            self.select(random.randrange(len(self.paths)))
+
+    # ── LRU bookkeeping ──────────────────────────────────────────────
+
+    def _touch_lru(self, idx):
+        if idx in self._open_order:
+            self._open_order.remove(idx)
+        self._open_order.append(idx)
+
+    def _evict_lru(self, protect):
+        # Release oldest open clip(s) until we're back under the cap.
+        open_count = sum(1 for c in self.clips if c is not None)
+        while open_count > self.max_open and self._open_order:
+            victim = self._open_order[0]
+            if victim == protect or self.clips[victim] is None:
+                # don't evict the just-selected clip; rotate past it
+                self._open_order.pop(0)
+                if victim != protect:
+                    continue
+                self._open_order.append(victim)
+                break
+            self.clips[victim].release()
+            self.clips[victim] = None
+            self._open_order.pop(0)
+            open_count -= 1
+
+    # ── Playback ─────────────────────────────────────────────────────
+
     def read(self):
         if self.active_idx is None:
             return None
-        frame = self.clips[self.active_idx].read()
+        clip = self.clips[self.active_idx]
+        if clip is None:
+            # Was evicted between select() and read() — reopen.
+            clip = Clip(self.paths[self.active_idx])
+            self.clips[self.active_idx] = clip
+            self._touch_lru(self.active_idx)
+            self._evict_lru(protect=self.active_idx)
+        frame = clip.read()
         if frame is None:
             return None
         if frame.shape[1] != self.target_w or frame.shape[0] != self.target_h:
@@ -63,3 +140,5 @@ class ClipPool:
         for c in self.clips:
             if c is not None:
                 c.release()
+        self.clips = [None] * len(self.paths)
+        self._open_order = []

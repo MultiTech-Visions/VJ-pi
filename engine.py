@@ -91,6 +91,27 @@ class Engine:
         else:
             self.overlays.select(idx)
 
+    def browse_clips(self, action, arg=None):
+        self._browse(self.clips, action, arg)
+        if self.clips.active_idx is not None:
+            self.active_generative = None
+
+    def browse_overlays(self, action, arg=None):
+        self._browse(self.overlays, action, arg)
+
+    @staticmethod
+    def _browse(pool, action, arg):
+        if action == "step":
+            pool.step(arg)
+        elif action == "first":
+            pool.first()
+        elif action == "last":
+            pool.last()
+        elif action == "random":
+            pool.pick_random()
+        elif action == "off":
+            pool.deselect()
+
     def select_generative(self, idx):
         if idx >= len(GENERATIVES):
             return
@@ -277,14 +298,26 @@ class Engine:
         return frame
 
     def run(self, control=None):
-        from keymap import dispatch
+        from keymap import dispatch, NAV_KEYS
+        # Enable system key-repeat. We filter below so only NAV_KEYS
+        # auto-fire on hold — toggle/hit keys still need a fresh press.
+        pygame.key.set_repeat(350, 80)
+        held_keys = set()
         last_t = time.time()
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
                 elif event.type == pygame.KEYDOWN:
-                    dispatch(self, event.key, event.mod)
+                    is_initial = event.key not in held_keys
+                    held_keys.add(event.key)
+                    if is_initial or event.key in NAV_KEYS:
+                        dispatch(self, event.key, event.mod)
+                elif event.type == pygame.KEYUP:
+                    held_keys.discard(event.key)
+                elif event.type == pygame.WINDOWFOCUSLOST:
+                    # Avoid "stuck key" if focus changes mid-press.
+                    held_keys.clear()
                 elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                                     pygame.MOUSEMOTION):
                     if control is not None:

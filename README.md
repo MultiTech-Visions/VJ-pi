@@ -104,8 +104,12 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 
 | Keys                | Action                                              |
 |---------------------|-----------------------------------------------------|
-| `1 2 3 4 5 6 7 8 9 0` | Pick base clip from `assets/clips/` (slot 1-10)   |
-| `Q W E R T Y U I O P` | Toggle overlay from `assets/overlays/` (slot 1-10) |
+| `1` / `2`           | Clip browser: previous / next                       |
+| `3` / `4`           | Clip browser: −5 / +5                               |
+| `5` / `6`           | Clip browser: −25 / +25                             |
+| `7` / `8`           | Clip browser: first / last                          |
+| `9` / `0`           | Clip browser: random / deselect                     |
+| `Q` `W` `E` `R` `T` `Y` `U` `I` `O` `P` | Overlay browser: same layout (−1 +1 −5 +5 −25 +25 first last random off) |
 | `A S D F G H`       | Generative base: plasma / tunnel / starfield / warp / waves / cells (toggle) |
 | `J K L`             | Generative base: lissajous / moiré / metaballs (toggle) |
 | `Z`                 | HIT: strobe flash                                  |
@@ -129,8 +133,20 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `Esc`               | Kill all FX, overlays, hits — back to clean base   |
 | `Shift+Esc`         | Quit                                               |
 
-Press a clip key (1-0) and a generative key (A/S/D) — last one wins.
-Press an overlay key once to turn it on, again to turn it off.
+### Browsing big libraries
+
+The number row drives a **clip browser** rather than 10 fixed slots —
+drop hundreds of clips into `assets/clips/` and walk through them with
+`1`/`2` (±1), `3`/`4` (±5), `5`/`6` (±25). `7` jumps to the first, `8`
+to the last, `9` picks a random one, `0` turns playback off. Holding
+any of those auto-scrubs at ~12/sec.
+
+`Q`-`P` is the same browser for overlays. Position shows in the HUD
+as `name  [47/152]`. Open VideoCapture handles are LRU-evicted (12 at
+a time) so a huge library doesn't bloat memory.
+
+Pick a clip then a generative (`A`-`L`) — generative wins until you
+pick another clip.
 
 ## Asset sources
 

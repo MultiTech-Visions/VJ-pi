@@ -1,21 +1,52 @@
 import pygame
 
 
-# Number row → clip slots 0..9
-CLIP_KEYS = [
-    pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5,
-    pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0,
-]
+# ── Browser navigation ───────────────────────────────────────────────
+#
+# Number row → CLIP library (potentially hundreds of files).
+# Top letter row → OVERLAY library, same layout.
+#
+#   key 1/Q  prev (-1)            key 6/Y  +25
+#   key 2/W  next (+1)            key 7/U  first
+#   key 3/E  -5                   key 8/I  last
+#   key 4/R  +5                   key 9/O  random
+#   key 5/T  -25                  key 0/P  off (deselect)
+#
+# Holding a nav key auto-repeats so you can scrub through the library.
 
-# Top letter row → overlay slots
-OVERLAY_KEYS = [
-    pygame.K_q, pygame.K_w, pygame.K_e, pygame.K_r, pygame.K_t,
-    pygame.K_y, pygame.K_u, pygame.K_i, pygame.K_o, pygame.K_p,
-]
+CLIP_BROWSE = {
+    pygame.K_1: ("step", -1),
+    pygame.K_2: ("step", 1),
+    pygame.K_3: ("step", -5),
+    pygame.K_4: ("step", 5),
+    pygame.K_5: ("step", -25),
+    pygame.K_6: ("step", 25),
+    pygame.K_7: ("first", None),
+    pygame.K_8: ("last", None),
+    pygame.K_9: ("random", None),
+    pygame.K_0: ("off", None),
+}
+
+OVERLAY_BROWSE = {
+    pygame.K_q: ("step", -1),
+    pygame.K_w: ("step", 1),
+    pygame.K_e: ("step", -5),
+    pygame.K_r: ("step", 5),
+    pygame.K_t: ("step", -25),
+    pygame.K_y: ("step", 25),
+    pygame.K_u: ("first", None),
+    pygame.K_i: ("last", None),
+    pygame.K_o: ("random", None),
+    pygame.K_p: ("off", None),
+}
+
+# Keys that should auto-repeat when held (scrub through libraries).
+NAV_KEYS = set(CLIP_BROWSE) | set(OVERLAY_BROWSE)
 
 # Home row → generative base layers.
 # Indices match engine.GENERATIVES:
 #   A=plasma  S=tunnel  D=starfield  F=warp  G=waves  H=cells
+#   J=lissajous  K=moiré  L=metaballs
 GEN_KEYS = [
     pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_f, pygame.K_g,
     pygame.K_h, pygame.K_j, pygame.K_k, pygame.K_l,
@@ -75,12 +106,14 @@ def dispatch(engine, key, mod):
     if key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN):
         return
 
-    if key in CLIP_KEYS:
-        engine.select_clip(CLIP_KEYS.index(key))
+    if key in CLIP_BROWSE:
+        action, arg = CLIP_BROWSE[key]
+        engine.browse_clips(action, arg)
         return
 
-    if key in OVERLAY_KEYS:
-        engine.toggle_overlay(OVERLAY_KEYS.index(key))
+    if key in OVERLAY_BROWSE:
+        action, arg = OVERLAY_BROWSE[key]
+        engine.browse_overlays(action, arg)
         return
 
     if key in GEN_KEYS:

@@ -7,9 +7,9 @@ import pygame
 
 
 KEY_CHEAT = [
-    ("1 - 0",        "Base clips (slot 1 to 10)"),
-    ("Q - P",        "Overlays (toggle)"),
-    ("A S D F G H",  "Gen: plasma/tunnel/stars/warp/waves/cells"),
+    ("1 - 0",        "Clip browse: −1 +1 −5 +5 −25 +25 first last rand off"),
+    ("Q - P",        "Overlay browse: same layout (hold to scrub)"),
+    ("A S D F G H",  "Gen: plasma / tunnel / stars / warp / waves / cells"),
     ("J K L",        "Gen: lissajous / moiré / metaballs"),
     ("Z X C V B",    "Hits: strobe / black / inv / zoom / RGB"),
     ("F1 - F7",      "Persistent FX toggles"),
@@ -124,9 +124,9 @@ class ControlWindow:
 
         # ── 2. Status panel ──────────────────────────────────────────
         e = self.engine
-        clip_name = e.clips.name(e.clips.active_idx) if e.clips.active_idx is not None else "—"
+        clip_text = self._library_label(e.clips)
+        ov_text = self._library_label(e.overlays)
         gen_name = e.active_generative or "—"
-        ov_name = e.overlays.name(e.overlays.active_idx) if e.overlays.active_idx is not None else "—"
         fx_on = [k for k, v in e.fx_state.items() if v]
         fx_text = ", ".join(fx_on) if fx_on else "—"
 
@@ -137,9 +137,9 @@ class ControlWindow:
         surface.blit(title, (x, y))
         y += 24
 
-        self._row(surface, "CLIP",    clip_name, x, y);  y += 20
+        self._row(surface, "CLIP",    clip_text, x, y);  y += 20
         self._row(surface, "GEN",     gen_name,  x, y);  y += 20
-        self._row(surface, "OVERLAY", ov_name,   x, y);  y += 20
+        self._row(surface, "OVERLAY", ov_text,   x, y);  y += 20
         self._row(surface, "FX",      fx_text,   x, y);  y += 22
 
         # Param bars
@@ -247,6 +247,16 @@ class ControlWindow:
             panel.blit(ds, (140, y))
             y += row_h
         return panel
+
+    @staticmethod
+    def _library_label(pool):
+        total = len(pool)
+        if total == 0:
+            return "— (empty)"
+        idx = pool.active_idx
+        if idx is None:
+            return f"—  [0/{total}]"
+        return f"{pool.name(idx)}  [{idx + 1}/{total}]"
 
     def _row(self, surface, label, value, x, y):
         ls = self.font_m.render(label, True, (130, 130, 160))
