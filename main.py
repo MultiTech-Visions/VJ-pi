@@ -103,6 +103,19 @@ def main():
     pygame.display.set_caption("pi-paint VJ — Output")
     pygame.mouse.set_visible(not cfg.fullscreen)
 
+    # Belt and braces: SDL_VIDEO_FULLSCREEN_DISPLAY env var is set above but
+    # not every pygame/SDL combo honours it, so explicitly re-park the
+    # window on the requested display via SDL2 if we ended up elsewhere.
+    if cfg.display != 0:
+        try:
+            from display_helpers import move_main_window_to_display
+            move_main_window_to_display(
+                cfg.display, (cfg.width, cfg.height), fullscreen=cfg.fullscreen,
+            )
+            output_screen = pygame.display.get_surface() or output_screen
+        except Exception as exc:
+            print(f"[vj] could not park output on display {cfg.display}: {exc!r}")
+
     engine = Engine(cfg, output_screen)
 
     control = None
@@ -128,7 +141,7 @@ def main():
     print(f"[vj] clips dir:    {cfg.clips_dir}")
     print(f"[vj] overlays dir: {cfg.overlays_dir}")
     print(f"[vj] {len(engine.clips)} clip(s), {len(engine.overlays)} overlay(s) loaded")
-    print("[vj] keys: -/= cycle clips · [/] cycle overlays · 1-0 clip favs (tap=play, hold=assign) · Q-P overlay favs · ASDFGHJKL generative · ZXCVB hits · F1-F7 FX · ←→↑↓ params · F11/F12 display · Space blackout · Esc reset · Shift+Esc quit")
+    print("[vj] keys: -/= cycle clips · [/] cycle overlays · 1-0 clip favs (tap=play, hold=assign) · Q-P overlay favs · ASDFGHJKL generative · ZXCVB hits · F1-F7 FX · ←→↑↓ params · F11/F12 display · Space blackout · Esc panic (keeps clip) · Shift+Esc quit")
 
     try:
         engine.run(control=control)

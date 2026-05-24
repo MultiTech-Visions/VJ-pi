@@ -1,7 +1,7 @@
 """Control HUD window — runs on the second display (small screen).
-Shows a live preview of the projected output, current state, a key cheat
-sheet, and a display picker so the operator can move the fullscreen
-output to a different monitor without restarting.
+Live preview, status panel, favourite-slot grids, output-display picker,
+and a key cheat sheet — laid out top-to-bottom with the preview and
+status sharing the top row to claim back horizontal space.
 """
 import pygame
 
@@ -15,12 +15,11 @@ KEY_CHEAT = [
     ("J K L",        "Gen: lissajous / moiré / metaballs"),
     ("Z X C V B",    "Hits: strobe / black / inv / zoom / RGB"),
     ("F1 - F7",      "Persistent FX toggles"),
-    ("← →",          "Tune PARAM X (active-FX horizontal control)"),
-    ("↑ ↓",          "Tune PARAM Y (active-FX vertical control)"),
+    ("← → ↑ ↓",      "Tune PARAM X / Y (active-FX controls)"),
     ("F11 / F12",    "Cycle output display / APPLY"),
     ("Space",        "Blackout (panic)"),
     ("Backspace",    "Freeze frame"),
-    ("Esc",          "Full reset (clip+overlay+FX+hits all off)"),
+    ("Esc",          "Panic: clear FX / overlay / hits (keeps the clip playing)"),
     ("Shift+Esc",    "Quit"),
 ]
 
@@ -33,6 +32,8 @@ class ControlWindow:
     via the Window's Renderer and present.
     """
 
+    PREVIEW_TARGET_H = 180  # tall enough to read, narrow enough to share the row
+
     def __init__(self, engine, window, renderer, size, preview_size):
         from pygame._sdl2.video import Texture
         self.engine = engine
@@ -40,26 +41,27 @@ class ControlWindow:
         self.renderer = renderer
         self.size = size  # (w, h)
         self.surface = pygame.Surface(size)
-        # Cap preview height so we keep room for the rest of the HUD.
-        max_preview_h = 220
-        pw, ph = preview_size
-        if ph > max_preview_h:
-            pw = int(pw * max_preview_h / ph)
-            ph = max_preview_h
+
+        # Preview keeps source aspect, fixed target height. Width is then
+        # capped so the status panel beside it always has at least 280px.
+        target_h = self.PREVIEW_TARGET_H
+        src_w, src_h = preview_size
+        pw = int(src_w * target_h / max(1, src_h))
+        ph = target_h
+        max_pw = max(200, size[0] - 280 - 36)
+        if pw > max_pw:
+            pw = max_pw
+            ph = int(src_h * pw / max(1, src_w))
         self.preview_w, self.preview_h = pw, ph
+
         self._Texture = Texture
         self.font_h = pygame.font.SysFont("Sans,Arial,DejaVuSans", 18, bold=True)
         self.font_m = pygame.font.SysFont("Sans,Arial,DejaVuSans", 14)
         self.font_s = pygame.font.SysFont("Sans,Arial,DejaVuSans", 12)
-        # Pending-display state lives on the engine so keyboard shortcuts
-        # (F11/F12) and click handlers stay in sync.
 
         # Hit-test rects, populated each frame in render().
         self._display_btn_rects = []  # [(idx, pygame.Rect), ...]
         self._apply_rect = None
-        # Track which window IDs to accept mouse events from. The pygame
-        # _sdl2 Window exposes .id; events from that window carry the same
-        # id in event.window.id (or, in older pygame, the Window object).
         try:
             self._window_id = window.id
         except AttributeError:
@@ -85,16 +87,10 @@ class ControlWindow:
             self.engine.apply_pending_display()
 
     def _event_is_ours(self, event):
-        """True if the mouse event came from the control window.
-
-        Pygame multi-window event.window can be the Window object itself or
-        carry an .id — handle both. If we couldn't identify our window at
-        startup, accept everything so clicks still work."""
         win = getattr(event, "window", None)
         if self._window_id is None:
             return True
         if win is None:
-            # Main display window — not ours.
             return False
         ev_id = getattr(win, "id", None)
         if ev_id is None:
@@ -108,23 +104,71 @@ class ControlWindow:
         surface.fill((18, 20, 28))
         win_w, win_h = self.size
         pad = 12
+        e = self.engine
 
-        # ── 1. Live preview ──────────────────────────────────────────
+        # ── Top row: preview (left) + status (right) ─────────────
+        self._draw_preview(surface, pad, pad, frame)
+        sx = pad + self.preview_w + 16
+        self._draw_status(surface, sx, pad, win_w - sx - pad)
+
+        # Cursor flowing down the page from below the preview row.
+        y = pad + self.preview_h + 14
+
+        # Badges (only renders if anything to show; returns same y otherwise)
+        y = self._draw_badges(surface, pad, y)
+
+        # Favourites grids
+        y = self._draw_favorites(surface, pad, y, win_w - pad * 2,
+                                 "CLIP FAVS  (1-0)", "1234567890",
+                                 e.clip_favorites,
+                                 active_stem=e.clips.name(e.clips.active_idx))
+        y += 2
+        y = self._draw_favorites(surface, pad, y, win_w - pad * 2,
+                                 "OVL  FAVS  (Q-P)", "QWERTYUIOP",
+                                 e.overlay_favorites,
+                                 active_stem=e.overlays.name(e.overlays.active_idx))
+        y += 12
+
+        # Display selector
+        y = self._draw_display_selector(surface, pad, y, win_w - pad * 2)
+        y += 10
+
+        # Key cheat sheet — flows naturally after the display selector.
+        # If room runs out we just clip at the window bottom (still useful
+        # since the top rows are the more important ones).
+        panel = self._cheat_panel
+        avail = max(0, win_h - pad - y)
+        if avail > 0:
+            src = panel.subsurface(
+                pygame.Rect(0, 0, panel.get_width(), min(panel.get_height(), avail))
+            )
+            surface.blit(src, (pad, y))
+
+        # Upload the composed surface and present it.
+        tex = self._Texture.from_surface(self.renderer, surface)
+        self.renderer.clear()
+        tex.draw()
+        self.renderer.present()
+
+    # ── Panel parts ──────────────────────────────────────────────────
+
+    def _draw_preview(self, surface, x, y, frame):
         if frame is not None:
             preview = pygame.image.frombuffer(
                 frame.tobytes(), (frame.shape[1], frame.shape[0]), "RGB"
             )
-            preview = pygame.transform.scale(preview, (self.preview_w, self.preview_h))
-            surface.blit(preview, (pad, pad))
+            preview = pygame.transform.scale(preview,
+                                             (self.preview_w, self.preview_h))
+            surface.blit(preview, (x, y))
         else:
             pygame.draw.rect(surface, (40, 40, 50),
-                             (pad, pad, self.preview_w, self.preview_h))
+                             (x, y, self.preview_w, self.preview_h))
         pygame.draw.rect(surface, (90, 90, 120),
-                         (pad, pad, self.preview_w, self.preview_h), 1)
+                         (x, y, self.preview_w, self.preview_h), 1)
         label = self.font_s.render("LIVE OUTPUT", True, (140, 140, 160))
-        surface.blit(label, (pad + 6, pad + 4))
+        surface.blit(label, (x + 6, y + 4))
 
-        # ── 2. Status panel ──────────────────────────────────────────
+    def _draw_status(self, surface, x, y, width):
         e = self.engine
         clip_text = self._library_label(e.clips)
         ov_text = self._library_label(e.overlays)
@@ -132,23 +176,20 @@ class ControlWindow:
         fx_on = [k for k, v in e.fx_state.items() if v]
         fx_text = ", ".join(fx_on) if fx_on else "—"
 
-        y = pad + self.preview_h + 14
-        x = pad
-
         title = self.font_h.render("NOW PLAYING", True, (220, 220, 240))
         surface.blit(title, (x, y))
-        y += 24
+        y += 22
 
-        self._row(surface, "CLIP",    clip_text, x, y);  y += 20
-        self._row(surface, "GEN",     gen_name,  x, y);  y += 20
-        self._row(surface, "OVERLAY", ov_text,   x, y);  y += 20
-        self._row(surface, "FX",      fx_text,   x, y);  y += 22
+        self._row(surface, "CLIP",    clip_text, x, y, width); y += 19
+        self._row(surface, "GEN",     gen_name,  x, y, width); y += 19
+        self._row(surface, "OVERLAY", ov_text,   x, y, width); y += 19
+        self._row(surface, "FX",      fx_text,   x, y, width); y += 22
 
-        # Param bars
-        self._param_bar(surface, "PARAM X", e.param_x, x, y); y += 18
-        self._param_bar(surface, "PARAM Y", e.param_y, x, y); y += 22
+        self._param_bar(surface, "PARAM X", e.param_x, x, y, width); y += 18
+        self._param_bar(surface, "PARAM Y", e.param_y, x, y, width)
 
-        # State badges
+    def _draw_badges(self, surface, x, y):
+        e = self.engine
         badges = []
         if e.blackout:
             badges.append(("BLACKOUT", (255, 80, 80)))
@@ -156,6 +197,8 @@ class ControlWindow:
             badges.append(("FREEZE", (130, 200, 255)))
         if e.hit_frames_left > 0:
             badges.append((f"HIT: {e.hit_type}", (255, 200, 80)))
+        if not badges:
+            return y
         bx = x
         for text, color in badges:
             chip = self.font_m.render(f"  {text}  ", True, (20, 20, 30))
@@ -163,44 +206,49 @@ class ControlWindow:
             pygame.draw.rect(surface, color, rect.inflate(4, 4), border_radius=4)
             surface.blit(chip, rect)
             bx += rect.width + 12
-        y += 22
+        return y + 26
 
-        # ── 3. Favourites grids ──────────────────────────────────────
-        y = self._draw_favorites(surface, x, y, win_w - pad * 2,
-                                 "CLIP FAVS  (1-0)", "1234567890",
-                                 e.clip_favorites,
-                                 active_stem=e.clips.name(e.clips.active_idx))
-        y += 4
-        y = self._draw_favorites(surface, x, y, win_w - pad * 2,
-                                 "OVL  FAVS  (Q-P)", "QWERTYUIOP",
-                                 e.overlay_favorites,
-                                 active_stem=e.overlays.name(e.overlays.active_idx))
-        y += 6
-
-        # ── 4. Display selector ──────────────────────────────────────
-        y = self._draw_display_selector(surface, x, y, win_w - pad * 2)
-
-        # ── 5. Key cheat sheet at bottom (pre-rendered) ──────────────
-        panel = self._cheat_panel
-        surface.blit(panel, (pad, win_h - panel.get_height() - pad))
-
-        # Upload the composed surface to a texture and present it
-        tex = self._Texture.from_surface(self.renderer, surface)
-        self.renderer.clear()
-        tex.draw()
-        self.renderer.present()
+    def _draw_favorites(self, surface, x, y, width, label, keys, favs,
+                        active_stem=None):
+        """Render one row of 10 favourite-slot chips."""
+        title = self.font_s.render(label, True, (160, 160, 180))
+        surface.blit(title, (x, y + 2))
+        slot_x = x + 108
+        gap = 4
+        cell_w = max(36, (x + width - slot_x - 9 * gap) // 10)
+        cell_h = 18
+        for i, (k, stem) in enumerate(zip(keys, favs)):
+            rect = pygame.Rect(slot_x + i * (cell_w + gap), y, cell_w, cell_h)
+            assigned = stem is not None
+            is_active = assigned and active_stem == stem
+            if is_active:
+                bg = (70, 130, 200); border = (160, 220, 255); fg = (255, 255, 255)
+            elif assigned:
+                bg = (38, 42, 58); border = (90, 110, 140); fg = (210, 220, 240)
+            else:
+                bg = (28, 30, 40); border = (55, 55, 70); fg = (95, 95, 110)
+            pygame.draw.rect(surface, bg, rect, border_radius=3)
+            pygame.draw.rect(surface, border, rect, 1, border_radius=3)
+            txt = stem or "—"
+            max_chars = max(2, (cell_w - 14) // 6)
+            if len(txt) > max_chars:
+                txt = txt[:max_chars - 1] + "…"
+            label_s = self.font_s.render(f"{k}·{txt}", True, fg)
+            surface.blit(label_s, (rect.x + 3, rect.y + 2))
+        return y + cell_h + 2
 
     def _draw_display_selector(self, surface, x, y, width):
         e = self.engine
         title = self.font_h.render("OUTPUT DISPLAY", True, (220, 220, 240))
         surface.blit(title, (x, y))
-        hint = self.font_s.render("(F11 cycle · F12 apply)", True, (140, 140, 170))
+        hint = self.font_s.render("(F11 cycle · F12 apply · saved)",
+                                  True, (140, 140, 170))
         surface.blit(hint, (x + title.get_width() + 8,
                             y + (title.get_height() - hint.get_height())))
         y += 22
 
         info = self.font_s.render(
-            f"current: display {e.cfg.display}    pending: display {e.pending_display}    (saved to vj_state.json)",
+            f"current: display {e.cfg.display}    pending: display {e.pending_display}",
             True, (170, 170, 195),
         )
         surface.blit(info, (x, y))
@@ -215,11 +263,9 @@ class ControlWindow:
             is_current = idx == e.cfg.display
             is_pending = idx == e.pending_display
             if is_pending:
-                bg = (70, 130, 200)
-                border = (140, 200, 255)
+                bg = (70, 130, 200); border = (140, 200, 255)
             else:
-                bg = (40, 44, 60)
-                border = (90, 90, 120)
+                bg = (40, 44, 60); border = (90, 90, 120)
             pygame.draw.rect(surface, bg, rect, border_radius=4)
             pygame.draw.rect(surface, border, rect, 1, border_radius=4)
             surface.blit(label, (rect.x + 6, rect.y + (btn_h - label.get_height()) // 2))
@@ -244,36 +290,6 @@ class ControlWindow:
 
         return y + btn_h + 8
 
-    def _draw_favorites(self, surface, x, y, width, label, keys, favs,
-                        active_stem=None):
-        """Render one row of 10 favourite-slot chips."""
-        title = self.font_s.render(label, True, (160, 160, 180))
-        surface.blit(title, (x, y))
-        slot_x = x + 110
-        gap = 4
-        cell_w = max(36, (x + width - slot_x - 9 * gap) // 10)
-        cell_h = 18
-        for i, (k, stem) in enumerate(zip(keys, favs)):
-            rect = pygame.Rect(slot_x + i * (cell_w + gap), y - 1, cell_w, cell_h)
-            assigned = stem is not None
-            is_active = assigned and active_stem == stem
-            if is_active:
-                bg = (70, 130, 200); border = (160, 220, 255); fg = (255, 255, 255)
-            elif assigned:
-                bg = (38, 42, 58); border = (90, 110, 140); fg = (210, 220, 240)
-            else:
-                bg = (28, 30, 40); border = (55, 55, 70); fg = (95, 95, 110)
-            pygame.draw.rect(surface, bg, rect, border_radius=3)
-            pygame.draw.rect(surface, border, rect, 1, border_radius=3)
-            txt = stem or "—"
-            # Truncate to fit
-            max_chars = max(2, (cell_w - 14) // 6)
-            if len(txt) > max_chars:
-                txt = txt[:max_chars - 1] + "…"
-            label_s = self.font_s.render(f"{k}·{txt}", True, fg)
-            surface.blit(label_s, (rect.x + 3, rect.y + 2))
-        return y + cell_h + 2
-
     def _build_cheat_panel(self):
         """Pre-render the static key cheat sheet to a Surface."""
         w = self.size[0] - 24
@@ -288,7 +304,7 @@ class ControlWindow:
             ks = self.font_s.render(keys, True, (140, 200, 255))
             ds = self.font_s.render(desc, True, (180, 180, 200))
             panel.blit(ks, (0, y))
-            panel.blit(ds, (140, y))
+            panel.blit(ds, (130, y))
             y += row_h
         return panel
 
@@ -302,28 +318,32 @@ class ControlWindow:
             return f"—  [0/{total}]"
         return f"{pool.name(idx)}  [{idx + 1}/{total}]"
 
-    def _row(self, surface, label, value, x, y):
+    def _row(self, surface, label, value, x, y, width=None):
+        if width is None:
+            width = surface.get_width() - x - 12
         ls = self.font_m.render(label, True, (130, 130, 160))
-        max_chars = max(10, int((surface.get_width() - x - 110) / 7))
+        max_chars = max(8, int((width - 90) / 7))
         if len(str(value)) > max_chars:
             value = str(value)[: max_chars - 1] + "…"
         vs = self.font_m.render(str(value), True, (240, 240, 255))
         surface.blit(ls, (x, y))
-        surface.blit(vs, (x + 85, y))
+        surface.blit(vs, (x + 78, y))
 
-    def _param_bar(self, surface, label, value, x, y):
+    def _param_bar(self, surface, label, value, x, y, width=None):
+        if width is None:
+            width = 290
         ls = self.font_m.render(label, True, (130, 130, 160))
         surface.blit(ls, (x, y))
-        bar_x = x + 85
-        bar_w = 200
+        bar_x = x + 78
+        bar_w = max(60, width - 78 - 42)
         bar_h = 10
         bar_y = y + 4
-        pygame.draw.rect(surface, (40, 44, 60), (bar_x, bar_y, bar_w, bar_h),
-                         border_radius=2)
+        pygame.draw.rect(surface, (40, 44, 60),
+                         (bar_x, bar_y, bar_w, bar_h), border_radius=2)
         fill_w = int(bar_w * max(0.0, min(1.0, value)))
-        pygame.draw.rect(surface, (140, 200, 255), (bar_x, bar_y, fill_w, bar_h),
-                         border_radius=2)
-        pygame.draw.rect(surface, (90, 90, 120), (bar_x, bar_y, bar_w, bar_h),
-                         1, border_radius=2)
+        pygame.draw.rect(surface, (140, 200, 255),
+                         (bar_x, bar_y, fill_w, bar_h), border_radius=2)
+        pygame.draw.rect(surface, (90, 90, 120),
+                         (bar_x, bar_y, bar_w, bar_h), 1, border_radius=2)
         vs = self.font_s.render(f"{value:.2f}", True, (200, 200, 220))
-        surface.blit(vs, (bar_x + bar_w + 8, y + 1))
+        surface.blit(vs, (bar_x + bar_w + 6, y + 1))

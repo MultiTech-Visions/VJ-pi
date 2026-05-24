@@ -148,14 +148,17 @@ class Engine:
             self.fx_state[name] = not self.fx_state[name]
 
     def kill_all(self):
-        """Full reset: drop FX, hits, overlay, clip, generative, blackout, freeze."""
+        """Panic key: clear FX, hits, overlay, generative, blackout, freeze
+        — but keep the current clip playing so the output doesn't suddenly
+        drop to black mid-set. Use `0` (long-press while playing nothing)
+        or the `-` / `=` cycle keys to change/clear the clip itself.
+        """
         for k in self.fx_state:
             self.fx_state[k] = False
         self.hit_frames_left = 0
         self.blackout = False
         self.freeze = False
         self.overlays.deselect()
-        self.clips.deselect()
         self.active_generative = None
 
     # ── Favourites ────────────────────────────────────────────────────
@@ -235,9 +238,12 @@ class Engine:
     def switch_output_display(self, new_idx):
         """Re-open the output window on a different display + persist choice.
 
-        The persisted value (vj_state.json) is what subsequent launches read
-        as the default. SDL env vars are also refreshed so a fullscreen
-        re-init (or the next launch) targets the right monitor.
+        SDL pins a fullscreen window to its original display when you call
+        pygame.display.set_mode(..., display=N) again, so we drop down to
+        SDL2 directly (display_helpers.move_main_window_to_display) which
+        toggles fullscreen off, repositions to the absolute pixel coords of
+        the target display, then re-enters fullscreen. We also refresh the
+        env var so any subsequent set_mode call targets the right display.
         """
         if new_idx < 0 or new_idx >= self.num_displays:
             return
@@ -252,19 +258,26 @@ class Engine:
         centered = 0x2FFF0000 | (new_idx & 0xFFFF)
         os.environ["SDL_VIDEO_WINDOW_POS"] = f"{centered},{centered}"
 
-        flags = pygame.FULLSCREEN | pygame.SCALED if self.cfg.fullscreen else 0
-        try:
-            if self.cfg.fullscreen:
-                # Two-step: drop fullscreen, hop to the new display
-                # windowed, then re-enable fullscreen there. This works
-                # around SDL versions that pin a fullscreen window to its
-                # original display.
-                pygame.display.set_mode((self.w, self.h), 0, display=new_idx)
-            self.screen = pygame.display.set_mode(
-                (self.w, self.h), flags, display=new_idx
-            )
-        except TypeError:
-            self.screen = pygame.display.set_mode((self.w, self.h), flags)
+        from display_helpers import move_main_window_to_display
+        moved = move_main_window_to_display(
+            new_idx, (self.w, self.h), fullscreen=self.cfg.fullscreen,
+        )
+        print(f"[vj] switch output → display {new_idx}  (sdl2 move={moved})")
+
+        if not moved:
+            # Fallback: pygame's own set_mode. Less reliable for fullscreen.
+            flags = pygame.FULLSCREEN | pygame.SCALED if self.cfg.fullscreen else 0
+            try:
+                self.screen = pygame.display.set_mode(
+                    (self.w, self.h), flags, display=new_idx
+                )
+            except TypeError:
+                self.screen = pygame.display.set_mode((self.w, self.h), flags)
+        else:
+            new_surf = pygame.display.get_surface()
+            if new_surf is not None:
+                self.screen = new_surf
+
         pygame.display.set_caption("pi-paint VJ — Output")
         pygame.mouse.set_visible(not self.cfg.fullscreen)
 
