@@ -53,7 +53,12 @@ def _open_output_window(cfg):
         return pygame.display.set_mode(
             (cfg.width, cfg.height), flags, display=cfg.display
         )
-    except TypeError:
+    except (TypeError, pygame.error, ValueError) as exc:
+        # display=N kwarg unsupported, or that display doesn't exist
+        # (projector unplugged, monitor reconfigured, etc). Fall back to
+        # the default display rather than crashing the whole launcher.
+        print(f"[vj] set_mode(display={cfg.display}) failed: {exc!r}; "
+              f"falling back to default display")
         return pygame.display.set_mode((cfg.width, cfg.height), flags)
 
 
@@ -94,30 +99,36 @@ def main():
     display = _resolve_output_display(args)
     _set_sdl_hints(display)
 
+    pygame.init()
+    pygame.font.init()
+
+    # Validate the resolved display against what actually exists right now
+    # (e.g. saved=1 but the projector isn't plugged in this time). Fall
+    # back to 0 so the launcher never crashes on a stale state file.
+    try:
+        num = pygame.display.get_num_displays()
+    except (pygame.error, AttributeError):
+        num = 1
+    if display >= num or display < 0:
+        print(f"[vj] saved output display {display} not available "
+              f"(only {num} display(s) attached); using 0")
+        display = 0
+        _set_sdl_hints(0)
+
     cfg = Config(
         width=args.width, height=args.height, fps=args.fps,
         fullscreen=args.fullscreen, display=display,
     )
 
-    pygame.init()
-    pygame.font.init()
-
     output_screen = _open_output_window(cfg)
     pygame.display.set_caption("pi-paint VJ — Output")
     pygame.mouse.set_visible(not cfg.fullscreen)
 
-    # Belt and braces: SDL_VIDEO_FULLSCREEN_DISPLAY env var is set above but
-    # not every pygame/SDL combo honours it, so explicitly re-park the
-    # window on the requested display via SDL2 if we ended up elsewhere.
-    if cfg.display != 0:
-        try:
-            from display_helpers import move_main_window_to_display
-            move_main_window_to_display(
-                cfg.display, (cfg.width, cfg.height), fullscreen=cfg.fullscreen,
-            )
-            output_screen = pygame.display.get_surface() or output_screen
-        except Exception as exc:
-            print(f"[vj] could not park output on display {cfg.display}: {exc!r}")
+    # NOTE: we *don't* try to move the window to the target display at
+    # launch any more — the SDL pump loop took long enough that X11
+    # marked the window as unresponsive and the WM force-closed it on
+    # first click. If pygame opened the window on the wrong monitor,
+    # the operator can press F12 to move it after launch.
 
     engine = Engine(cfg, output_screen)
 

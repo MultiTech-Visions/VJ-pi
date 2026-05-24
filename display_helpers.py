@@ -63,20 +63,27 @@ def _load_sdl():
         lib.SDL_GetDisplayBounds.argtypes = [ctypes.c_int, ctypes.POINTER(_SDL_Rect)]
         lib.SDL_GetWindowFromID.restype = ctypes.c_void_p
         lib.SDL_GetWindowFromID.argtypes = [ctypes.c_uint32]
+        lib.SDL_SetWindowPosition.restype = None
         lib.SDL_SetWindowPosition.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        lib.SDL_GetWindowPosition.restype = None
         lib.SDL_GetWindowPosition.argtypes = [
             ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)
         ]
+        lib.SDL_SetWindowSize.restype = None
         lib.SDL_SetWindowSize.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         lib.SDL_SetWindowFullscreen.restype = ctypes.c_int
         lib.SDL_SetWindowFullscreen.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        lib.SDL_SetWindowBordered.restype = None
         lib.SDL_SetWindowBordered.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.SDL_SetWindowResizable.restype = None
         lib.SDL_SetWindowResizable.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.SDL_RaiseWindow.restype = None
         lib.SDL_RaiseWindow.argtypes = [ctypes.c_void_p]
         lib.SDL_GetWindowFlags.restype = ctypes.c_uint32
         lib.SDL_GetWindowFlags.argtypes = [ctypes.c_void_p]
         lib.SDL_GetWindowDisplayIndex.restype = ctypes.c_int
         lib.SDL_GetWindowDisplayIndex.argtypes = [ctypes.c_void_p]
+        lib.SDL_PumpEvents.restype = None
         lib.SDL_PumpEvents.argtypes = []
     except AttributeError:
         return None
@@ -113,11 +120,14 @@ def _resolve_target_xy(display_idx, content_size, bounds=None):
             by + max(0, (bh - ch) // 2))
 
 
-def _wait_until_on_display(lib, window_ptr, target_idx, timeout_s=1.2):
+def _wait_until_on_display(lib, window_ptr, target_idx, timeout_s=0.6):
     """Pump SDL events until SDL_GetWindowDisplayIndex reports `target_idx`.
 
     X11 SetWindowPosition is async; SDL only updates window->x/y when it
     receives a ConfigureNotify, which is what SDL_PumpEvents triggers.
+    Kept short (~600 ms) so the main thread can't appear hung — if X11
+    hasn't moved the window by then, the caller falls back to fake
+    fullscreen.
     """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -142,10 +152,15 @@ def move_main_window_to_display(display_idx, content_size, fullscreen):
     try:
         from pygame._sdl2.video import Window
         win = Window.from_display_module()
-    except (ImportError, AttributeError):
+    except Exception as exc:
+        print(f"[vj] no _sdl2.video.Window available ({exc!r}); skipping move")
         return False
 
-    window_ptr = lib.SDL_GetWindowFromID(win.id)
+    try:
+        window_ptr = lib.SDL_GetWindowFromID(win.id)
+    except Exception as exc:
+        print(f"[vj] SDL_GetWindowFromID failed ({exc!r}); skipping move")
+        return False
     if not window_ptr:
         return False
 
