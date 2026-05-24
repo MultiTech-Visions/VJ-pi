@@ -104,12 +104,10 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 
 | Keys                | Action                                              |
 |---------------------|-----------------------------------------------------|
-| `1` / `2`           | Clip browser: previous / next                       |
-| `3` / `4`           | Clip browser: −5 / +5                               |
-| `5` / `6`           | Clip browser: −25 / +25                             |
-| `7` / `8`           | Clip browser: first / last                          |
-| `9` / `0`           | Clip browser: random / deselect                     |
-| `Q` `W` `E` `R` `T` `Y` `U` `I` `O` `P` | Overlay browser: same layout (−1 +1 −5 +5 −25 +25 first last random off) |
+| `−` / `=`           | Cycle CLIP library (prev / next, auto-repeat on hold) |
+| `[` / `]`           | Cycle OVERLAY library (prev / next, auto-repeat on hold) |
+| `1`–`0`             | Clip favourite slots (10). Tap → play. **Hold ≥ ½ s → assign the currently-playing clip to that slot.** |
+| `Q`–`P`             | Overlay favourite slots (10). Same tap/hold pattern. |
 | `A S D F G H`       | Generative base: plasma / tunnel / starfield / warp / waves / cells (toggle) |
 | `J K L`             | Generative base: lissajous / moiré / metaballs (toggle) |
 | `Z`                 | HIT: strobe flash                                  |
@@ -133,17 +131,28 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `Esc`               | Kill all FX, overlays, hits — back to clean base   |
 | `Shift+Esc`         | Quit                                               |
 
-### Browsing big libraries
+### Browsing big libraries + favourites
 
-The number row drives a **clip browser** rather than 10 fixed slots —
-drop hundreds of clips into `assets/clips/` and walk through them with
-`1`/`2` (±1), `3`/`4` (±5), `5`/`6` (±25). `7` jumps to the first, `8`
-to the last, `9` picks a random one, `0` turns playback off. Holding
-any of those auto-scrubs at ~12/sec.
+Drop hundreds of clips into `assets/clips/`. Then:
 
-`Q`-`P` is the same browser for overlays. Position shows in the HUD
-as `name  [47/152]`. Open VideoCapture handles are LRU-evicted (12 at
-a time) so a huge library doesn't bloat memory.
+1. **Cycle** through the library with `−` / `=` (clips) or `[` / `]`
+   (overlays). Hold a key to auto-scrub at ~12/sec.
+2. When you land on something you like, **long-press** any number key
+   (`1`–`0`) for ~½ second. That clip gets assigned to that favourite
+   slot. Do the same with `Q`–`P` for overlays.
+3. **Tap** a number key (or `Q`–`P`) any time after that to instantly
+   recall the assigned clip/overlay.
+4. Favourites persist in `vj_state.json` between sessions — saved by
+   filename stem, so re-ordering or processing files won't break them
+   (only renaming does).
+5. To clear a slot: stop playback (`Esc`), then long-press that slot.
+
+The HUD shows two rows of 10 chips with the assigned stems, with the
+slot whose clip is currently playing highlighted blue.
+
+Position shows in the HUD as `name  [47/152]`. Open VideoCapture
+handles are LRU-evicted (12 at a time) so a huge library doesn't
+bloat memory.
 
 Pick a clip then a generative (`A`-`L`) — generative wins until you
 pick another clip.

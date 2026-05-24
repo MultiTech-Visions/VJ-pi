@@ -7,8 +7,10 @@ import pygame
 
 
 KEY_CHEAT = [
-    ("1 - 0",        "Clip browse: −1 +1 −5 +5 −25 +25 first last rand off"),
-    ("Q - P",        "Overlay browse: same layout (hold to scrub)"),
+    ("− / =",        "Prev / next CLIP (hold to scrub)"),
+    ("[ / ]",        "Prev / next OVERLAY (hold to scrub)"),
+    ("1 - 0",        "Clip favourites — tap=play, hold ≥½s=assign current"),
+    ("Q - P",        "Overlay favourites — tap=play, hold ≥½s=assign current"),
     ("A S D F G H",  "Gen: plasma / tunnel / stars / warp / waves / cells"),
     ("J K L",        "Gen: lissajous / moiré / metaballs"),
     ("Z X C V B",    "Hits: strobe / black / inv / zoom / RGB"),
@@ -18,7 +20,7 @@ KEY_CHEAT = [
     ("F11 / F12",    "Cycle output display / APPLY"),
     ("Space",        "Blackout (panic)"),
     ("Backspace",    "Freeze frame"),
-    ("Esc",          "Kill all FX"),
+    ("Esc",          "Full reset (clip+overlay+FX+hits all off)"),
     ("Shift+Esc",    "Quit"),
 ]
 
@@ -163,10 +165,22 @@ class ControlWindow:
             bx += rect.width + 12
         y += 22
 
-        # ── 3. Display selector ──────────────────────────────────────
+        # ── 3. Favourites grids ──────────────────────────────────────
+        y = self._draw_favorites(surface, x, y, win_w - pad * 2,
+                                 "CLIP FAVS  (1-0)", "1234567890",
+                                 e.clip_favorites,
+                                 active_stem=e.clips.name(e.clips.active_idx))
+        y += 4
+        y = self._draw_favorites(surface, x, y, win_w - pad * 2,
+                                 "OVL  FAVS  (Q-P)", "QWERTYUIOP",
+                                 e.overlay_favorites,
+                                 active_stem=e.overlays.name(e.overlays.active_idx))
+        y += 6
+
+        # ── 4. Display selector ──────────────────────────────────────
         y = self._draw_display_selector(surface, x, y, win_w - pad * 2)
 
-        # ── 4. Key cheat sheet at bottom (pre-rendered) ──────────────
+        # ── 5. Key cheat sheet at bottom (pre-rendered) ──────────────
         panel = self._cheat_panel
         surface.blit(panel, (pad, win_h - panel.get_height() - pad))
 
@@ -229,6 +243,36 @@ class ControlWindow:
         self._apply_rect = apply_rect
 
         return y + btn_h + 8
+
+    def _draw_favorites(self, surface, x, y, width, label, keys, favs,
+                        active_stem=None):
+        """Render one row of 10 favourite-slot chips."""
+        title = self.font_s.render(label, True, (160, 160, 180))
+        surface.blit(title, (x, y))
+        slot_x = x + 110
+        gap = 4
+        cell_w = max(36, (x + width - slot_x - 9 * gap) // 10)
+        cell_h = 18
+        for i, (k, stem) in enumerate(zip(keys, favs)):
+            rect = pygame.Rect(slot_x + i * (cell_w + gap), y - 1, cell_w, cell_h)
+            assigned = stem is not None
+            is_active = assigned and active_stem == stem
+            if is_active:
+                bg = (70, 130, 200); border = (160, 220, 255); fg = (255, 255, 255)
+            elif assigned:
+                bg = (38, 42, 58); border = (90, 110, 140); fg = (210, 220, 240)
+            else:
+                bg = (28, 30, 40); border = (55, 55, 70); fg = (95, 95, 110)
+            pygame.draw.rect(surface, bg, rect, border_radius=3)
+            pygame.draw.rect(surface, border, rect, 1, border_radius=3)
+            txt = stem or "—"
+            # Truncate to fit
+            max_chars = max(2, (cell_w - 14) // 6)
+            if len(txt) > max_chars:
+                txt = txt[:max_chars - 1] + "…"
+            label_s = self.font_s.render(f"{k}·{txt}", True, fg)
+            surface.blit(label_s, (rect.x + 3, rect.y + 2))
+        return y + cell_h + 2
 
     def _build_cheat_panel(self):
         """Pre-render the static key cheat sheet to a Surface."""

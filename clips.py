@@ -55,6 +55,15 @@ class ClipPool:
             return None
         return self.paths[idx].stem
 
+    def find_by_stem(self, stem):
+        """Return the index of the clip whose filename stem matches, or None."""
+        if not stem:
+            return None
+        for i, p in enumerate(self.paths):
+            if p.stem == stem:
+                return i
+        return None
+
     # ── Selection ────────────────────────────────────────────────────
 
     def select(self, idx):
