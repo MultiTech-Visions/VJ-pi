@@ -54,21 +54,27 @@ Live FX parameters are tuned with the **arrow keys** (← → for PARAM X,
 ↑ ↓ for PARAM Y) so you don't have to fight the trackpad/mouse cursor
 mid-set. The current values show as bars in the HUD.
 
-### Switching the output display on the fly
+### Switching the output display
 
 The HUD has an **OUTPUT DISPLAY** picker. Two ways to drive it:
 
-- **Keyboard (most reliable in fullscreen):** `F11` cycles the pending
-  display, `F12` applies the pick. Works from either window because
-  keyboard focus reaches the engine regardless.
+- **Keyboard:** `F11` cycles the pending display, `F12` applies the pick.
+  Works from either window because keyboard focus reaches the engine
+  regardless of the WM's mood.
 - **Mouse:** click a `Display N` button to set the pending display, then
-  click `APPLY`. (In fullscreen mode some window managers will yank focus
-  back to the projector window when you click the HUD — use the
-  keyboard shortcuts instead if that happens to you.)
+  click `APPLY`. (In fullscreen mode some window managers yank focus
+  back to the projector when you click the HUD — use the keyboard
+  shortcuts instead if that happens.)
 
-The applied choice is **persisted to `vj_state.json`** and reused on
-every subsequent launch. The launcher script's `OUTPUT_DISPLAY` only
-seeds the very first run (or whenever you delete `vj_state.json`).
+In **windowed test mode** the picker moves the output window
+immediately. In **fullscreen mode** the picker can't reliably move a
+running fullscreen window (pygame/SDL pins it to its original monitor
+on most setups, and aggressive workarounds tend to hang or close the
+window). Instead, the apply just **persists the choice to
+`vj_state.json`** and shows a `⚠ Shift+Esc and re-launch` hint in the
+HUD — the next launch starts fullscreen on the new monitor. The
+launcher script's `OUTPUT_DISPLAY` only seeds the very first run; the
+HUD picker wins after that.
 
 ### If "Execute" doesn't appear
 
