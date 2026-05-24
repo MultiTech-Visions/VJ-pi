@@ -41,6 +41,17 @@ FX_TOGGLES = [
 # How fast the arrow keys move param_x / param_y (units of 0..1 per second).
 PARAM_RATE = 0.6
 
+# How many favorite slots per pool (matches the number / QWERTY rows).
+FAV_SLOTS = 10
+
+
+def _coerce_favs(value):
+    """Sanity-check a favourites list from disk into a length-FAV_SLOTS list."""
+    if not isinstance(value, list):
+        return [None] * FAV_SLOTS
+    padded = (value + [None] * FAV_SLOTS)[:FAV_SLOTS]
+    return [v if isinstance(v, str) else None for v in padded]
+
 
 class Engine:
     def __init__(self, cfg, screen):
@@ -74,6 +85,12 @@ class Engine:
             self.num_displays = 1
         self.pending_display = cfg.display
 
+        # Favourite slots (1-0 for clips, Q-P for overlays). Saved by
+        # filename stem so they survive re-orderings of the library.
+        persisted = load_state()
+        self.clip_favorites = _coerce_favs(persisted.get("clip_favorites"))
+        self.overlay_favorites = _coerce_favs(persisted.get("overlay_favorites"))
+
         self.running = True
 
     # ── Public actions ────────────────────────────────────────────────
@@ -90,6 +107,27 @@ class Engine:
             self.overlays.deselect()
         else:
             self.overlays.select(idx)
+
+    def browse_clips(self, action, arg=None):
+        self._browse(self.clips, action, arg)
+        if self.clips.active_idx is not None:
+            self.active_generative = None
+
+    def browse_overlays(self, action, arg=None):
+        self._browse(self.overlays, action, arg)
+
+    @staticmethod
+    def _browse(pool, action, arg):
+        if action == "step":
+            pool.step(arg)
+        elif action == "first":
+            pool.first()
+        elif action == "last":
+            pool.last()
+        elif action == "random":
+            pool.pick_random()
+        elif action == "off":
+            pool.deselect()
 
     def select_generative(self, idx):
         if idx >= len(GENERATIVES):
@@ -110,12 +148,69 @@ class Engine:
             self.fx_state[name] = not self.fx_state[name]
 
     def kill_all(self):
+        """Full reset: drop FX, hits, overlay, clip, generative, blackout, freeze."""
         for k in self.fx_state:
             self.fx_state[k] = False
         self.hit_frames_left = 0
         self.blackout = False
         self.freeze = False
         self.overlays.deselect()
+        self.clips.deselect()
+        self.active_generative = None
+
+    # ── Favourites ────────────────────────────────────────────────────
+
+    def play_clip_favorite(self, slot):
+        if not 0 <= slot < len(self.clip_favorites):
+            return
+        stem = self.clip_favorites[slot]
+        if stem is None:
+            return
+        idx = self.clips.find_by_stem(stem)
+        if idx is None:
+            return
+        self.clips.select(idx)
+        self.active_generative = None
+
+    def save_clip_favorite(self, slot):
+        """Long-press handler. With nothing playing, clears the slot."""
+        if not 0 <= slot < len(self.clip_favorites):
+            return
+        if self.clips.active_idx is None:
+            self.clip_favorites[slot] = None
+        else:
+            self.clip_favorites[slot] = self.clips.name(self.clips.active_idx)
+        self._persist_favorites()
+
+    def play_overlay_favorite(self, slot):
+        """Tap toggles the overlay (off when re-tapped on the same one)."""
+        if not 0 <= slot < len(self.overlay_favorites):
+            return
+        stem = self.overlay_favorites[slot]
+        if stem is None:
+            return
+        idx = self.overlays.find_by_stem(stem)
+        if idx is None:
+            return
+        if self.overlays.active_idx == idx:
+            self.overlays.deselect()
+        else:
+            self.overlays.select(idx)
+
+    def save_overlay_favorite(self, slot):
+        if not 0 <= slot < len(self.overlay_favorites):
+            return
+        if self.overlays.active_idx is None:
+            self.overlay_favorites[slot] = None
+        else:
+            self.overlay_favorites[slot] = self.overlays.name(self.overlays.active_idx)
+        self._persist_favorites()
+
+    def _persist_favorites(self):
+        state = load_state()
+        state["clip_favorites"] = self.clip_favorites
+        state["overlay_favorites"] = self.overlay_favorites
+        save_state(state)
 
     def toggle_blackout(self):
         self.blackout = not self.blackout
@@ -277,19 +372,62 @@ class Engine:
         return frame
 
     def run(self, control=None):
-        from keymap import dispatch
+        from keymap import dispatch, NAV_KEYS, FAV_KEYS, fav_tap, fav_long
+        # Enable system key-repeat. We filter below so only NAV_KEYS
+        # auto-fire on hold — toggle/hit keys still need a fresh press.
+        pygame.key.set_repeat(350, 80)
+        held_keys = set()
+        # Favourite-key timing: tap = on release (< threshold), long-press
+        # = held past threshold without release.
+        fav_pressed_at = {}      # key → initial-press timestamp
+        long_press_fired = set() # keys whose long-press action has fired
+        LONG_PRESS_S = 0.5
+
         last_t = time.time()
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
+
                 elif event.type == pygame.KEYDOWN:
-                    dispatch(self, event.key, event.mod)
+                    is_initial = event.key not in held_keys
+                    held_keys.add(event.key)
+                    if event.key in FAV_KEYS:
+                        if is_initial:
+                            fav_pressed_at[event.key] = time.time()
+                            long_press_fired.discard(event.key)
+                        # Ignore auto-repeats for favourite keys.
+                    elif is_initial or event.key in NAV_KEYS:
+                        dispatch(self, event.key, event.mod)
+
+                elif event.type == pygame.KEYUP:
+                    if event.key in fav_pressed_at:
+                        elapsed = time.time() - fav_pressed_at.pop(event.key)
+                        if (event.key not in long_press_fired
+                                and elapsed < LONG_PRESS_S):
+                            fav_tap(self, event.key)
+                        long_press_fired.discard(event.key)
+                    held_keys.discard(event.key)
+
+                elif event.type == pygame.WINDOWFOCUSLOST:
+                    held_keys.clear()
+                    fav_pressed_at.clear()
+                    long_press_fired.clear()
+
                 elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                                     pygame.MOUSEMOTION):
                     if control is not None:
                         control.handle_event(event)
+
+            # Per-frame long-press detection
             now = time.time()
+            for k, t in list(fav_pressed_at.items()):
+                if k in long_press_fired:
+                    continue
+                if now - t >= LONG_PRESS_S:
+                    fav_long(self, k)
+                    long_press_fired.add(k)
+
             dt = now - last_t
             last_t = now
             self.update_params_from_keys(dt)

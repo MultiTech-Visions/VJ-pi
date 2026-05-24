@@ -104,8 +104,10 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 
 | Keys                | Action                                              |
 |---------------------|-----------------------------------------------------|
-| `1 2 3 4 5 6 7 8 9 0` | Pick base clip from `assets/clips/` (slot 1-10)   |
-| `Q W E R T Y U I O P` | Toggle overlay from `assets/overlays/` (slot 1-10) |
+| `−` / `=`           | Cycle CLIP library (prev / next, auto-repeat on hold) |
+| `[` / `]`           | Cycle OVERLAY library (prev / next, auto-repeat on hold) |
+| `1`–`0`             | Clip favourite slots (10). Tap → play. **Hold ≥ ½ s → assign the currently-playing clip to that slot.** |
+| `Q`–`P`             | Overlay favourite slots (10). Same tap/hold pattern. |
 | `A S D F G H`       | Generative base: plasma / tunnel / starfield / warp / waves / cells (toggle) |
 | `J K L`             | Generative base: lissajous / moiré / metaballs (toggle) |
 | `Z`                 | HIT: strobe flash                                  |
@@ -129,8 +131,31 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `Esc`               | Kill all FX, overlays, hits — back to clean base   |
 | `Shift+Esc`         | Quit                                               |
 
-Press a clip key (1-0) and a generative key (A/S/D) — last one wins.
-Press an overlay key once to turn it on, again to turn it off.
+### Browsing big libraries + favourites
+
+Drop hundreds of clips into `assets/clips/`. Then:
+
+1. **Cycle** through the library with `−` / `=` (clips) or `[` / `]`
+   (overlays). Hold a key to auto-scrub at ~12/sec.
+2. When you land on something you like, **long-press** any number key
+   (`1`–`0`) for ~½ second. That clip gets assigned to that favourite
+   slot. Do the same with `Q`–`P` for overlays.
+3. **Tap** a number key (or `Q`–`P`) any time after that to instantly
+   recall the assigned clip/overlay.
+4. Favourites persist in `vj_state.json` between sessions — saved by
+   filename stem, so re-ordering or processing files won't break them
+   (only renaming does).
+5. To clear a slot: stop playback (`Esc`), then long-press that slot.
+
+The HUD shows two rows of 10 chips with the assigned stems, with the
+slot whose clip is currently playing highlighted blue.
+
+Position shows in the HUD as `name  [47/152]`. Open VideoCapture
+handles are LRU-evicted (12 at a time) so a huge library doesn't
+bloat memory.
+
+Pick a clip then a generative (`A`-`L`) — generative wins until you
+pick another clip.
 
 ## Asset sources
 
