@@ -19,7 +19,7 @@ KEY_CHEAT = [
     ("F11 / F12",    "Cycle output display / APPLY"),
     ("Space",        "Blackout (panic)"),
     ("Backspace",    "Freeze frame"),
-    ("Esc",          "Full reset (clip+overlay+FX+hits all off)"),
+    ("Esc",          "Panic: clear FX / overlay / hits (keeps the clip playing)"),
     ("Shift+Esc",    "Quit"),
 ]
 

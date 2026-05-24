@@ -128,7 +128,7 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `F12`               | Apply the pending output display (and persist it)  |
 | `Space`             | Blackout toggle (panic button)                     |
 | `Backspace`         | Freeze frame toggle                                |
-| `Esc`               | Kill all FX, overlays, hits — back to clean base   |
+| `Esc`               | Panic: clear FX, overlays, hits, blackout/freeze. **Keeps the current clip playing** so you never drop to black unexpectedly. |
 | `Shift+Esc`         | Quit                                               |
 
 ### Browsing big libraries + favourites
@@ -145,7 +145,10 @@ Drop hundreds of clips into `assets/clips/`. Then:
 4. Favourites persist in `vj_state.json` between sessions — saved by
    filename stem, so re-ordering or processing files won't break them
    (only renaming does).
-5. To clear a slot: stop playback (`Esc`), then long-press that slot.
+5. To clear a slot: cycle to a clip-free state first (or long-press `0`
+   to clear that slot's binding, then cycle past), then long-press the
+   slot you want to wipe. `Esc` keeps the clip playing on purpose, so
+   it won't clear slots by itself.
 
 The HUD shows two rows of 10 chips with the assigned stems, with the
 slot whose clip is currently playing highlighted blue.
