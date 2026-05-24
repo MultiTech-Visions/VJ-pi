@@ -1,22 +1,44 @@
+import os
 import time
+
 import pygame
 import numpy as np
 import cv2
 
 from clips import ClipPool
 from effects import (
-    EffectContext, plasma, tunnel, starfield,
+    EffectContext, plasma, tunnel, starfield, warp, waves, cells,
+    lissajous, moire, metaballs,
     kaleidoscope, mirror_h, feedback_blend, rgb_split,
     invert, posterize, edges, screen_blend,
 )
 
 
-GENERATIVES = ["plasma", "tunnel", "starfield"]
+GENERATIVES = [
+    "plasma", "tunnel", "starfield",
+    "warp", "waves", "cells",
+    "lissajous", "moire", "metaballs",
+]
+
+GENERATIVE_FNS = {
+    "plasma": plasma,
+    "tunnel": tunnel,
+    "starfield": starfield,
+    "warp": warp,
+    "waves": waves,
+    "cells": cells,
+    "lissajous": lissajous,
+    "moire": moire,
+    "metaballs": metaballs,
+}
 
 FX_TOGGLES = [
     "kaleido", "mirror", "feedback",
     "invert", "posterize", "edges", "rgb_split",
 ]
+
+# How fast the arrow keys move param_x / param_y (units of 0..1 per second).
+PARAM_RATE = 0.6
 
 
 class Engine:
@@ -38,6 +60,10 @@ class Engine:
         self.freeze = False
         self.frozen_frame = None
         self.prev_frame = None
+
+        # Arrow-key driven FX parameters, 0..1. Replaces mouse XY.
+        self.param_x = 0.5
+        self.param_y = 0.5
 
         self.running = True
 
@@ -93,38 +119,68 @@ class Engine:
     def quit(self):
         self.running = False
 
+    def switch_output_display(self, new_idx):
+        """Re-open the fullscreen output window on a different display."""
+        try:
+            num = pygame.display.get_num_displays()
+        except pygame.error:
+            num = 1
+        if new_idx < 0 or new_idx >= num or new_idx == self.cfg.display:
+            return
+        self.cfg.display = new_idx
+        flags = pygame.FULLSCREEN | pygame.SCALED if self.cfg.fullscreen else 0
+        try:
+            self.screen = pygame.display.set_mode(
+                (self.w, self.h), flags, display=new_idx
+            )
+        except TypeError:
+            os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(new_idx)
+            self.screen = pygame.display.set_mode((self.w, self.h), flags)
+        pygame.display.set_caption("pi-paint VJ — Output")
+        pygame.mouse.set_visible(not self.cfg.fullscreen)
+
+    def update_params_from_keys(self, dt):
+        """Arrow keys nudge param_x / param_y while held."""
+        keys = pygame.key.get_pressed()
+        step = PARAM_RATE * dt
+        if keys[pygame.K_LEFT]:
+            self.param_x = max(0.0, self.param_x - step)
+        if keys[pygame.K_RIGHT]:
+            self.param_x = min(1.0, self.param_x + step)
+        if keys[pygame.K_UP]:
+            self.param_y = max(0.0, self.param_y - step)
+        if keys[pygame.K_DOWN]:
+            self.param_y = min(1.0, self.param_y + step)
+
     # ── Render pipeline ───────────────────────────────────────────────
 
     def _build_base(self, ctx):
         clip_frame = self.clips.read()
         if clip_frame is not None:
             return clip_frame
-        if self.active_generative == "plasma":
-            return plasma(ctx)
-        if self.active_generative == "tunnel":
-            return tunnel(ctx)
-        if self.active_generative == "starfield":
-            return starfield(ctx)
+        fn = GENERATIVE_FNS.get(self.active_generative)
+        if fn is not None:
+            return fn(ctx)
         return np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
     def _apply_fx(self, frame, ctx):
         s = self.fx_state
         if s["kaleido"]:
-            segs = int(3 + ctx.mx * 9)
+            segs = int(3 + ctx.px * 9)
             frame = kaleidoscope(frame, segments=segs)
         if s["mirror"]:
             frame = mirror_h(frame)
         if s["rgb_split"]:
-            frame = rgb_split(frame, offset=int(4 + ctx.mx * 20))
+            frame = rgb_split(frame, offset=int(4 + ctx.px * 20))
         if s["posterize"]:
-            frame = posterize(frame, levels=int(2 + ctx.my * 6))
+            frame = posterize(frame, levels=int(2 + ctx.py * 6))
         if s["edges"]:
             frame = edges(frame)
         if s["invert"]:
             frame = invert(frame)
         if s["feedback"]:
-            zoom = 1.0 + ctx.mx * 0.08
-            rot = (ctx.my - 0.5) * 4.0
+            zoom = 1.0 + ctx.px * 0.08
+            rot = (ctx.py - 0.5) * 4.0
             frame = feedback_blend(self.prev_frame, frame, zoom=zoom, rotate=rot)
         return frame
 
@@ -160,11 +216,9 @@ class Engine:
         elif self.freeze and self.frozen_frame is not None:
             frame = self.frozen_frame
         else:
-            mx, my = pygame.mouse.get_pos()
             ctx = EffectContext(
                 self.w, self.h, time.time() - self.start_time,
-                (max(0.0, min(1.0, mx / self.w)),
-                 max(0.0, min(1.0, my / self.h))),
+                (self.param_x, self.param_y),
             )
             frame = self._build_base(ctx)
             frame = self._apply_fx(frame, ctx)
@@ -190,12 +244,21 @@ class Engine:
 
     def run(self, control=None):
         from keymap import dispatch
+        last_t = time.time()
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
                 elif event.type == pygame.KEYDOWN:
                     dispatch(self, event.key, event.mod)
+                elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
+                                    pygame.MOUSEMOTION):
+                    if control is not None:
+                        control.handle_event(event)
+            now = time.time()
+            dt = now - last_t
+            last_t = now
+            self.update_params_from_keys(dt)
             frame = self.compose_frame()
             self.blit_to_output(frame)
             if control is not None:
