@@ -73,17 +73,20 @@ def _open_control_window(size, display_idx):
 
 
 def _resolve_output_display(args):
-    """CLI explicit > persisted state > argparse fallback (0).
+    """Persisted display choice wins once set; CLI seeds it on first run.
 
-    Once the operator picks a display in the HUD, that choice is written to
-    vj_state.json and wins on subsequent launches. Pass --output-display on
-    the command line to override the saved value (and re-seed it).
+    The HUD picker writes vj_state.json on every apply, so once the operator
+    picks display N, that choice sticks across launches and across the
+    different launcher scripts. To override a saved choice from the command
+    line, delete vj_state.json (or edit its `output_display` key by hand).
     """
     state = load_state()
-    if args.output_display is not None:
-        save_state({**state, "output_display": args.output_display})
-        return args.output_display
-    return int(state.get("output_display", 0))
+    saved = state.get("output_display")
+    if isinstance(saved, int) and saved >= 0:
+        return saved
+    fallback = args.output_display if args.output_display is not None else 0
+    save_state({**state, "output_display": fallback})
+    return fallback
 
 
 def main():
