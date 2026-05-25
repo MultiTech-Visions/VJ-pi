@@ -16,13 +16,38 @@ class EffectContext:
         self.px, self.py = params  # 0..1
 
 
+# ── Spatial grid cache ─────────────────────────────────────────────────
+#
+# Most generatives need an `np.indices((h, w), dtype=np.float32)` grid
+# every frame. At 1280×720 that's a 5.5 MB allocation thrown away each
+# render. Cache the grids per-resolution at module level — they're
+# spatial constants that never change once the output size is set.
+# Stays bounded because the engine only changes resolution at startup.
+
+_GRID_CACHE = {}
+
+
+def _grid(w, h):
+    key = (w, h)
+    g = _GRID_CACHE.get(key)
+    if g is None:
+        y, x = np.indices((h, w), dtype=np.float32)
+        # Return read-only views; the caller multiplies into a new array
+        # rather than mutating these in place.
+        y.setflags(write=False)
+        x.setflags(write=False)
+        g = (y, x)
+        _GRID_CACHE[key] = g
+    return g
+
+
 # ── Generative base layers ─────────────────────────────────────────────
 
 def plasma(ctx):
     w, h, t = ctx.w, ctx.h, ctx.t
-    y, x = np.indices((h, w), dtype=np.float32)
-    x = x / w * 8.0
-    y = y / h * 8.0
+    y0, x0 = _grid(w, h)
+    x = x0 * (8.0 / w)
+    y = y0 * (8.0 / h)
     v = (np.sin(x + t) + np.sin(y + t * 1.3)
          + np.sin((x + y) * 0.5 + t * 0.7)
          + np.sin(np.sqrt(x * x + y * y) + t * 1.7)) * 0.25
@@ -37,8 +62,8 @@ def plasma(ctx):
 def tunnel(ctx):
     w, h, t = ctx.w, ctx.h, ctx.t
     cx, cy = w * 0.5, h * 0.5
-    y, x = np.indices((h, w), dtype=np.float32)
-    dx, dy = x - cx, y - cy
+    y0, x0 = _grid(w, h)
+    dx, dy = x0 - cx, y0 - cy
     r = np.sqrt(dx * dx + dy * dy) + 1.0
     a = np.arctan2(dy, dx)
     u = (200.0 / r + t * 2.0) % 1.0
@@ -117,7 +142,7 @@ def warp(ctx, count=120):
 def waves(ctx):
     """Two-source colourful ripples / interference pattern."""
     w, h, t = ctx.w, ctx.h, ctx.t
-    y, x = np.indices((h, w), dtype=np.float32)
+    y, x = _grid(w, h)
     cx1 = w * 0.3 + np.sin(t * 0.5) * w * 0.15
     cy1 = h * 0.5 + np.cos(t * 0.4) * h * 0.2
     cx2 = w * 0.7 + np.cos(t * 0.6) * w * 0.15
@@ -138,7 +163,7 @@ def waves(ctx):
 def cells(ctx):
     """Organic pulsing cellular pattern (animated quasi-voronoi)."""
     w, h, t = ctx.w, ctx.h, ctx.t
-    y, x = np.indices((h, w), dtype=np.float32)
+    y, x = _grid(w, h)
     scale = 0.018 + ctx.px * 0.04
     u = x * scale + np.sin(y * scale * 0.6 + t) * 0.4
     v = y * scale + np.cos(x * scale * 0.6 + t * 1.1) * 0.4
@@ -179,7 +204,7 @@ def moire(ctx):
     """Concentric-ring moiré from two slowly orbiting sources."""
     w, h, t = ctx.w, ctx.h, ctx.t
     cx, cy = w * 0.5, h * 0.5
-    y, x = np.indices((h, w), dtype=np.float32)
+    y, x = _grid(w, h)
     off_x = w * 0.10
     off_y = h * 0.10
     cx1 = cx + np.sin(t * 0.5) * off_x
@@ -202,7 +227,7 @@ def moire(ctx):
 def metaballs(ctx, n=6):
     """Classic sum-of-fields metaballs — organic merging blobs."""
     w, h, t = ctx.w, ctx.h, ctx.t
-    y, x = np.indices((h, w), dtype=np.float32)
+    y, x = _grid(w, h)
     field = np.zeros((h, w), dtype=np.float32)
     influence = (w * 26.0) * (0.5 + ctx.py * 1.8)
 
@@ -226,7 +251,7 @@ def metaballs(ctx, n=6):
 def kaleidoscope(src, segments=6):
     h, w = src.shape[:2]
     cx, cy = w * 0.5, h * 0.5
-    y, x = np.indices((h, w), dtype=np.float32)
+    y, x = _grid(w, h)
     dx, dy = x - cx, y - cy
     r = np.sqrt(dx * dx + dy * dy)
     a = np.arctan2(dy, dx)

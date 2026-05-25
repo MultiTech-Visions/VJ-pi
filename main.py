@@ -27,6 +27,11 @@ def parse_args():
                    help="Display index for the Control HUD window")
     p.add_argument("--control-size", default="680x720",
                    help="Control HUD size as WxH (default 680x720)")
+    p.add_argument("--gen-render-scale", type=float, default=0.5,
+                   help="Render generatives at this fraction of canvas "
+                        "resolution and upscale on the way out (0.1..1.0, "
+                        "default 0.5). 0.33 is great for smooth patterns; "
+                        "1.0 disables the optimisation. Clips are unaffected.")
     return p.parse_args()
 
 
@@ -136,6 +141,7 @@ def main():
     cfg = Config(
         width=args.width, height=args.height, fps=args.fps,
         fullscreen=args.fullscreen, display=display,
+        gen_render_scale=max(0.1, min(1.0, args.gen_render_scale)),
     )
 
     output_screen = _open_output_window(cfg)

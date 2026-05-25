@@ -102,6 +102,11 @@ class Engine:
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
         self._mapping_persist_dirty = False
+        # Per-group mask cache. Key = id(group); value = (signature, mask,
+        # bbox). Invalidated when any of the group's space corners change.
+        # Lets a static layout skip cv2.fillConvexPoly every frame — the
+        # common case during a running set.
+        self._group_mask_cache = {}
 
         # Autopilot — engaged by double-tapping Enter, disengaged by any
         # other key press. While engaged, the engine drives clip changes,
@@ -766,15 +771,38 @@ class Engine:
         self.mapping.cycle_border_color()
         self._persist_mapping()
 
+    # ── Frame controls (per-group zoom / pan / fit mode) ─────────────
+
+    def mapping_cycle_fit_mode(self, step=1):
+        self.mapping.cycle_fit_mode(step)
+        self._persist_mapping()
+
+    def mapping_adjust_zoom(self, factor):
+        self.mapping.adjust_zoom(factor)
+        self._persist_mapping()
+
+    def mapping_adjust_pan(self, dx, dy):
+        self.mapping.adjust_pan(dx, dy)
+        self._persist_mapping()
+
+    def mapping_reset_frame(self):
+        self.mapping.reset_frame()
+        self._persist_mapping()
+
     # ── Render pipeline ───────────────────────────────────────────────
 
     def _build_base(self, ctx):
+        """Live-mode base layer. Clips read at canvas resolution; generatives
+        render at the reduced internal resolution and get upscaled in
+        compose_frame() before overlay/hits paint on top."""
         clip_frame = self.clips.read()
         if clip_frame is not None:
             return clip_frame
         fn = GENERATIVE_FNS.get(self.active_generative)
         if fn is not None:
-            return fn(ctx)
+            gw, gh = self._gen_render_size()
+            small_ctx = EffectContext(gw, gh, ctx.t, (ctx.px, ctx.py))
+            return fn(small_ctx)
         return np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
     def _apply_fx(self, frame, ctx):
@@ -838,6 +866,12 @@ class Engine:
             )
             frame = self._build_base(ctx)
             frame = self._apply_fx(frame, ctx)
+            # _build_base may return a sub-canvas frame (generatives render
+            # at cfg.gen_render_scale). Upscale to canvas before overlay
+            # and hits — those expect canvas-sized buffers.
+            if frame.shape[:2] != (self.h, self.w):
+                frame = cv2.resize(frame, (self.w, self.h),
+                                   interpolation=cv2.INTER_LINEAR)
             frame = self._apply_overlay(frame)
             frame = self._apply_hits(frame)
 
@@ -848,21 +882,38 @@ class Engine:
     # ── Mapping render pipeline ───────────────────────────────────────
 
     def _compose_mapping_frame(self):
-        """Render projection-mapping: source per group, warp into spaces.
+        """Render projection-mapping: one source per group, painted onto
+        the canvas under a mask built from the UNION of the group's
+        spaces. Multiple spaces in one group act as multiple windows
+        into the same video — they reveal different parts of one
+        playing video, not separate copies of it.
+
         In edit mode also draw outlines of every group + a highlight on
         the picked-for-edit space + the create-drag rubber-band, so the
         projector itself helps the operator align spaces to physical
-        surfaces while editing."""
+        surfaces while editing.
+        """
         w, h = self.w, self.h
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
         now = time.time()
         self.mapping.tick_autopilot(self, now)
+        # Sweep stale mask cache entries every ~5 s. Cheap, and keeps
+        # the cache tidy across hours of editing.
+        if now - getattr(self, "_mask_cache_gc_at", 0.0) > 5.0:
+            self._invalidate_mask_cache()
+            self._mask_cache_gc_at = now
         for group in self.mapping.groups:
+            # Skip groups with no spaces (no mask) AND skip groups
+            # whose content is blackout (nothing to compose). Saves a
+            # full-resolution generative call per blackout group.
             if not group.spaces:
                 continue
+            if (group.content_kind == "blackout"
+                    or (group.content_kind == "clip" and not group.clip_stem)
+                    or (group.content_kind == "generative" and not group.gen_name)):
+                continue
             source = self._compose_group_source(group, now)
-            for space in group.spaces:
-                self._warp_into_canvas(canvas, source, space.corners_px(w, h))
+            self._place_group_into_canvas(canvas, source, group)
         canvas = self._apply_hits(canvas)
         if self.mapping.show_borders:
             self._draw_selection_border(canvas)
@@ -871,9 +922,18 @@ class Engine:
         return canvas
 
     def _compose_group_source(self, group, now):
-        """Build the unwarped source frame for one group (clip / gen / FX)."""
+        """Build the unwarped source frame for one group (clip / gen / FX).
+
+        Generative sources render at cfg.gen_render_scale × canvas (default
+        0.5) — they're smooth procedural patterns, no detail lost from
+        upscaling, but 4× fewer pixels under the per-frame sin/sqrt/etc.
+        Clips stay at canvas resolution since they carry real detail.
+        FX runs at whatever size the base was rendered at (kaleido / mirror
+        / etc. adapt via frame.shape internally).
+        """
         w, h = self.w, self.h
-        if group.content_kind == "clip" and group.clip_stem:
+        is_clip = (group.content_kind == "clip" and group.clip_stem)
+        if is_clip:
             idx = self.clips.find_by_stem(group.clip_stem)
             if idx is not None:
                 self.clips.ensure_open(idx)
@@ -887,8 +947,10 @@ class Engine:
             if fn is None:
                 frame = np.zeros((h, w, 3), dtype=np.uint8)
             else:
+                # Render at the reduced internal resolution.
+                gw, gh = self._gen_render_size()
                 ctx = EffectContext(
-                    w, h,
+                    gw, gh,
                     now - self.start_time + group._time_offset,
                     (group.param_x, group.param_y),
                 )
@@ -896,9 +958,13 @@ class Engine:
         else:
             frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # Per-group FX chain
+        fh, fw = frame.shape[:2]
+
+        # Per-group FX chain. Runs at whatever size the base is — kaleido
+        # uses frame.shape; mirror, posterize, rgb_split, edges, invert
+        # all are shape-agnostic.
         if any(group.fx_state.values()):
-            ctx = EffectContext(w, h,
+            ctx = EffectContext(fw, fh,
                                 now - self.start_time + group._time_offset,
                                 (group.param_x, group.param_y))
             s = group.fx_state
@@ -916,26 +982,63 @@ class Engine:
                 frame = invert(frame)
             if s.get("feedback"):
                 # Mapping-mode feedback uses the previous full canvas as
-                # the trail buffer. Skip if we don't have one yet.
-                if self.prev_frame is not None:
+                # the trail buffer. Skip if we don't have one yet OR if
+                # dimensions don't match (avoids a feedback artefact on
+                # a low-res generative pulling from the canvas-sized
+                # prev_frame; the warp would inflate a thumbnail).
+                if (self.prev_frame is not None
+                        and self.prev_frame.shape[:2] == frame.shape[:2]):
                     zoom = 1.0 + ctx.px * 0.08
                     rot = (ctx.py - 0.5) * 4.0
                     frame = feedback_blend(self.prev_frame, frame,
                                            zoom=zoom, rotate=rot)
 
-        # Per-group overlay screen-blend
+        # Per-group overlay screen-blend. Overlay pool reads at canvas
+        # size; resize to match the source if the source was rendered
+        # smaller (cheap — one resize at fw×fh).
         if group.overlay_stem:
             ov_idx = self.overlays.find_by_stem(group.overlay_stem)
             if ov_idx is not None:
                 self.overlays.ensure_open(ov_idx)
                 ov = self.overlays.read_at(ov_idx)
                 if ov is not None:
+                    if ov.shape[:2] != (fh, fw):
+                        ov = cv2.resize(ov, (fw, fh),
+                                        interpolation=cv2.INTER_AREA)
                     frame = screen_blend(frame, ov)
 
         return frame
 
+    def _gen_render_size(self):
+        """Internal generative resolution = cfg.width/height × scale,
+        floored at 64×36 so we never burn cycles below the cv2 minimum
+        practical block size."""
+        scale = max(0.1, min(1.0, getattr(self.cfg, "gen_render_scale", 1.0)))
+        gw = max(64, int(self.w * scale))
+        gh = max(36, int(self.h * scale))
+        return gw, gh
+
+    def _place_group_into_canvas(self, canvas, source, group):
+        """Dispatch into the right placement strategy based on the group's
+        fit_mode. "stretch" is per-space (each quad warps its own copy of
+        the video — legacy billboard look). The other three modes are
+        per-GROUP: the video plays once across the whole canvas at the
+        chosen zoom / pan, and the union of the group's space polygons
+        is the mask through which it shows. Multiple spaces in one
+        group → multiple windows onto one playing video."""
+        w, h = self.w, self.h
+        if group.fit_mode == "stretch":
+            for space in group.spaces:
+                self._warp_into_canvas(canvas, source,
+                                       space.corners_px(w, h))
+            return
+        self._window_group_into_canvas(canvas, source, group)
+
     def _warp_into_canvas(self, canvas, source, dst_corners):
-        """Warp `source` into the quad `dst_corners` on `canvas`.
+        """Warp `source` into the quad `dst_corners` on `canvas` — the
+        old "stretch to fit the quad" behaviour, kept as an opt-in
+        fit_mode so the operator can deliberately get the perspective-
+        billboard look (good for projecting onto an angled flat surface).
 
         Pitfall: cv2.warpPerspective on the full canvas is expensive. We
         crop output to the quad's bounding box and apply a convex-poly mask
@@ -971,6 +1074,116 @@ class Engine:
         idx = sub_mask > 0
         sub_canvas[idx] = sub_warp[idx]
         canvas[y_min:y_max, x_min:x_max] = sub_canvas
+
+    def _window_group_into_canvas(self, canvas, source, group):
+        """Place `source` ONCE across the canvas at the group's chosen
+        zoom / pan, then reveal it only through the union of the group's
+        space polygons. The video keeps its natural aspect (no warp);
+        each space is a hole onto a single underlying video plane, so
+        two spaces side-by-side in one group show the video continuously
+        across both — different parts of the same video, in sync.
+
+        fit_mode = "fit"   : uniform scale so the source fits the
+                             canvas (letterboxed). Zoom / pan ignored.
+        fit_mode = "fill"  : uniform scale so the source covers the
+                             canvas (cropped). Zoom / pan ignored.
+        fit_mode = "window": "fit" base scale times group.zoom, plus
+                             pan offset (-1..+1 of half-canvas).
+        """
+        h, w = canvas.shape[:2]
+        sh, sw = source.shape[:2]
+        if sw < 2 or sh < 2:
+            return
+
+        mode = group.fit_mode
+        if mode == "fill":
+            scale = max(w / sw, h / sh)
+            zoom, pan_x, pan_y = 1.0, 0.0, 0.0
+        else:  # "window" or "fit"
+            scale = min(w / sw, h / sh)
+            if mode == "window":
+                zoom, pan_x, pan_y = group.zoom, group.pan_x, group.pan_y
+            else:
+                zoom, pan_x, pan_y = 1.0, 0.0, 0.0
+        scale *= max(0.05, zoom)
+
+        dw = max(2, int(round(sw * scale)))
+        dh = max(2, int(round(sh * scale)))
+        cx = w * 0.5 + pan_x * w * 0.5
+        cy = h * 0.5 + pan_y * h * 0.5
+        dx = int(round(cx - dw * 0.5))
+        dy = int(round(cy - dh * 0.5))
+
+        # Clip the video's destination rect to the canvas.
+        vx0, vy0 = max(0, dx), max(0, dy)
+        vx1, vy1 = min(w, dx + dw), min(h, dy + dh)
+        if vx1 <= vx0 or vy1 <= vy0:
+            return  # Video positioned entirely off-canvas.
+
+        # Resolve the group mask + its bounding rect (cached per-group;
+        # only rebuilt when corners change, so a static layout pays the
+        # cv2.fillConvexPoly cost ONCE, not every frame).
+        mask, mbox = self._group_mask(group)
+        mx0, my0, mx1, my1 = mbox
+
+        # Intersection of "where the video lands" and "where the mask
+        # has any pixels" — that's the only region we need to touch.
+        x0, y0 = max(vx0, mx0), max(vy0, my0)
+        x1, y1 = min(vx1, mx1), min(vy1, my1)
+        if x1 <= x0 or y1 <= y0:
+            return  # Mask and video don't overlap.
+
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        resized = cv2.resize(source, (dw, dh), interpolation=interp)
+
+        sx0, sy0 = x0 - dx, y0 - dy
+        sx1, sy1 = sx0 + (x1 - x0), sy0 + (y1 - y0)
+        # cv2.copyTo writes `src` into `dst` where `mask` != 0 in pure
+        # C, GIL released — significantly faster than the previous
+        # `dst[mask>0] = src[mask>0]` boolean-fancy-index path which
+        # builds a full-canvas-sized intermediate every call.
+        cv2.copyTo(resized[sy0:sy1, sx0:sx1],
+                   mask[y0:y1, x0:x1],
+                   canvas[y0:y1, x0:x1])
+
+    def _group_mask(self, group):
+        """Return (mask, (x0, y0, x1, y1)) for `group`. Cached by space
+        corners — only rebuilt when the operator edits the layout, so a
+        static set pays the cv2.fillConvexPoly cost ONCE."""
+        signature = tuple(
+            (round(c[0], 6), round(c[1], 6))
+            for space in group.spaces for c in space.corners
+        )
+        key = id(group)
+        cached = self._group_mask_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1], cached[2]
+        h, w = self.h, self.w
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mx0, my0 = w, h
+        mx1, my1 = 0, 0
+        for space in group.spaces:
+            poly = space.corners_px(w, h).astype(np.int32)
+            cv2.fillConvexPoly(mask, poly, 255)
+            mx0 = min(mx0, int(poly[:, 0].min()))
+            my0 = min(my0, int(poly[:, 1].min()))
+            mx1 = max(mx1, int(poly[:, 0].max()) + 1)
+            my1 = max(my1, int(poly[:, 1].max()) + 1)
+        mx0 = max(0, mx0); my0 = max(0, my0)
+        mx1 = min(w, mx1); my1 = min(h, my1)
+        bbox = (mx0, my0, mx1, my1)
+        self._group_mask_cache[key] = (signature, mask, bbox)
+        return mask, bbox
+
+    def _invalidate_mask_cache(self):
+        """Drop cached masks for groups that no longer exist (so the
+        cache doesn't grow unboundedly through a session of editing).
+        Called sporadically — leaks of a few hundred bytes per deleted
+        group are not worth chasing every frame."""
+        live = {id(g) for g in self.mapping.groups}
+        for k in list(self._group_mask_cache):
+            if k not in live:
+                del self._group_mask_cache[k]
 
     def _draw_selection_border(self, canvas):
         """Outline only the currently-selected group's spaces — keeps the

@@ -200,6 +200,28 @@ button is a 4 %-of-canvas chip drawn just above the space:
 | `U`                 | Unbind picked space (same as toolbar **⊘**)       |
 | `Delete`            | Delete the picked space (same as toolbar **×**)   |
 
+### Per-group frame controls (FRAME panel in the HUD)
+
+A group's content plays **once, across the whole canvas**, and the group's
+spaces are holes through which it shows. Two side-by-side spaces in one
+group reveal the left and right portions of the same playing video —
+not two copies of it. That's how you build "many windows, one underlying
+video" compositions and use spaces as physical layers.
+
+The video keeps its natural aspect — no warp distortion. Click the FRAME
+panel buttons in the selected group's status panel to compose how the
+video sits on the canvas:
+
+| Control     | Action                                                    |
+|-------------|-----------------------------------------------------------|
+| Mode pill   | Click to cycle: `window` → `fit` → `fill` → `stretch`. `window`, `fit`, `fill` all use the canvas as the playback surface and reveal it through the group's spaces. `stretch` is per-space — each quad warps its own copy of the video (the old billboard look, opt in when you want the angled-perspective distortion on purpose). |
+| `−` / `+`   | Zoom the video ±15 % per click (window mode)              |
+| `RESET`     | Zoom 1.0, pan 0,0                                          |
+| ◀ ▲ ▼ ▶     | Pan the video ± 10 % of the canvas half-size per click — all spaces in the group shift in sync because they're windows onto the same plane |
+
+Frame settings are saved per group in `vj_state.json` so the composition
+you set up for a show is there again the next time you launch.
+
 ### Perform sub-mode + global mapping ops
 
 | Key                 | Action                                              |
@@ -376,11 +398,24 @@ blit to pygame screen
   `--width 1920 --height 1080` (full-quality, ~2× more pixels than 720p
   — kaleidoscope + feedback at once can get tight). Re-process at the
   new size.
+- **Generatives render at `--gen-render-scale × canvas` (default 0.5).**
+  They're smooth procedural patterns — pixel-perfect rendering at canvas
+  resolution is wasted CPU. At 0.5, a 4-group mapping setup with mixed
+  FX drops from ~200 ms / frame to ~40 ms / frame at 1280×720 (a 4×
+  speedup), with no visual difference for plasma / waves / cells /
+  moire / metaballs. Try `--gen-render-scale 0.33` if you need more
+  headroom (almost-3× again); back off to 1.0 if you're driving a tunnel-
+  style sharp checker pattern as the base layer and want pixel-perfect
+  edges. Clips and overlays are unaffected — they keep their detail.
 - `kaleidoscope` is the heaviest effect (per-pixel remap). Stack 2-3
   effects max for headroom.
 - MP4 decode uses OpenCV's `VideoCapture` — relies on libavcodec; on
   Pi 5 it does software H.264 decode but stays well under a frame budget
   for 854×480.
+- In **mapping mode** the per-group mask is cached by space-corner
+  signature — a running set pays the `cv2.fillConvexPoly` cost once,
+  not every frame. Edits invalidate the cache automatically. Dead
+  groups get garbage-collected every ~5 s.
 - Clip frames are read **once per render**, so don't try to play more
   than one clip slot simultaneously — only the most recently selected
   base and overlay are advanced.
