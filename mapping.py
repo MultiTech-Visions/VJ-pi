@@ -625,29 +625,56 @@ class MappingManager:
 
     def update_hover(self, norm_xy):
         """Track which space the cursor is over so the renderer knows where
-        to put the hover toolbar. Includes a small slop band ABOVE each
-        space so the toolbar's own footprint counts as "still hovering"
-        — otherwise moving the cursor onto a button would clear hover
-        and the button would vanish."""
+        to put the hover toolbar.
+
+        Hover stays "sticky" while the cursor is anywhere inside the union
+        of body + toolbar bounding rect, so traversing the gap between
+        body and toolbar doesn't drop hover and make the buttons vanish.
+        Without this the toolbar of a non-selected space (the one with the
+        `+` bind button) is impossible to click — the cursor passes
+        through the dead zone and the toolbar disappears before the click
+        lands."""
         if norm_xy is None:
             self.hovered_space = None
             return
-        # Direct hit on the body always wins.
+        # Direct body hit always wins — clicking on a new space changes
+        # hover to that space immediately.
         hit = self.hit_test_space(norm_xy)
         if hit is not None:
             self.hovered_space = hit
             return
-        # If the cursor is over the selected space's toolbar, keep
-        # showing that space's toolbar.
-        for cand in (self.selected_space, self.hovered_space):
-            if cand is None:
-                continue
-            gi, si = cand
-            for _kind, (nx, ny, nw, nh) in self.hover_toolbar_buttons(gi, si):
-                if nx <= norm_xy[0] <= nx + nw and ny <= norm_xy[1] <= ny + nh:
-                    self.hovered_space = (gi, si)
-                    return
+        # Otherwise: prefer the currently-hovered space (sticky), then
+        # the selected space. Both have toolbars rendered, so both have
+        # hover regions that should stay alive.
+        nx, ny = norm_xy
+        candidates = []
+        if self.hovered_space is not None:
+            candidates.append(self.hovered_space)
+        if (self.selected_space is not None
+                and self.selected_space not in candidates):
+            candidates.append(self.selected_space)
+        for gi, si in candidates:
+            x0, y0, x1, y1 = self._hover_region(gi, si)
+            if x0 <= nx <= x1 and y0 <= ny <= y1:
+                self.hovered_space = (gi, si)
+                return
         self.hovered_space = None
+
+    def _hover_region(self, gi, si):
+        """Bounding rect (nx0, ny0, nx1, ny1) covering body + toolbar +
+        the gap between them. Used as the "sticky" hover area so the
+        toolbar stays visible while the cursor walks from body to button."""
+        space = self.groups[gi].spaces[si]
+        xs = [c[0] for c in space.corners]
+        ys = [c[1] for c in space.corners]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        for _kind, (bx, by, bw, bh) in self.hover_toolbar_buttons(gi, si):
+            x0 = min(x0, bx)
+            y0 = min(y0, by)
+            x1 = max(x1, bx + bw)
+            y1 = max(y1, by + bh)
+        return (x0, y0, x1, y1)
 
     def _toolbar_kinds(self, gi, si):
         """Decide which buttons appear on the toolbar for space (gi, si)."""
