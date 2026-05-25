@@ -38,6 +38,12 @@ FAV_KEYS = set(CLIP_FAV_KEYS) | set(OVERLAY_FAV_KEYS)
 
 
 def fav_tap(engine, key):
+    # Lights mode repurposes the 1-0 row as a cue stack. Q-P aren't fav-keys
+    # in lights mode (handled directly by dispatch).
+    if engine.mode == "lights":
+        if key in CLIP_FAV_KEYS:
+            engine.lights_recall_cue(CLIP_FAV_KEYS.index(key))
+        return
     if key in CLIP_FAV_KEYS:
         engine.play_clip_favorite(CLIP_FAV_KEYS.index(key))
     elif key in OVERLAY_FAV_KEYS:
@@ -45,6 +51,10 @@ def fav_tap(engine, key):
 
 
 def fav_long(engine, key):
+    if engine.mode == "lights":
+        if key in CLIP_FAV_KEYS:
+            engine.lights_save_cue(CLIP_FAV_KEYS.index(key))
+        return
     if key in CLIP_FAV_KEYS:
         engine.save_clip_favorite(CLIP_FAV_KEYS.index(key))
     elif key in OVERLAY_FAV_KEYS:
@@ -97,12 +107,19 @@ def dispatch(engine, key, mod):
             # stay in edit mode so the operator can keep working.
             engine.mapping_cancel_drag()
             return
+        if engine.mode == "lights" and engine.lights.edit_mode:
+            engine.lights_cancel_edit_gesture()
+            return
         engine.kill_all()
         return
 
-    # Mode toggle works in both modes; no Ctrl required.
+    # Mode toggles work anywhere — pressing the other mode's key while in
+    # one mode hops between them (engine handles the mutual exclusion).
     if key == pygame.K_m and not (mod & pygame.KMOD_CTRL):
         engine.toggle_mapping_mode()
+        return
+    if key == pygame.K_n and not (mod & pygame.KMOD_CTRL):
+        engine.toggle_lights_mode()
         return
 
     # Mapping-mode-only ops.
@@ -180,6 +197,77 @@ def dispatch(engine, key, mod):
                 return
             if key == pygame.K_c:
                 engine.mapping_cycle_border_color()
+                return
+
+    # Lights-mode ops. Mirrors the mapping pattern: shared Tab + E +
+    # Ctrl+N/Backspace; mode-specific keys differ.
+    if engine.mode == "lights":
+        if key == pygame.K_TAB:
+            step = -1 if (mod & pygame.KMOD_SHIFT) else 1
+            engine.lights_cycle_group(step)
+            return
+        if key == pygame.K_e and not (mod & pygame.KMOD_CTRL):
+            engine.lights_toggle_edit_mode()
+            return
+        if mod & pygame.KMOD_CTRL:
+            if key == pygame.K_n:
+                engine.lights_add_group()
+                return
+            if key == pygame.K_BACKSPACE:
+                engine.lights_remove_group()
+                return
+        if engine.lights.edit_mode:
+            # In EDIT mode 1/2/3 arm the fixture palette so the next preview
+            # click drops a spot / par / strobe. Delete removes the picked
+            # fixture. Everything else is swallowed — the operator is
+            # laying out the rig, not jamming.
+            if key == pygame.K_1:
+                engine.lights_arm_palette("spot")
+                return
+            if key == pygame.K_2:
+                engine.lights_arm_palette("par")
+                return
+            if key == pygame.K_3:
+                engine.lights_arm_palette("strobe")
+                return
+            if key == pygame.K_DELETE:
+                engine.lights_delete_selected_fixture()
+                return
+            # Swallow content / FX / favourite keys while editing.
+            if (key in FAV_KEYS or key in GEN_KEYS or key in HIT_KEYS
+                    or key in FX_KEYS or key in NAV_KEYS
+                    or key in (pygame.K_LEFT, pygame.K_RIGHT,
+                               pygame.K_UP, pygame.K_DOWN, pygame.K_t)):
+                return
+        else:
+            # PERFORM-mode lights keys:
+            #   Q       — cycle chase pattern on the selected group
+            #   A S D F — set group colour (warm / cyan / magenta / rainbow)
+            #   T       — tap tempo (records a beat → BPM update)
+            #   Z X C V B / F1-F7 fall through to the global hit / FX paths
+            if key == pygame.K_q:
+                engine.lights_cycle_chase()
+                return
+            if key == pygame.K_a:
+                engine.lights_set_color("warm")
+                return
+            if key == pygame.K_s:
+                engine.lights_set_color("cyan")
+                return
+            if key == pygame.K_d:
+                engine.lights_set_color("magenta")
+                return
+            if key == pygame.K_f:
+                engine.lights_set_color("rainbow")
+                return
+            if key == pygame.K_t:
+                engine.lights_tap_tempo()
+                return
+            # G-P + non-A/S/D/F letters in GEN_KEYS aren't bound yet —
+            # swallow them so they don't accidentally route to live-mode
+            # generative selection (which would do nothing useful but is
+            # surprising). 1-0 are handled by the long-press cue stack.
+            if key in GEN_KEYS or key in OVERLAY_FAV_KEYS:
                 return
 
     if key == pygame.K_SPACE:

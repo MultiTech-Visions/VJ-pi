@@ -140,6 +140,101 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `Esc`               | Panic: clear FX, overlays, hits, blackout/freeze. **Keeps the current clip playing** so you never drop to black unexpectedly. |
 | `Shift+Esc`         | Quit                                               |
 
+## Lights mode (press `N`)
+
+Lights mode swaps the whole rendering pipeline for a virtual front-of-house
+lighting rig. Instead of playing clips or generatives, you place **fixtures**
+(moving-head spots, par cans, strobes) at points on the projected frame and
+the engine renders both the mechanism icon **and** the volumetric light they
+throw — beams visible through simulated haze, the same look as a real concert
+stage lit through a fog machine.
+
+Mutually exclusive with mapping mode — toggling either drops the other so
+they don't fight for the canvas.
+
+There are two sub-modes, same UX as mapping:
+
+- **EDIT** — mouse-first. Press `1` / `2` / `3` to arm the palette for a
+  spot / par / strobe, then click in the HUD preview to place. Click an
+  existing fixture to select + drag to move. Press `Esc` to disarm the
+  palette. The mechanism icons are drawn on the projector as well as the
+  HUD so you can align fixtures to physical features in the room.
+- **PERFORM** — keyboard-first. The keys you already know
+  (`1`-`0`, `Q`, `A-F`, `T`, arrows, hits, FX) target the currently
+  selected group. `Tab` cycles between groups.
+
+Press `N` to enter / leave lights mode entirely. Press `E` to switch
+between EDIT and PERFORM. First launch drops you into EDIT with an empty
+rig so you can immediately drop fixtures.
+
+### Edit sub-mode (mouse)
+
+| Gesture in HUD preview         | Action                                          |
+|--------------------------------|-------------------------------------------------|
+| Click empty area               | Place a fixture (if palette armed); else deselect |
+| Click a fixture                | Select it (its group becomes the active group)  |
+| Click + drag a fixture         | Move it                                         |
+
+### Edit sub-mode (keys)
+
+| Key             | Action                                                |
+|-----------------|-------------------------------------------------------|
+| `E`             | Leave EDIT sub-mode (back to PERFORM)                 |
+| `1`             | Arm palette: next click places a **moving-head spot** |
+| `2`             | Arm palette: next click places a **par can**          |
+| `3`             | Arm palette: next click places a **strobe**           |
+| `Delete`        | Delete the selected fixture                           |
+| `Esc`           | Disarm palette / deselect                             |
+| `Tab` / `Shift+Tab` | Cycle the active group                            |
+| `Ctrl+N`        | New group                                             |
+| `Ctrl+Backspace`| Delete the current group                              |
+| `N`             | Leave LIGHTS mode entirely                            |
+
+### Perform sub-mode
+
+| Key                 | Action                                              |
+|---------------------|-----------------------------------------------------|
+| `Tab` / `Shift+Tab` | Next / previous group                              |
+| `1`-`0`             | **Cue stack** — tap = recall the saved rig snapshot, **hold ≥ ½ s** = save the current rig state into that slot. 10 cues per show, persisted in `vj_state.json`. |
+| `Q`                 | Cycle the chase pattern on the selected group: `off` → `sweep` (spots pan as a fan) → `blink` (pars pulse) → `all_strobe` (everything flashes together). |
+| `A` `S` `D` `F`     | Group colour preset: **warm white** / **cyan** / **magenta** / **rainbow** (rainbow spreads hues across the group's fixtures). |
+| `T`                 | **Tap tempo** — tap on the beat 3-4 times to lock BPM. Chases sync to beats (so doubling the chase speed gives 8ths, halving gives whole-bars). |
+| `← →`               | Haze ∓ — at 0 you only see the fixtures, at 1 the beams are fully volumetric. |
+| `↑ ↓`               | Selected group master dimmer ±                     |
+| `Z X C V B`         | Punch-in hits (same as live mode — full-screen strobe / black / invert / zoom / RGB smash). |
+| `F1`-`F7`           | Persistent FX layered on top of the rig output. Kaleidoscope on a 6-spot fan is the move. |
+| `Space`             | Blackout (panic)                                   |
+| `Backspace`         | Freeze frame                                       |
+| `F11` / `F12`       | Output display cycle / apply                       |
+| `Esc`               | Panic — cancel chase on the selected group, clear hits/blackout/freeze |
+| `Shift+Esc`         | Quit                                               |
+
+### Fixture types in this MVP
+
+- **Spot** — moving-head with a throwable triangular cone. `pan` deflects the
+  beam ±70° from straight-down; in the `sweep` chase the pans oscillate per-
+  fixture so 6 spots fan out instead of moving in unison.
+- **Par** — soft circular wash centred on the fixture position. Cheaper to
+  render; in `blink` chase the intensity pulses per-fixture with a phase offset.
+- **Strobe** — bright disc that flashes at `strobe_rate` Hz (independent of
+  the group chase — strobes are pure flash units). Defaults to 10 Hz.
+
+### Pitfalls worth knowing
+
+- Fixtures live in **normalized 0..1 coordinates** like spaces in mapping —
+  rig layout survives resolution + display swaps.
+- **Cues snapshot the live params (color, intensity, pan, chase, master)
+  but NOT the layout** — adding / moving / removing fixtures doesn't
+  invalidate older cues. Recall stamps params by index onto whatever's live.
+- The mechanism icons are EDIT-only — the live show is beam-only so the
+  projector doesn't paint metal-coloured rectangles on the wall.
+- Per-fixture cone rendering uses bounding-box cropping + a small Gaussian
+  blur kernel; ~10-15 fixtures at 1280×720 stays comfortably under the
+  30 fps budget on Pi 5. Crank the rig to 30+ fixtures and you may see drops
+  — drop to 854×480 (see Performance notes) if so.
+- `F1`-`F7` FX still work and **stack on top** of the rig render. Kaleido
+  + feedback + a sweeping fan can get psychedelic fast.
+
 ## Projection mapping mode (press `M`)
 
 Mapping mode lets you carve the output into named **spaces** (quadrilaterals

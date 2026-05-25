@@ -25,6 +25,30 @@ KEY_CHEAT = [
     ("Shift+Esc",    "Quit"),
 ]
 
+LIGHTS_KEY_CHEAT = [
+    ("N",            "Leave LIGHTS mode"),
+    ("E",            "Toggle EDIT mode (place / move fixtures)"),
+    ("Tab",          "Next group (Shift+Tab = prev)"),
+    ("EDIT — 1 / 2 / 3", "Arm palette: SPOT / PAR / STROBE — next click places"),
+    ("EDIT — click",  "Select a fixture / move (drag)"),
+    ("EDIT — Delete", "Delete selected fixture"),
+    ("EDIT — Esc",    "Disarm palette / deselect"),
+    ("Ctrl+N",       "New group"),
+    ("Ctrl+Back",    "Delete current group"),
+    ("1 - 0",        "Cue stack — tap=recall, hold ≥½s=save current rig state"),
+    ("Q",            "Cycle group chase (off / sweep / blink / all-strobe)"),
+    ("A S D F",      "Group colour: warm / cyan / magenta / rainbow"),
+    ("T",            "Tap tempo (sets BPM; chases sync to beats)"),
+    ("← →",          "Haze ∓"),
+    ("↑ ↓",          "Selected group master ± (dimmer)"),
+    ("Z X C V B",    "Punch-in hits (global, same as live)"),
+    ("F1 - F7",      "Persistent FX on top of the rig output"),
+    ("Space",        "Blackout (panic)"),
+    ("Backspace",    "Freeze frame"),
+    ("Esc",          "Panic (cancel chase on selected group)"),
+    ("Shift+Esc",    "Quit"),
+]
+
 MAPPING_KEY_CHEAT = [
     ("M",            "Leave MAPPING mode"),
     ("E",            "Toggle EDIT mode (mouse drag-creates spaces)"),
@@ -98,12 +122,13 @@ class ControlWindow:
             self._window_id = None
         self._cheat_panel = self._build_cheat_panel(KEY_CHEAT)
         self._mapping_cheat_panel = self._build_cheat_panel(MAPPING_KEY_CHEAT)
+        self._lights_cheat_panel = self._build_cheat_panel(LIGHTS_KEY_CHEAT)
 
     # ── Event handling ───────────────────────────────────────────────
 
     def handle_event(self, event):
         """Forward mouse activity from the control window to its buttons
-        and (in mapping/edit mode) to the spaces editor."""
+        and (in mapping/edit or lights/edit mode) to the layout editor."""
         if not self._event_is_ours(event):
             return
         e = self.engine
@@ -113,12 +138,20 @@ class ControlWindow:
                 pos = getattr(event, "pos", None)
                 if pos is not None:
                     e.mapping.update_drag(self._preview_to_norm(pos))
+            elif e.mode == "lights" and e.lights.drag is not None:
+                pos = getattr(event, "pos", None)
+                if pos is not None:
+                    nx, ny = self._preview_to_norm(pos)
+                    e.lights.update_drag(nx, ny)
             return
 
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             if e.mode == "mapping" and e.mapping.drag is not None:
                 e.mapping.end_drag()
                 e._persist_mapping()
+            elif e.mode == "lights" and e.lights.drag is not None:
+                e.lights.end_drag()
+                e._persist_lights()
             return
 
         if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
@@ -130,6 +163,11 @@ class ControlWindow:
         if (e.mode == "mapping" and e.mapping.edit_mode
                 and self._preview_rect.collidepoint(pos)):
             if self._handle_edit_click(pos):
+                return
+
+        if (e.mode == "lights" and e.lights.edit_mode
+                and self._preview_rect.collidepoint(pos)):
+            if self._handle_lights_edit_click(pos):
                 return
 
         for idx, rect in self._display_btn_rects:
@@ -189,6 +227,35 @@ class ControlWindow:
         m.start_create(norm)
         return True
 
+    def _handle_lights_edit_click(self, pos):
+        """Lights/EDIT click priority:
+          1. Palette armed (1/2/3 in the keymap) → place a new fixture at click.
+          2. Click on an existing fixture → select + start move drag.
+          3. Click on empty area → deselect.
+
+        Returns True if the click was consumed."""
+        e = self.engine
+        L = e.lights
+        nx, ny = self._preview_to_norm(pos)
+
+        if L.palette_kind is not None:
+            L.add_fixture(L.palette_kind, nx, ny)
+            e._persist_lights()
+            return True
+
+        # Hit-test in normalized space — use a generous radius so the
+        # mechanism icon's visible area is grabbable.
+        hit_radius = max(0.025, 18.0 / max(self.preview_w, 1))
+        hit = L.hit_test_fixture(nx, ny, hit_radius)
+        if hit is not None:
+            L.select_fixture(*hit)
+            L.start_move(*hit, (nx, ny))
+            e._persist_lights()
+            return True
+
+        L.deselect_fixture()
+        return True
+
     def _preview_to_norm(self, pos):
         """Convert a preview-window click position into normalized (0..1)
         output coords. Clamped so out-of-preview drags still produce a
@@ -218,14 +285,19 @@ class ControlWindow:
         pad = 12
         e = self.engine
         mapping_mode = e.mode == "mapping"
+        lights_mode = e.mode == "lights"
 
         # ── Top row: preview (left) + status (right) ─────────────
         self._draw_preview(surface, pad, pad, frame)
         if mapping_mode:
             self._draw_space_overlay(surface)
+        elif lights_mode:
+            self._draw_lights_preview_overlay(surface)
         sx = pad + self.preview_w + 16
         if mapping_mode:
             self._draw_mapping_status(surface, sx, pad, win_w - sx - pad)
+        elif lights_mode:
+            self._draw_lights_status(surface, sx, pad, win_w - sx - pad)
         else:
             self._draw_status(surface, sx, pad, win_w - sx - pad)
 
@@ -238,30 +310,39 @@ class ControlWindow:
         if mapping_mode:
             y = self._draw_groups_list(surface, pad, y, win_w - pad * 2)
             y += 6
+        elif lights_mode:
+            y = self._draw_lights_groups_list(surface, pad, y, win_w - pad * 2)
+            y += 6
 
-        # Favourites grids — clarify they target the selected group when in
-        # mapping mode (header gets a "→ Group N" suffix).
-        clip_header = "CLIP FAVS  (1-0)"
-        ovl_header = "OVL  FAVS  (Q-P)"
-        active_clip_stem = e.clips.name(e.clips.active_idx)
-        active_ovl_stem = e.overlays.name(e.overlays.active_idx)
-        if mapping_mode:
-            g = e.mapping.selected_group()
-            if g is not None:
-                clip_header += f"  → {g.name}"
-                ovl_header += f"  → {g.name}"
-                active_clip_stem = g.clip_stem if g.content_kind == "clip" else None
-                active_ovl_stem = g.overlay_stem
-        y = self._draw_favorites(surface, pad, y, win_w - pad * 2,
-                                 clip_header, "1234567890",
-                                 e.clip_favorites,
-                                 active_stem=active_clip_stem)
-        y += 2
-        y = self._draw_favorites(surface, pad, y, win_w - pad * 2,
-                                 ovl_header, "QWERTYUIOP",
-                                 e.overlay_favorites,
-                                 active_stem=active_ovl_stem)
-        y += 12
+        if lights_mode:
+            # Cue stack on 1-0 — replaces the clip/overlay favs rows in lights mode.
+            y = self._draw_cue_stack(surface, pad, y, win_w - pad * 2)
+            y += 12
+        else:
+            # Favourites grids — clarify they target the selected group when in
+            # mapping mode (header gets a "→ Group N" suffix).
+            clip_header = "CLIP FAVS  (1-0)"
+            ovl_header = "OVL  FAVS  (Q-P)"
+            active_clip_stem = e.clips.name(e.clips.active_idx)
+            active_ovl_stem = e.overlays.name(e.overlays.active_idx)
+            if mapping_mode:
+                g = e.mapping.selected_group()
+                if g is not None:
+                    clip_header += f"  → {g.name}"
+                    ovl_header += f"  → {g.name}"
+                    active_clip_stem = (g.clip_stem
+                                        if g.content_kind == "clip" else None)
+                    active_ovl_stem = g.overlay_stem
+            y = self._draw_favorites(surface, pad, y, win_w - pad * 2,
+                                     clip_header, "1234567890",
+                                     e.clip_favorites,
+                                     active_stem=active_clip_stem)
+            y += 2
+            y = self._draw_favorites(surface, pad, y, win_w - pad * 2,
+                                     ovl_header, "QWERTYUIOP",
+                                     e.overlay_favorites,
+                                     active_stem=active_ovl_stem)
+            y += 12
 
         # Display selector
         y = self._draw_display_selector(surface, pad, y, win_w - pad * 2)
@@ -270,7 +351,12 @@ class ControlWindow:
         # Key cheat sheet — flows naturally after the display selector.
         # If room runs out we just clip at the window bottom (still useful
         # since the top rows are the more important ones).
-        panel = self._mapping_cheat_panel if mapping_mode else self._cheat_panel
+        if lights_mode:
+            panel = self._lights_cheat_panel
+        elif mapping_mode:
+            panel = self._mapping_cheat_panel
+        else:
+            panel = self._cheat_panel
         avail = max(0, win_h - pad - y)
         if avail > 0:
             src = panel.subsurface(
@@ -300,8 +386,16 @@ class ControlWindow:
                              (x, y, self.preview_w, self.preview_h))
         pygame.draw.rect(surface, (90, 90, 120),
                          (x, y, self.preview_w, self.preview_h), 1)
-        label_text = ("MAPPING — drag corner handles to reshape"
-                      if self.engine.mode == "mapping" else "LIVE OUTPUT")
+        e = self.engine
+        if e.mode == "mapping":
+            label_text = "MAPPING — drag corner handles to reshape"
+        elif e.mode == "lights":
+            if e.lights.edit_mode:
+                label_text = "LIGHTS · EDIT — 1/2/3 then click to place; click to move"
+            else:
+                label_text = "LIGHTS · PERFORM — Q chase · ASDF colour · T tap · 1-0 cues"
+        else:
+            label_text = "LIVE OUTPUT"
         label = self.font_s.render(label_text, True, (140, 140, 160))
         surface.blit(label, (x + 6, y + 4))
 
@@ -417,6 +511,136 @@ class ControlWindow:
         surface.blit(bvs, (sw.right + 6,
                            y + (bls.get_height() - bvs.get_height()) // 2))
 
+    def _draw_lights_preview_overlay(self, surface):
+        """Mark every fixture's position on the HUD preview so the operator
+        can see the rig layout even when haze=0 or all fixtures are off.
+
+        Selected group is bright; selected fixture gets a ring; palette-armed
+        gets a discreet hint label."""
+        e = self.engine
+        L = e.lights
+        rect = self._preview_rect
+        sel_g = L.selected
+        sel_f = L.selected_fixture
+        for gi, group in enumerate(L.groups):
+            is_sel_g = (gi == sel_g)
+            base = (200, 220, 255) if is_sel_g else (110, 120, 150)
+            for fi, fx in enumerate(group.fixtures):
+                px = int(rect.x + fx.x * rect.w)
+                py = int(rect.y + fx.y * rect.h)
+                # Icon per fixture-kind: small box for spot, circle for par,
+                # square for strobe. Coloured by selected-group state.
+                if fx.kind == "spot":
+                    pygame.draw.rect(surface, base,
+                                     pygame.Rect(px - 6, py - 4, 12, 8))
+                elif fx.kind == "par":
+                    pygame.draw.circle(surface, base, (px, py), 5)
+                elif fx.kind == "strobe":
+                    pygame.draw.rect(surface, base,
+                                     pygame.Rect(px - 5, py - 5, 10, 10))
+                pygame.draw.rect(surface, (40, 40, 55),
+                                 pygame.Rect(px - 7, py - 6, 14, 12), 1)
+                if sel_f == (gi, fi):
+                    pygame.draw.circle(surface, (255, 240, 120),
+                                       (px, py), 11, 2)
+        if L.palette_kind is not None:
+            txt = self.font_s.render(
+                f"PLACE: {L.palette_kind.upper()}  (Esc disarms)",
+                True, (255, 240, 140),
+            )
+            surface.blit(txt, (rect.x + 6, rect.y + rect.h - 18))
+
+    def _draw_lights_status(self, surface, x, y, width):
+        from lights import FIXTURE_KINDS as _FK
+        e = self.engine
+        L = e.lights
+        g = L.selected_group()
+        title = self.font_h.render("LIGHTS — selected group",
+                                   True, (220, 220, 240))
+        surface.blit(title, (x, y))
+        y += 22
+        if g is None:
+            none = self.font_s.render("no groups", True, (180, 120, 120))
+            surface.blit(none, (x, y))
+            return
+
+        counts = g.fixture_kind_counts()
+        kinds_label = " · ".join(f"{counts[k]} {k}" for k in _FK)
+        self._row(surface, "NAME", g.name, x, y, width); y += 19
+        self._row(surface, "FIXTURES", kinds_label, x, y, width); y += 19
+        chase_label = g.chase_kind
+        if g.chase_kind != "off":
+            sync = "beats" if g.bpm_sync else "secs"
+            chase_label += f"  ({g.chase_speed:.2f}/{sync})"
+        self._row(surface, "CHASE", chase_label, x, y, width); y += 19
+        self._row(surface, "BPM",
+                  f"{L.bpm:.1f}   ({len(L.taps)} taps in window)",
+                  x, y, width); y += 19
+        self._row(surface, "HAZE", f"{int(L.haze * 100)}%", x, y, width); y += 22
+
+        self._param_bar(surface, "MASTER", g.master, x, y, width); y += 18
+        self._param_bar(surface, "HAZE",  L.haze, x, y, width)
+
+    def _draw_lights_groups_list(self, surface, x, y, width):
+        e = self.engine
+        L = e.lights
+        title = self.font_h.render(
+            f"GROUPS  ({len(L.groups)})  — Tab cycles",
+            True, (220, 220, 240),
+        )
+        surface.blit(title, (x, y))
+        y += 22
+        bx = x
+        chip_h = 22
+        for gi, group in enumerate(L.groups):
+            is_sel = (gi == L.selected)
+            chase_dot = " ●" if group.chase_kind != "off" else ""
+            label = self.font_m.render(
+                f" {group.name} ({len(group.fixtures)}){chase_dot} ",
+                True, (255, 255, 255) if is_sel else (220, 220, 240),
+            )
+            rect = pygame.Rect(bx, y, label.get_width() + 10, chip_h)
+            if rect.right > x + width:
+                bx = x
+                y += chip_h + 4
+                rect = pygame.Rect(bx, y, label.get_width() + 10, chip_h)
+            bg = (70, 130, 200) if is_sel else (38, 42, 58)
+            border = (160, 220, 255) if is_sel else (90, 110, 140)
+            pygame.draw.rect(surface, bg, rect, border_radius=4)
+            pygame.draw.rect(surface, border, rect, 1, border_radius=4)
+            surface.blit(label, (rect.x + 5,
+                                 rect.y + (chip_h - label.get_height()) // 2))
+            bx = rect.right + 6
+        return y + chip_h + 4
+
+    def _draw_cue_stack(self, surface, x, y, width):
+        """Row of 10 cue slots tied to 1-0. Filled slots show a tiny ●,
+        empty slots show — exactly the same visual language as fav slots."""
+        e = self.engine
+        L = e.lights
+        title = self.font_s.render("CUES  (1-0)   tap=recall · hold=save",
+                                   True, (160, 160, 180))
+        surface.blit(title, (x, y + 2))
+        slot_x = x + 220
+        gap = 4
+        keys = "1234567890"
+        cell_w = max(36, (x + width - slot_x - 9 * gap) // 10)
+        cell_h = 18
+        for i, k in enumerate(keys):
+            rect = pygame.Rect(slot_x + i * (cell_w + gap), y, cell_w, cell_h)
+            filled = L.cue_filled(i)
+            if filled:
+                bg = (38, 42, 58); border = (90, 110, 140); fg = (210, 220, 240)
+                txt = f"{k}·cue"
+            else:
+                bg = (28, 30, 40); border = (55, 55, 70); fg = (95, 95, 110)
+                txt = f"{k}·—"
+            pygame.draw.rect(surface, bg, rect, border_radius=3)
+            pygame.draw.rect(surface, border, rect, 1, border_radius=3)
+            label_s = self.font_s.render(txt, True, fg)
+            surface.blit(label_s, (rect.x + 3, rect.y + 2))
+        return y + cell_h + 2
+
     def _draw_groups_list(self, surface, x, y, width):
         e = self.engine
         title = self.font_h.render(
@@ -478,6 +702,14 @@ class ControlWindow:
                 badges.append(("MAPPING · PERFORM", (160, 220, 255)))
             if e.mapping.bind_armed:
                 badges.append(("BIND: next click", (200, 255, 200)))
+        if e.mode == "lights":
+            if e.lights.edit_mode:
+                badges.append(("LIGHTS · EDIT", (255, 240, 120)))
+            else:
+                badges.append(("LIGHTS · PERFORM", (160, 220, 255)))
+            if e.lights.palette_kind is not None:
+                badges.append((f"PLACE: {e.lights.palette_kind.upper()}",
+                               (200, 255, 200)))
         if getattr(e, "auto_mode", False):
             badges.append(("AUTOPILOT", (120, 220, 140)))
         if e.blackout:

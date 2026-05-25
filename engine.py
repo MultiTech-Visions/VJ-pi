@@ -1,3 +1,4 @@
+import math
 import os
 import random
 import time
@@ -7,6 +8,7 @@ import numpy as np
 import cv2
 
 from clips import ClipPool
+from lights import LightingRig
 from mapping import MappingManager
 from state import load_state, save_state
 from effects import (
@@ -98,10 +100,25 @@ class Engine:
         # most live-action keys (clip / gen / FX / params / favourites)
         # route to the selected group instead of global state.
         self.mapping = MappingManager(persisted.get("mapping"))
-        self.mode = "mapping" if self.mapping.enabled else "live"
+        # Lights mode — virtual front-of-house lighting rig. Mutually
+        # exclusive with mapping (a session is either projecting clips
+        # into spaces OR running a fake light rig, not both at once).
+        self.lights = LightingRig(persisted.get("lights"))
+        if self.mapping.enabled:
+            self.mode = "mapping"
+            # If a stale state file had both flags set, lights loses.
+            self.lights.enabled = False
+        elif self.lights.enabled:
+            self.mode = "lights"
+        else:
+            self.mode = "live"
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
         self._mapping_persist_dirty = False
+        self._lights_persist_dirty = False
+        # Wall-clock of the last chase tick — bootstrapped on mode entry
+        # so the first frame's `dt` doesn't catapult chase_phase forward.
+        self._lights_last_t = 0.0
 
         # Autopilot — engaged by double-tapping Enter, disengaged by any
         # other key press. While engaged, the engine drives clip changes,
@@ -135,6 +152,19 @@ class Engine:
         self._mapping_persist_dirty = False
         state = load_state()
         state["mapping"] = self.mapping.to_dict()
+        save_state(state)
+
+    def _persist_lights(self):
+        """Same deal as _persist_mapping — coalesce disk writes to one per
+        frame so a held arrow key doesn't pound the SD card."""
+        self._lights_persist_dirty = True
+
+    def _flush_lights_persist(self):
+        if not self._lights_persist_dirty:
+            return
+        self._lights_persist_dirty = False
+        state = load_state()
+        state["lights"] = self.lights.to_dict()
         save_state(state)
 
     # ── Public actions ────────────────────────────────────────────────
@@ -275,6 +305,9 @@ class Engine:
         In mapping mode we only touch the SELECTED group's FX + overlay so
         the operator's symmetric setup isn't blown away — global blackout
         / freeze / hits still get cleared either way.
+
+        In lights mode we stop the SELECTED group's chase but keep the
+        rig layout intact — cues stay saved, fixtures stay placed.
         """
         self.hit_frames_left = 0
         self.blackout = False
@@ -285,6 +318,16 @@ class Engine:
                 g.fx_state[k] = False
             g.overlay_stem = None
             self._persist_mapping()
+            return
+        if self.mode == "lights":
+            g = self.lights.selected_group()
+            if g is not None and g.chase_kind != "off":
+                g.chase_kind = "off"
+                g.chase_phase = 0.0
+                self._persist_lights()
+            for k in self.fx_state:
+                self.fx_state[k] = False
+            self.overlays.deselect()
             return
         for k in self.fx_state:
             self.fx_state[k] = False
@@ -517,14 +560,32 @@ class Engine:
                 return  # one hit at a time
 
     def update_params_from_keys(self, dt):
-        """Arrows: tune PARAM X/Y in manual mode, tune auto rates in autopilot.
+        """Arrows: tune PARAM X/Y in manual mode, tune auto rates in autopilot,
+        haze + group-master in lights/perform.
 
-        In mapping/edit mode arrows are ignored entirely — the operator's
-        laying out spaces, not tweaking visuals.
+        In mapping/edit and lights/edit, arrows are ignored entirely — the
+        operator's laying out spaces / fixtures, not tweaking visuals.
         """
         if self.mode == "mapping" and self.mapping.edit_mode:
             return
+        if self.mode == "lights" and self.lights.edit_mode:
+            return
         keys = pygame.key.get_pressed()
+        if self.mode == "lights":
+            # Lights/perform: ←→ adjusts haze, ↑↓ adjusts the selected
+            # group's master dimmer. Both run continuously while held.
+            changed = False
+            if keys[pygame.K_LEFT]:
+                self.lights.adjust_haze(-dt * 0.6); changed = True
+            if keys[pygame.K_RIGHT]:
+                self.lights.adjust_haze(dt * 0.6); changed = True
+            if keys[pygame.K_UP]:
+                self.lights.adjust_group_master(dt * 0.6); changed = True
+            if keys[pygame.K_DOWN]:
+                self.lights.adjust_group_master(-dt * 0.6); changed = True
+            if changed:
+                self._persist_lights()
+            return
         if self.auto_mode:
             # Up = faster clip changes, Down = slower
             # Right = faster FX changes, Left = slower
@@ -572,6 +633,15 @@ class Engine:
             self.mapping.drag = None
             self.mapping.bind_armed = False
         else:
+            # Mapping and lights are mutually exclusive — pressing M from
+            # lights mode drops the rig and enters mapping cleanly.
+            if self.mode == "lights":
+                self.lights.enabled = False
+                self.lights.edit_mode = False
+                self.lights.drag = None
+                self.lights.palette_kind = None
+                self.lights.selected_fixture = None
+                self._persist_lights()
             self.mode = "mapping"
             self.mapping.enabled = True
             # Detect a "pristine" mapping config (the default single
@@ -733,6 +803,8 @@ class Engine:
             frame = self.frozen_frame
         elif self.mode == "mapping":
             frame = self._compose_mapping_frame()
+        elif self.mode == "lights":
+            frame = self._compose_lights_frame()
         else:
             ctx = EffectContext(
                 self.w, self.h, time.time() - self.start_time,
@@ -916,6 +988,349 @@ class Engine:
             if x1 - x0 >= 2 and y1 - y0 >= 2:
                 cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 255, 200), 1)
 
+    # ── Lights render pipeline ────────────────────────────────────────
+
+    def _compose_lights_frame(self):
+        """Render the virtual front-of-house lighting rig.
+
+        Pipeline per frame:
+          1. Tick every group's chase phase by wall-clock dt (BPM-synced).
+          2. For each fixture, accumulate its volumetric light into a
+             float32 canvas (additive blend — light is light, it sums).
+          3. Apply the global FX chain (kaleidoscope on a beam fan is wild).
+          4. Composite the global overlay (sparks on top of cones — yes).
+          5. In EDIT mode, draw fixture mechanism icons + the picked-fixture
+             handle on top so the operator can see what they're aiming.
+          6. Apply punch-in hits (strobe/flash global).
+        """
+        w, h = self.w, self.h
+        canvas = np.zeros((h, w, 3), dtype=np.float32)
+        now = time.time()
+        t = now - self.start_time
+
+        # Bootstrap chase dt on first tick or after a mode switch (avoids
+        # a giant phase jump when entering lights mode).
+        if self._lights_last_t <= 0.0:
+            dt = 0.0
+        else:
+            dt = max(0.0, min(0.5, now - self._lights_last_t))
+        self._lights_last_t = now
+        self.lights.tick_chases(dt)
+
+        haze = self.lights.haze
+        for group in self.lights.groups:
+            n = max(1, len(group.fixtures))
+            for fi, fx in enumerate(group.fixtures):
+                intensity, pan, on, color = self.lights.effective_fixture(
+                    group, fx, fi, n, t
+                )
+                if not on or intensity <= 0.001:
+                    continue
+                if fx.kind == "spot":
+                    self._draw_spot_cone(canvas, fx, intensity, pan, color, haze)
+                elif fx.kind == "par":
+                    self._draw_par_splash(canvas, fx, intensity, color, haze)
+                elif fx.kind == "strobe":
+                    self._draw_strobe_flash(canvas, fx, intensity, color)
+
+        frame = np.clip(canvas, 0, 255).astype(np.uint8)
+
+        # Reuse the live-mode FX chain on top of the rig output — feedback,
+        # kaleido, mirror, etc. all stack nicely on top of beams. Uses the
+        # global self.fx_state since lights mode doesn't have per-group FX.
+        if any(self.fx_state.values()):
+            ctx = EffectContext(self.w, self.h, t,
+                                (self.param_x, self.param_y))
+            frame = self._apply_fx(frame, ctx)
+
+        # Global overlay (e.g. sparks pre-keyed to black) — same screen-blend
+        # path as live mode.
+        frame = self._apply_overlay(frame)
+
+        # Edit-mode chrome lives ABOVE the FX/overlay so the operator can
+        # always see fixture positions even when feedback is in play.
+        if self.lights.edit_mode:
+            self._draw_fixture_chrome(frame)
+            self._draw_lights_edit_overlay(frame)
+
+        frame = self._apply_hits(frame)
+        return frame
+
+    def _draw_spot_cone(self, canvas, fx, intensity, pan, color, haze):
+        """Additive-blend a triangular cone (apex at fixture, base at the
+        beam tip) onto `canvas`. We render into a bounding-box sub-array
+        instead of the full frame — cheap enough that 8-12 spots stay
+        under our per-frame budget on Pi 5.
+
+        `haze` (0..1) modulates beam visibility: at 0 the beam is faint
+        (you only see where it would hit a surface, in real life); at 1 it
+        is fully volumetric.
+        """
+        h, w = canvas.shape[:2]
+        ox, oy = fx.x * w, fx.y * h
+
+        # Front-view aim: pan=0 → straight-down; pan=±1 → ±70° deflection.
+        angle = pan * math.radians(70.0)
+        dx, dy = math.sin(angle), math.cos(angle)
+
+        length_px = fx.beam_length * h * 1.2
+        half_tip = max(8.0, fx.beam_width * w * 0.55)
+
+        perp_x, perp_y = -dy, dx  # unit perpendicular to direction
+        tip_cx = ox + dx * length_px
+        tip_cy = oy + dy * length_px
+        tip_l = (tip_cx + perp_x * half_tip, tip_cy + perp_y * half_tip)
+        tip_r = (tip_cx - perp_x * half_tip, tip_cy - perp_y * half_tip)
+
+        pts = np.array([(ox, oy), tip_l, tip_r], dtype=np.float32)
+
+        pad = 16
+        x_min = max(0, int(pts[:, 0].min()) - pad)
+        x_max = min(w, int(pts[:, 0].max()) + pad)
+        y_min = max(0, int(pts[:, 1].min()) - pad)
+        y_max = min(h, int(pts[:, 1].max()) + pad)
+        if x_max - x_min < 6 or y_max - y_min < 6:
+            return
+
+        sub_h = y_max - y_min
+        sub_w = x_max - x_min
+        mask = np.zeros((sub_h, sub_w), dtype=np.uint8)
+        local_pts = (pts - np.array([[x_min, y_min]], dtype=np.float32)
+                     ).astype(np.int32)
+        cv2.fillConvexPoly(mask, local_pts, 255)
+
+        # Soften the edges → reads as a glowy volumetric beam. Kernel
+        # capped at 31 because GaussianBlur cost scales with kernel size
+        # — past 31px the visual gain is small and the per-frame budget
+        # is real on Pi 5. ~24ms → ~10ms per dozen cones at 1280x720.
+        kshort = min(sub_w, sub_h)
+        ksize = max(11, min(31, (kshort // 12) | 1))
+        mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)
+
+        # Haze multiplier: 0.18 at haze=0 (faint hint of beam), 1.0 at
+        # haze=1 (full volumetric).
+        haze_mult = 0.18 + 0.82 * haze
+        scale = intensity * haze_mult / 255.0
+        mask_f = mask.astype(np.float32) * scale
+        r, g, b = color
+
+        sub = canvas[y_min:y_max, x_min:x_max]
+        sub[..., 0] += mask_f * r
+        sub[..., 1] += mask_f * g
+        sub[..., 2] += mask_f * b
+
+    def _draw_par_splash(self, canvas, fx, intensity, color, haze):
+        """A par can = a soft circular blob centred on the fixture body.
+
+        Pars don't care about haze nearly as much as spots — you can see a
+        par light up regardless of atmosphere — so the haze multiplier
+        here only modulates a small portion of the brightness.
+        """
+        h, w = canvas.shape[:2]
+        ox, oy = int(fx.x * w), int(fx.y * h)
+        radius = max(20, int((fx.beam_width + 0.06) * min(w, h) * 0.6))
+
+        pad = 12
+        x_min = max(0, ox - radius - pad)
+        x_max = min(w, ox + radius + pad)
+        y_min = max(0, oy - radius - pad)
+        y_max = min(h, oy + radius + pad)
+        if x_max - x_min < 4 or y_max - y_min < 4:
+            return
+
+        mask = np.zeros((y_max - y_min, x_max - x_min), dtype=np.uint8)
+        cv2.circle(mask, (ox - x_min, oy - y_min), radius, 255, -1)
+        ksize = max(15, min(31, (radius // 2) | 1))
+        mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)
+
+        haze_mult = 0.55 + 0.45 * haze
+        scale = intensity * haze_mult / 255.0
+        mask_f = mask.astype(np.float32) * scale
+        r, g, b = color
+
+        sub = canvas[y_min:y_max, x_min:x_max]
+        sub[..., 0] += mask_f * r
+        sub[..., 1] += mask_f * g
+        sub[..., 2] += mask_f * b
+
+    def _draw_strobe_flash(self, canvas, fx, intensity, color):
+        """Strobe = a bright disc with bloom when on. Intensity is already
+        gated to 0 between flashes by `effective_fixture`."""
+        h, w = canvas.shape[:2]
+        ox, oy = int(fx.x * w), int(fx.y * h)
+        radius = max(30, int(fx.strobe_radius * min(w, h)))
+
+        pad = 24
+        x_min = max(0, ox - radius - pad)
+        x_max = min(w, ox + radius + pad)
+        y_min = max(0, oy - radius - pad)
+        y_max = min(h, oy + radius + pad)
+        if x_max - x_min < 4 or y_max - y_min < 4:
+            return
+
+        mask = np.zeros((y_max - y_min, x_max - x_min), dtype=np.uint8)
+        cv2.circle(mask, (ox - x_min, oy - y_min), radius, 255, -1)
+        ksize = max(25, min(41, (radius // 2) | 1))
+        mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)
+
+        scale = intensity * 1.6 / 255.0  # strobes punch — let them clip
+        mask_f = mask.astype(np.float32) * scale
+        r, g, b = color
+
+        sub = canvas[y_min:y_max, x_min:x_max]
+        sub[..., 0] += mask_f * r
+        sub[..., 1] += mask_f * g
+        sub[..., 2] += mask_f * b
+
+    def _draw_fixture_chrome(self, frame):
+        """Draw the mechanism icon for every fixture so the operator can
+        see what they're placing. Drawn IN EDIT MODE ONLY — the live show
+        stays beam-only (no metal artefacts on the wall)."""
+        w, h = self.w, self.h
+        for group in self.lights.groups:
+            for fx in group.fixtures:
+                ox, oy = int(fx.x * w), int(fx.y * h)
+                if fx.kind == "spot":
+                    # Yoke = small box; head = circle inside.
+                    cv2.rectangle(frame, (ox - 10, oy - 7),
+                                  (ox + 10, oy + 7),
+                                  (160, 170, 200), -1)
+                    cv2.rectangle(frame, (ox - 10, oy - 7),
+                                  (ox + 10, oy + 7),
+                                  (40, 40, 55), 1)
+                    cv2.circle(frame, (ox, oy), 5, (40, 40, 55), -1)
+                elif fx.kind == "par":
+                    cv2.circle(frame, (ox, oy), 9, (150, 160, 180), -1)
+                    cv2.circle(frame, (ox, oy), 9, (40, 40, 55), 1)
+                    cv2.circle(frame, (ox, oy), 4, (40, 40, 55), -1)
+                elif fx.kind == "strobe":
+                    cv2.rectangle(frame, (ox - 8, oy - 8),
+                                  (ox + 8, oy + 8),
+                                  (200, 200, 210), -1)
+                    cv2.rectangle(frame, (ox - 8, oy - 8),
+                                  (ox + 8, oy + 8),
+                                  (40, 40, 55), 1)
+
+    def _draw_lights_edit_overlay(self, frame):
+        """Edit-mode overlay drawn on the projector itself: outline the
+        selected fixture, draw a palette-armed cursor hint, and tag every
+        fixture with its group index so it's clear what owns what."""
+        w, h = self.w, self.h
+        sel = self.lights.selected_fixture
+        for gi, group in enumerate(self.lights.groups):
+            for fi, fx in enumerate(group.fixtures):
+                ox, oy = int(fx.x * w), int(fx.y * h)
+                if sel == (gi, fi):
+                    cv2.circle(frame, (ox, oy), 18, (255, 240, 120), 2,
+                               cv2.LINE_AA)
+                # Tiny group-index tag below the fixture body.
+                if self.lights.selected == gi:
+                    color = (200, 220, 255)
+                else:
+                    color = (110, 120, 150)
+                cv2.putText(frame, f"G{gi + 1}", (ox + 12, oy + 14),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1,
+                            cv2.LINE_AA)
+        # Palette-armed hint, painted near the top-left so the operator
+        # knows the next click places a fixture.
+        if self.lights.palette_kind is not None:
+            label = f"PLACE: {self.lights.palette_kind.upper()}  (Esc to disarm)"
+            cv2.putText(frame, label, (16, 28),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 240, 140), 2,
+                        cv2.LINE_AA)
+
+    # ── Lights public actions (called from keymap) ────────────────────
+
+    def toggle_lights_mode(self):
+        """Enter / leave lights mode. Mutually exclusive with mapping."""
+        if self.mode == "lights":
+            self.mode = "live"
+            self.lights.enabled = False
+            self.lights.edit_mode = False
+            self.lights.drag = None
+            self.lights.palette_kind = None
+            self.lights.selected_fixture = None
+        else:
+            # If we were in mapping mode, drop it first.
+            if self.mode == "mapping":
+                self.mapping.enabled = False
+                self.mapping.edit_mode = False
+                self.mapping.drag = None
+                self.mapping.bind_armed = False
+                self._persist_mapping()
+            self.mode = "lights"
+            self.lights.enabled = True
+            # First-time UX: empty rig → start in EDIT so the operator can
+            # immediately drop fixtures with the palette.
+            pristine = (len(self.lights.groups) == 1
+                        and len(self.lights.groups[0].fixtures) == 0)
+            if pristine:
+                self.lights.edit_mode = True
+            # Reseed the chase clock so the first frame's dt is zero.
+            self._lights_last_t = 0.0
+        self._persist_lights()
+        pygame.mouse.set_visible(True)
+
+    def lights_toggle_edit_mode(self):
+        if self.mode != "lights":
+            return
+        self.lights.toggle_edit_mode()
+        self._persist_lights()
+
+    def lights_cycle_group(self, step=1):
+        self.lights.cycle_selected(step)
+        self._persist_lights()
+
+    def lights_add_group(self):
+        self.lights.add_group()
+        self._persist_lights()
+
+    def lights_remove_group(self):
+        self.lights.remove_selected_group()
+        self._persist_lights()
+
+    def lights_arm_palette(self, kind):
+        self.lights.arm_palette(kind)
+        # Don't persist — palette arming is transient edit-mode state.
+
+    def lights_cancel_edit_gesture(self):
+        """Esc inside lights/edit: cancel drag, disarm palette, clear pick."""
+        self.lights.cancel_drag()
+        self.lights.disarm_palette()
+        self.lights.deselect_fixture()
+
+    def lights_delete_selected_fixture(self):
+        self.lights.delete_selected_fixture()
+        self._persist_lights()
+
+    def lights_set_color(self, name):
+        self.lights.set_group_color(name)
+        self._persist_lights()
+
+    def lights_cycle_chase(self):
+        self.lights.cycle_group_chase()
+        self._persist_lights()
+
+    def lights_adjust_haze(self, delta):
+        self.lights.adjust_haze(delta)
+        self._persist_lights()
+
+    def lights_adjust_master(self, delta):
+        self.lights.adjust_group_master(delta)
+        self._persist_lights()
+
+    def lights_tap_tempo(self):
+        self.lights.tap_tempo()
+        self._persist_lights()
+
+    def lights_recall_cue(self, slot):
+        if self.lights.recall_cue(slot):
+            self._persist_lights()
+
+    def lights_save_cue(self, slot):
+        self.lights.save_cue(slot)
+        self._persist_lights()
+
     def blit_to_output(self, frame):
         surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
         target_size = self.screen.get_size()
@@ -938,7 +1353,8 @@ class Engine:
         return frame
 
     def run(self, control=None):
-        from keymap import dispatch, NAV_KEYS, FAV_KEYS, HIT_KEYS, fav_tap, fav_long
+        from keymap import (dispatch, NAV_KEYS, FAV_KEYS, CLIP_FAV_KEYS,
+                            HIT_KEYS, fav_tap, fav_long)
         # Enable system key-repeat. We filter below so only NAV_KEYS
         # auto-fire on hold — toggle/hit keys still need a fresh press.
         pygame.key.set_repeat(350, 80)
@@ -982,12 +1398,19 @@ class Engine:
                     if is_initial and self.auto_mode and event.key not in arrow_keys:
                         self.disengage_auto()
 
-                    # In mapping/edit mode the operator is laying out spaces,
-                    # not jamming — swallow the favourite long-press timing
-                    # so taps on 1-0 / Q-P don't fire content actions.
-                    editing = (self.mode == "mapping"
-                               and self.mapping.edit_mode)
-                    if event.key in FAV_KEYS and not editing:
+                    # In mapping/edit and lights/edit, the operator is laying
+                    # out spaces / fixtures — swallow favourite long-press
+                    # timing so 1-0 / Q-P don't fire content actions.
+                    editing = (
+                        (self.mode == "mapping" and self.mapping.edit_mode)
+                        or (self.mode == "lights" and self.lights.edit_mode)
+                    )
+                    # Lights mode uses only the 1-0 row as fav-keys (cue
+                    # stack); Q-P are plain keys in lights/perform.
+                    fav_keys_active = (set(CLIP_FAV_KEYS)
+                                       if self.mode == "lights"
+                                       else FAV_KEYS)
+                    if event.key in fav_keys_active and not editing:
                         if is_initial:
                             fav_pressed_at[event.key] = time.time()
                             long_press_fired.discard(event.key)
@@ -998,10 +1421,13 @@ class Engine:
                 elif event.type == pygame.KEYUP:
                     if event.key in fav_pressed_at:
                         elapsed = time.time() - fav_pressed_at.pop(event.key)
+                        in_edit = (
+                            (self.mode == "mapping" and self.mapping.edit_mode)
+                            or (self.mode == "lights" and self.lights.edit_mode)
+                        )
                         if (event.key not in long_press_fired
                                 and elapsed < LONG_PRESS_S
-                                and not (self.mode == "mapping"
-                                         and self.mapping.edit_mode)):
+                                and not in_edit):
                             fav_tap(self, event.key)
                         long_press_fired.discard(event.key)
                     held_keys.discard(event.key)
@@ -1035,7 +1461,9 @@ class Engine:
             if control is not None:
                 control.render(frame)
             self._flush_mapping_persist()
+            self._flush_lights_persist()
             self.clock.tick(self.cfg.fps)
         self._flush_mapping_persist()
+        self._flush_lights_persist()
         self.clips.release_all()
         self.overlays.release_all()
