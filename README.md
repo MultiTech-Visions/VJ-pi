@@ -147,11 +147,50 @@ single set of controls drives them all symmetrically, and stack multiple
 groups so each one runs its own content + autopilot loop. Setup persists in
 `vj_state.json` between sessions.
 
-| Keys                | Action                                              |
+There are two sub-modes:
+
+- **EDIT** — mouse-first. Drag rectangles in the HUD preview to create
+  spaces, click to select, drag to move, drag corners to reshape, bind
+  spaces together. No content gets assigned in this sub-mode (content / FX
+  / favourite keys are swallowed) so you can focus on layout.
+- **PERFORM** — keyboard-first. The keys you already know
+  (`1-0`, `Q-P`, `A-L`, `F1-F7`, `←→↑↓`, `−/=`, `[/]`) target the currently
+  selected group. `Tab` cycles between groups.
+
+Press `M` to enter / leave mapping mode entirely. Press `E` to switch
+between EDIT and PERFORM inside it. The first time you enter mapping mode
+the rig drops you straight into EDIT with a blank canvas; later launches
+resume in PERFORM with your saved layout.
+
+### Edit sub-mode (mouse)
+
+| Gesture in HUD preview | Action                                          |
+|------------------------|-------------------------------------------------|
+| Click + drag empty area | Rubber-band a rectangle → becomes a new space in a new group |
+| Click a space's body    | Select it (its group also becomes the active group) |
+| Click + drag a space's body | Move the whole space                       |
+| Click + drag a corner handle | Reshape that corner of the selected space |
+| Shift + click a different space | Bind it into the selected space's group (the source group is deleted if it becomes empty) |
+
+### Edit sub-mode (keys)
+
+| Key             | Action                                                |
+|-----------------|-------------------------------------------------------|
+| `E`             | Leave EDIT sub-mode (back to PERFORM)                 |
+| `B`             | Arm bind — the next clicked space is bound (no Shift) |
+| `U`             | Unbind selected space into its own new group          |
+| `Delete`        | Delete the selected space                             |
+| `Esc`           | Cancel any in-flight drag / deselect                  |
+| `Tab` / `Shift+Tab` | Cycle the active group (same as PERFORM)          |
+| `M`             | Leave MAPPING entirely                                |
+
+### Perform sub-mode + global mapping ops
+
+| Key                 | Action                                              |
 |---------------------|-----------------------------------------------------|
-| `M`                 | Enter / leave MAPPING mode                          |
-| `Tab` / `Shift+Tab` | Next / previous group (the active group gets a coloured border on the projector so you can see it) |
-| `Ctrl+N`            | New group (added at the end)                       |
+| `Tab` / `Shift+Tab` | Next / previous group (the active group's spaces get a coloured border on the projector) |
+| `1-0` `Q-P` `A-L` `F1-F7` `←→↑↓` `−/=` `[/]` | Apply to the SELECTED group only — each group keeps its own state |
+| `Ctrl+N`            | New group                                          |
 | `Ctrl+Backspace`    | Delete the current group                           |
 | `Ctrl+=` / `Ctrl+-` | Add / remove a space in the current group          |
 | `Ctrl+G`            | Cycle pre-baked grid layouts (1·2x1·1x2·2x2·3x2·3x3·4x2·4x3) for the current group |
@@ -162,8 +201,6 @@ groups so each one runs its own content + autopilot loop. Setup persists in
 | `Ctrl+C`            | Cycle border colour (light gray / cyan / amber / violet / mint / red-pink — never white) |
 | `Ctrl+[` / `Ctrl+]` | Border intensity ± 10 %                            |
 | `Ctrl+;` / `Ctrl+'` | Border thickness ± 1 px                            |
-| `1-0` `Q-P` `A-L` `F1-F7` `←→↑↓` `−/=` `[/]` | All apply to the SELECTED group only — change content / FX / params / browse libraries for whichever group you've tabbed to. Each group keeps its own state. |
-| Mouse in HUD preview | Drag a corner handle to reshape that space      |
 
 Pitfalls worth knowing about:
 

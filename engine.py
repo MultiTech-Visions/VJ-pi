@@ -424,7 +424,12 @@ class Engine:
         In mapping mode the keys target the selected group's params so each
         group's controls are independent. Without a selected group, fall
         back to global params so the keys aren't silently dead.
+
+        In mapping/edit mode arrows are ignored entirely — the operator's
+        laying out spaces, not tweaking visuals.
         """
+        if self.mode == "mapping" and self.mapping.edit_mode:
+            return
         keys = pygame.key.get_pressed()
         step = PARAM_RATE * dt
         if self._in_mapping():
@@ -456,24 +461,53 @@ class Engine:
         if self.mode == "mapping":
             self.mode = "live"
             self.mapping.enabled = False
+            self.mapping.edit_mode = False
+            self.mapping.drag = None
+            self.mapping.bind_armed = False
         else:
             self.mode = "mapping"
             self.mapping.enabled = True
-            # Seed the first-ever group from current live state so the
-            # operator's not staring at black on first entry.
-            if (len(self.mapping.groups) == 1
-                    and self.mapping.groups[0].content_kind == "blackout"
-                    and self.mapping.groups[0].clip_stem is None
-                    and self.mapping.groups[0].gen_name is None):
-                g = self.mapping.groups[0]
-                if self.clips.active_idx is not None:
-                    g.content_kind = "clip"
-                    g.clip_stem = self.clips.name(self.clips.active_idx)
-                elif self.active_generative is not None:
-                    g.content_kind = "generative"
-                    g.gen_name = self.active_generative
+            # Detect a "pristine" mapping config (the default single
+            # fullscreen blackout group with no real content) and start in
+            # EDIT mode with an empty canvas so the operator can immediately
+            # drag rectangles to define their spaces.
+            pristine = (len(self.mapping.groups) == 1
+                        and self.mapping.groups[0].content_kind == "blackout"
+                        and self.mapping.groups[0].clip_stem is None
+                        and self.mapping.groups[0].gen_name is None
+                        and len(self.mapping.groups[0].spaces) == 1
+                        and self.mapping.groups[0].spaces[0].corners
+                            == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+            if pristine:
+                # Empty out the default fullscreen space — the user is going
+                # to draw their own. Keep the group itself so there's always
+                # somewhere for the first dragged rectangle to land.
+                self.mapping.groups[0].spaces = []
+                self.mapping.edit_mode = True
         self._persist_mapping()
         pygame.mouse.set_visible(True)
+
+    def toggle_edit_mode(self):
+        if self.mode != "mapping":
+            return
+        self.mapping.toggle_edit_mode()
+        self._persist_mapping()
+
+    def mapping_arm_bind(self):
+        self.mapping.arm_bind()
+
+    def mapping_delete_selected_space(self):
+        self.mapping.delete_selected_space()
+        self._persist_mapping()
+
+    def mapping_unbind_selected_space(self):
+        self.mapping.unbind_selected_space()
+        self._persist_mapping()
+
+    def mapping_cancel_drag(self):
+        self.mapping.cancel_drag()
+        self.mapping.bind_armed = False
+        self.mapping.deselect_space()
 
     def cycle_mapping_group(self, step=1):
         self.mapping.cycle_selected(step)
@@ -609,18 +643,26 @@ class Engine:
     # ── Mapping render pipeline ───────────────────────────────────────
 
     def _compose_mapping_frame(self):
-        """Render projection-mapping: source per group, warp into spaces."""
+        """Render projection-mapping: source per group, warp into spaces.
+        In edit mode also draw outlines of every group + a highlight on
+        the picked-for-edit space + the create-drag rubber-band, so the
+        projector itself helps the operator align spaces to physical
+        surfaces while editing."""
         w, h = self.w, self.h
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
         now = time.time()
         self.mapping.tick_autopilot(self, now)
         for group in self.mapping.groups:
+            if not group.spaces:
+                continue
             source = self._compose_group_source(group, now)
             for space in group.spaces:
                 self._warp_into_canvas(canvas, source, space.corners_px(w, h))
         canvas = self._apply_hits(canvas)
         if self.mapping.show_borders:
             self._draw_selection_border(canvas)
+        if self.mapping.edit_mode:
+            self._draw_edit_overlay(canvas)
         return canvas
 
     def _compose_group_source(self, group, now):
@@ -738,6 +780,35 @@ class Engine:
             pts = space.corners_px(w, h).astype(np.int32).reshape(-1, 1, 2)
             cv2.polylines(canvas, [pts], True, color, thickness, cv2.LINE_AA)
 
+    def _draw_edit_overlay(self, canvas):
+        """Edit-mode UI drawn onto the actual projector output: outlines
+        on every group (dim) + the picked space (bright) + the in-flight
+        create-drag rubber-band rectangle. Lets the operator align spaces
+        to real-world features without looking at the HUD."""
+        w, h = self.w, self.h
+        for gi, group in enumerate(self.mapping.groups):
+            for si, space in enumerate(group.spaces):
+                pts = space.corners_px(w, h).astype(np.int32).reshape(-1, 1, 2)
+                is_picked = (self.mapping.selected_space == (gi, si))
+                color = (255, 240, 120) if is_picked else (90, 110, 140)
+                thickness = 3 if is_picked else 1
+                cv2.polylines(canvas, [pts], True, color, thickness, cv2.LINE_AA)
+                # Draw corner handles on the picked space so the operator
+                # can see where to grab.
+                if is_picked:
+                    for cx, cy in space.corners_px(w, h).astype(np.int32):
+                        cv2.circle(canvas, (int(cx), int(cy)), 6, (20, 20, 30), -1)
+                        cv2.circle(canvas, (int(cx), int(cy)), 5, (255, 240, 120), -1)
+        # Rubber-band rectangle while dragging-to-create a new space.
+        drag = self.mapping.drag
+        if drag is not None and drag.get("kind") == "create":
+            sx, sy = drag["start"]
+            cx, cy = drag["current"]
+            x0, x1 = int(min(sx, cx) * w), int(max(sx, cx) * w)
+            y0, y1 = int(min(sy, cy) * h), int(max(sy, cy) * h)
+            if x1 - x0 >= 2 and y1 - y0 >= 2:
+                cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 255, 200), 1)
+
     def blit_to_output(self, frame):
         surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
         if self.screen.get_size() != (self.w, self.h):
@@ -772,7 +843,9 @@ class Engine:
                 elif event.type == pygame.KEYDOWN:
                     is_initial = event.key not in held_keys
                     held_keys.add(event.key)
-                    if event.key in FAV_KEYS:
+                    editing = (self.mode == "mapping"
+                               and self.mapping.edit_mode)
+                    if event.key in FAV_KEYS and not editing:
                         if is_initial:
                             fav_pressed_at[event.key] = time.time()
                             long_press_fired.discard(event.key)
@@ -784,7 +857,9 @@ class Engine:
                     if event.key in fav_pressed_at:
                         elapsed = time.time() - fav_pressed_at.pop(event.key)
                         if (event.key not in long_press_fired
-                                and elapsed < LONG_PRESS_S):
+                                and elapsed < LONG_PRESS_S
+                                and not (self.mode == "mapping"
+                                         and self.mapping.edit_mode)):
                             fav_tap(self, event.key)
                         long_press_fired.discard(event.key)
                     held_keys.discard(event.key)

@@ -26,7 +26,15 @@ KEY_CHEAT = [
 
 MAPPING_KEY_CHEAT = [
     ("M",            "Leave MAPPING mode"),
+    ("E",            "Toggle EDIT mode (mouse drag-creates spaces)"),
     ("Tab",          "Next group (Shift+Tab = prev)"),
+    ("EDIT — drag empty",  "rubber-band a new rectangle → new group"),
+    ("EDIT — click space", "select + start move drag"),
+    ("EDIT — drag corner", "reshape the picked space"),
+    ("EDIT — Shift+click", "bind clicked space → selected space's group"),
+    ("EDIT — B / U",  "arm-bind / unbind selected space"),
+    ("EDIT — Delete", "delete selected space"),
+    ("EDIT — Esc",    "cancel drag / deselect"),
     ("Ctrl+N",       "New group"),
     ("Ctrl+Back",    "Delete current group"),
     ("Ctrl+= / -",   "Add / remove a space in current group"),
@@ -38,8 +46,7 @@ MAPPING_KEY_CHEAT = [
     ("Ctrl+C",       "Cycle border colour"),
     ("Ctrl+[ / ]",   "Border intensity ±10%"),
     ("Ctrl+; / '",   "Border thickness ±1px"),
-    ("1-0/Q-P/A-L/F1-F7/←→↑↓", "All apply to SELECTED group"),
-    ("Mouse drag",   "In preview: drag a corner handle to reshape"),
+    ("PERFORM — content keys", "1-0/Q-P/A-L/F1-F7/←→↑↓ → selected group"),
 ]
 
 
@@ -94,8 +101,8 @@ class ControlWindow:
     # ── Event handling ───────────────────────────────────────────────
 
     def handle_event(self, event):
-        """Forward mouse clicks from the control window to its buttons /
-        mapping corner handles."""
+        """Forward mouse activity from the control window to its buttons
+        and (in mapping/edit mode) to the spaces editor."""
         if not self._event_is_ours(event):
             return
         e = self.engine
@@ -119,14 +126,9 @@ class ControlWindow:
         if pos is None:
             return
 
-        # Mapping-mode: check corner-handle hits inside the preview first.
-        if e.mode == "mapping" and self._preview_rect.collidepoint(pos):
-            norm = self._preview_to_norm(pos)
-            # Handle radius in normalized output coords (≈ 12 px on preview).
-            radius = 12.0 / max(self.preview_w, 1)
-            hit = e.mapping.hit_test_corner(norm, radius)
-            if hit is not None:
-                e.mapping.start_drag(*hit)
+        if (e.mode == "mapping" and e.mapping.edit_mode
+                and self._preview_rect.collidepoint(pos)):
+            if self._handle_edit_click(pos):
                 return
 
         for idx, rect in self._display_btn_rects:
@@ -135,6 +137,56 @@ class ControlWindow:
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
             self.engine.apply_pending_display()
+
+    def _handle_edit_click(self, pos):
+        """Edit-mode click priority:
+          1. Shift / bind-armed click on a space     → bind into selected group
+          2. Click on a corner handle of the picked  → corner drag
+             space
+          3. Click on any space's body               → select + start move drag
+          4. Click on empty preview area             → start create drag
+
+        Returns True if the click was consumed."""
+        e = self.engine
+        m = e.mapping
+        norm = self._preview_to_norm(pos)
+
+        shift_held = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+
+        # 1. Bind gesture (shift+click OR bind_armed) on another space.
+        if (shift_held or m.bind_armed) and m.selected_space is not None:
+            hit = m.hit_test_space(norm)
+            if hit is not None and hit != m.selected_space:
+                if hit[0] != m.selected_space[0]:
+                    m.bind_to_selected(*hit)
+                    e._persist_mapping()
+                else:
+                    # Same group already — just clear bind state.
+                    m.bind_armed = False
+                return True
+            # If they shift-clicked empty area, fall through to nothing.
+            m.bind_armed = False
+
+        # 2. Corner handle of the picked space — only the picked space's
+        #    corners are draggable so neighbouring spaces' corners don't
+        #    fight for the click.
+        radius = 12.0 / max(self.preview_w, 1)
+        corner = m.hit_test_corner_of_selected_space(norm, radius)
+        if corner is not None:
+            m.start_corner_drag(corner)
+            return True
+
+        # 3. Body of any space.
+        hit = m.hit_test_space(norm)
+        if hit is not None:
+            m.select_space(*hit)
+            m.start_move(*hit, norm)
+            e._persist_mapping()
+            return True
+
+        # 4. Empty area → drag a brand-new rectangle into existence.
+        m.start_create(norm)
+        return True
 
     def _preview_to_norm(self, pos):
         """Convert a preview-window click position into normalized (0..1)
@@ -253,35 +305,59 @@ class ControlWindow:
         surface.blit(label, (x + 6, y + 4))
 
     def _draw_space_overlay(self, surface):
-        """Outline every group's spaces on the preview + draggable handles
-        on the SELECTED group only. The on-projector border is rendered
-        downstream by the engine; this overlay is HUD-only."""
+        """Outline every group's spaces on the preview, highlight the
+        picked-for-edit space, draw corner handles on the picked space,
+        and rubber-band the create-drag rectangle if one is in flight."""
         e = self.engine
+        m = e.mapping
         rect = self._preview_rect
-        sel_idx = e.mapping.selected
-        for gi, group in enumerate(e.mapping.groups):
-            is_selected = (gi == sel_idx)
-            outline = (200, 220, 255) if is_selected else (90, 100, 130)
-            for space in group.spaces:
+        sel_idx = m.selected
+        for gi, group in enumerate(m.groups):
+            is_selected_group = (gi == sel_idx)
+            outline = (200, 220, 255) if is_selected_group else (90, 100, 130)
+            for si, space in enumerate(group.spaces):
                 pts = [(rect.x + c[0] * rect.w, rect.y + c[1] * rect.h)
                        for c in space.corners]
                 pygame.draw.polygon(surface, outline, pts, 1)
-        # Corner handles on the selected group's spaces.
-        sel = e.mapping.selected_group()
-        if sel is None:
-            return
-        drag = e.mapping.drag
-        for si, space in enumerate(sel.spaces):
-            for ci, c in enumerate(space.corners):
-                cx = int(rect.x + c[0] * rect.w)
-                cy = int(rect.y + c[1] * rect.h)
-                is_dragging = (drag is not None
-                               and drag.get("space") == si
-                               and drag.get("corner") == ci)
-                color = (255, 220, 80) if is_dragging else (220, 230, 255)
-                pygame.draw.circle(surface, (20, 20, 30), (cx, cy), 6)
-                pygame.draw.circle(surface, color, (cx, cy), 5)
-                pygame.draw.circle(surface, (40, 40, 60), (cx, cy), 5, 1)
+                # Tiny group-index tag at the centre so it's clear which
+                # spaces belong together.
+                cx = sum(p[0] for p in pts) / 4
+                cy = sum(p[1] for p in pts) / 4
+                tag = self.font_s.render(f"G{gi + 1}", True, outline)
+                surface.blit(tag, (cx - tag.get_width() / 2,
+                                   cy - tag.get_height() / 2))
+
+        # Picked space + handles.
+        if m.selected_space is not None:
+            gi, si = m.selected_space
+            if 0 <= gi < len(m.groups) and 0 <= si < len(m.groups[gi].spaces):
+                picked = m.groups[gi].spaces[si]
+                pts = [(rect.x + c[0] * rect.w, rect.y + c[1] * rect.h)
+                       for c in picked.corners]
+                pygame.draw.polygon(surface, (255, 240, 120), pts, 2)
+                drag = m.drag
+                for ci, c in enumerate(picked.corners):
+                    hx = int(rect.x + c[0] * rect.w)
+                    hy = int(rect.y + c[1] * rect.h)
+                    is_dragging = (drag is not None
+                                   and drag.get("kind") == "corner"
+                                   and drag.get("space") == (gi, si)
+                                   and drag.get("corner") == ci)
+                    color = (255, 220, 80) if is_dragging else (255, 240, 180)
+                    pygame.draw.circle(surface, (20, 20, 30), (hx, hy), 6)
+                    pygame.draw.circle(surface, color, (hx, hy), 5)
+                    pygame.draw.circle(surface, (40, 40, 60), (hx, hy), 5, 1)
+
+        # Rubber-band rectangle while drag-creating.
+        if m.drag is not None and m.drag.get("kind") == "create":
+            sx, sy = m.drag["start"]
+            cx, cy = m.drag["current"]
+            x0 = int(rect.x + min(sx, cx) * rect.w)
+            x1 = int(rect.x + max(sx, cx) * rect.w)
+            y0 = int(rect.y + min(sy, cy) * rect.h)
+            y1 = int(rect.y + max(sy, cy) * rect.h)
+            pygame.draw.rect(surface, (200, 255, 200),
+                             pygame.Rect(x0, y0, x1 - x0, y1 - y0), 1)
 
     def _draw_mapping_status(self, surface, x, y, width):
         e = self.engine
@@ -395,7 +471,12 @@ class ControlWindow:
         e = self.engine
         badges = []
         if e.mode == "mapping":
-            badges.append(("MAPPING MODE", (160, 220, 255)))
+            if e.mapping.edit_mode:
+                badges.append(("MAPPING · EDIT", (255, 240, 120)))
+            else:
+                badges.append(("MAPPING · PERFORM", (160, 220, 255)))
+            if e.mapping.bind_armed:
+                badges.append(("BIND: next click", (200, 255, 200)))
         if e.blackout:
             badges.append(("BLACKOUT", (255, 80, 80)))
         if e.freeze:

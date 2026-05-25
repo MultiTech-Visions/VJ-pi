@@ -50,6 +50,20 @@ def _default_corners():
     return [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
 
+def point_in_quad(p, corners):
+    """Convex-quad hit test. Works for any quad whose vertices are listed
+    in either consistent CW or CCW order (so 1-px slop on the boundary is
+    fine since it returns True for both interior and edge points)."""
+    px, py = p
+    signs = []
+    for i in range(4):
+        ax, ay = corners[i]
+        bx, by = corners[(i + 1) % 4]
+        signs.append((bx - ax) * (py - ay) - (by - ay) * (px - ax))
+    eps = 1e-9
+    return all(s >= -eps for s in signs) or all(s <= eps for s in signs)
+
+
 @dataclass
 class Space:
     """A quadrilateral on the output, corners in TL→TR→BR→BL order, 0..1."""
@@ -204,8 +218,19 @@ class MappingManager:
             self.groups = [Group(name="Group 1")]
         self.selected = max(0, min(self.selected, len(self.groups) - 1))
 
-        # Edit-mode transient state
-        self.drag: Optional[dict] = None   # {"space": i, "corner": j}
+        # Edit-mode transient state. None of this persists — the operator
+        # always starts in perform mode and decides when to edit.
+        self.edit_mode: bool = False
+        # (group_idx, space_idx) of the space currently picked up for
+        # editing; clicking another space changes it.
+        self.selected_space: Optional[tuple] = None
+        # When True, the NEXT space click binds into the selected space's
+        # group (instead of becoming the new selection). Reset after use.
+        self.bind_armed: bool = False
+        # Active drag, one of {None, {"kind": "corner", "space": (gi,si), "corner": ci},
+        # {"kind": "move", "space": (gi,si), "last": (nx,ny)},
+        # {"kind": "create", "start": (nx,ny), "current": (nx,ny)}}
+        self.drag: Optional[dict] = None
 
     # ── Persistence ──────────────────────────────────────────────────
 
@@ -386,36 +411,196 @@ class MappingManager:
             else:
                 g.gen_name = random.choice(generatives)
 
-    # ── Edit-mode drag handling ──────────────────────────────────────
+    # ── Edit mode ────────────────────────────────────────────────────
 
-    def hit_test_corner(self, norm_xy, radius_norm):
-        """Hit-test the SELECTED group's corner handles. Returns (space_i,
-        corner_i) or None. Coords are normalized 0..1; `radius_norm` is the
-        handle radius in normalized units."""
-        g = self.selected_group()
-        if g is None:
+    def toggle_edit_mode(self):
+        self.edit_mode = not self.edit_mode
+        # Leaving edit mode cancels any half-finished gesture.
+        if not self.edit_mode:
+            self.drag = None
+            self.bind_armed = False
+
+    def arm_bind(self):
+        """Set a flag: next clicked space is bound into the currently-
+        selected space's group instead of becoming the new selection."""
+        if self.selected_space is None:
+            return
+        self.bind_armed = True
+
+    def select_space(self, gi, si):
+        """Pick a space for editing — its corners get handles, key actions
+        target its group."""
+        if 0 <= gi < len(self.groups) and 0 <= si < len(self.groups[gi].spaces):
+            self.selected_space = (gi, si)
+            self.selected = gi
+
+    def deselect_space(self):
+        self.selected_space = None
+        self.bind_armed = False
+
+    def delete_selected_space(self):
+        if self.selected_space is None:
+            return
+        gi, si = self.selected_space
+        if not (0 <= gi < len(self.groups)) or not (0 <= si < len(self.groups[gi].spaces)):
+            self.selected_space = None
+            return
+        del self.groups[gi].spaces[si]
+        if not self.groups[gi].spaces:
+            # Group went empty — delete it too. Keep at least one group
+            # alive so the manager always has something to draw into.
+            if len(self.groups) > 1:
+                del self.groups[gi]
+                if self.selected >= len(self.groups):
+                    self.selected = len(self.groups) - 1
+            else:
+                # Last group; reseed a fullscreen blackout space.
+                self.groups[0].spaces.append(Space.fullscreen())
+        self.selected_space = None
+
+    def unbind_selected_space(self):
+        """Pull the selected space out into its own new group (so it can
+        run independent content / autopilot)."""
+        if self.selected_space is None:
+            return
+        gi, si = self.selected_space
+        if not (0 <= gi < len(self.groups)) or len(self.groups[gi].spaces) <= 1:
+            return
+        space = self.groups[gi].spaces.pop(si)
+        new_group = Group(name=f"Group {len(self.groups) + 1}", spaces=[space])
+        self.groups.append(new_group)
+        self.selected = len(self.groups) - 1
+        self.selected_space = (self.selected, 0)
+
+    def bind_to_selected(self, gi, si):
+        """Move space (gi, si) into the selected space's group. If the
+        source group ends up empty it is removed."""
+        if self.selected_space is None:
+            return
+        dst_gi = self.selected_space[0]
+        if gi == dst_gi or not (0 <= gi < len(self.groups)):
+            return
+        if not (0 <= si < len(self.groups[gi].spaces)):
+            return
+        src = self.groups[gi]
+        space = src.spaces.pop(si)
+        self.groups[dst_gi].spaces.append(space)
+        if not src.spaces:
+            del self.groups[gi]
+            if gi < dst_gi:
+                dst_gi -= 1
+        self.selected = dst_gi
+        self.selected_space = (dst_gi, len(self.groups[dst_gi].spaces) - 1)
+        self.bind_armed = False
+
+    # ── Hit testing ──────────────────────────────────────────────────
+
+    def hit_test_corner_of_selected_space(self, norm_xy, radius_norm):
+        """Return the corner index (0..3) of the SELECTED space that the
+        point is on, or None. Other spaces' corners are not draggable —
+        click the space first to select it."""
+        if self.selected_space is None:
             return None
+        gi, si = self.selected_space
+        if not (0 <= gi < len(self.groups)) or not (0 <= si < len(self.groups[gi].spaces)):
+            return None
+        space = self.groups[gi].spaces[si]
         nx, ny = norm_xy
         r2 = radius_norm * radius_norm
-        for si, space in enumerate(g.spaces):
-            for ci, (cx, cy) in enumerate(space.corners):
-                if (cx - nx) ** 2 + (cy - ny) ** 2 <= r2:
-                    return (si, ci)
+        for ci, (cx, cy) in enumerate(space.corners):
+            if (cx - nx) ** 2 + (cy - ny) ** 2 <= r2:
+                return ci
         return None
 
-    def start_drag(self, space_i, corner_i):
-        self.drag = {"space": space_i, "corner": corner_i}
+    def hit_test_space(self, norm_xy):
+        """Return (group_idx, space_idx) of the topmost space under `norm_xy`,
+        or None. Iterate in reverse so newer (drawn-last) spaces win."""
+        for gi in range(len(self.groups) - 1, -1, -1):
+            spaces = self.groups[gi].spaces
+            for si in range(len(spaces) - 1, -1, -1):
+                if point_in_quad(norm_xy, spaces[si].corners):
+                    return (gi, si)
+        return None
+
+    # ── Drag-to-corner / drag-to-move / drag-to-create ──────────────
+
+    def start_corner_drag(self, corner_i):
+        if self.selected_space is None:
+            return
+        gi, si = self.selected_space
+        self.drag = {"kind": "corner", "space": (gi, si), "corner": corner_i}
+
+    def start_move(self, gi, si, start_norm):
+        self.drag = {"kind": "move", "space": (gi, si), "last": tuple(start_norm)}
+
+    def start_create(self, start_norm):
+        self.drag = {"kind": "create",
+                     "start": tuple(start_norm), "current": tuple(start_norm)}
 
     def update_drag(self, norm_xy):
         if self.drag is None:
             return
-        g = self.selected_group()
-        if g is None:
-            self.drag = None
-            return
-        si, ci = self.drag["space"], self.drag["corner"]
-        if 0 <= si < len(g.spaces):
-            g.spaces[si].set_corner(ci, norm_xy[0], norm_xy[1])
+        kind = self.drag.get("kind")
+        if kind == "corner":
+            gi, si = self.drag["space"]
+            if 0 <= gi < len(self.groups) and 0 <= si < len(self.groups[gi].spaces):
+                self.groups[gi].spaces[si].set_corner(
+                    self.drag["corner"], norm_xy[0], norm_xy[1]
+                )
+        elif kind == "move":
+            gi, si = self.drag["space"]
+            if not (0 <= gi < len(self.groups)) or not (0 <= si < len(self.groups[gi].spaces)):
+                self.drag = None
+                return
+            space = self.groups[gi].spaces[si]
+            raw_dx = norm_xy[0] - self.drag["last"][0]
+            raw_dy = norm_xy[1] - self.drag["last"][1]
+            # Clamp the delta so the WHOLE space stays on-screen — moving
+            # by per-corner clamp would deform the quad instead of moving it.
+            min_x = min(c[0] for c in space.corners)
+            max_x = max(c[0] for c in space.corners)
+            min_y = min(c[1] for c in space.corners)
+            max_y = max(c[1] for c in space.corners)
+            dx = max(-min_x, min(1.0 - max_x, raw_dx))
+            dy = max(-min_y, min(1.0 - max_y, raw_dy))
+            for c in space.corners:
+                c[0] += dx
+                c[1] += dy
+            self.drag["last"] = tuple(norm_xy)
+        elif kind == "create":
+            self.drag["current"] = (_clamp01(norm_xy[0]), _clamp01(norm_xy[1]))
 
     def end_drag(self):
+        """Finalize whatever drag was in progress. For 'create', the
+        rubber-banded rectangle becomes a new space in a brand-new group
+        unless it's degenerate (too small to be useful)."""
+        if self.drag is None:
+            return
+        kind = self.drag.get("kind")
+        if kind == "create":
+            sx, sy = self.drag["start"]
+            cx, cy = self.drag["current"]
+            x0, x1 = min(sx, cx), max(sx, cx)
+            y0, y1 = min(sy, cy), max(sy, cy)
+            if (x1 - x0) >= 0.02 and (y1 - y0) >= 0.02:
+                space = Space(corners=[[x0, y0], [x1, y0],
+                                       [x1, y1], [x0, y1]])
+                # Prefer to fill any existing empty group (so the operator's
+                # first drag after entering mapping mode doesn't leave a
+                # ghost "Group 1" with no spaces sitting beside the new one).
+                empty_gi = next((i for i, g in enumerate(self.groups)
+                                 if not g.spaces), None)
+                if empty_gi is not None:
+                    self.groups[empty_gi].spaces.append(space)
+                    gi = empty_gi
+                else:
+                    self.groups.append(Group(
+                        name=f"Group {len(self.groups) + 1}", spaces=[space]
+                    ))
+                    gi = len(self.groups) - 1
+                self.selected = gi
+                self.selected_space = (gi, len(self.groups[gi].spaces) - 1)
+        self.drag = None
+
+    def cancel_drag(self):
         self.drag = None
