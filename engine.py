@@ -102,6 +102,11 @@ class Engine:
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
         self._mapping_persist_dirty = False
+        # Per-group mask cache. Key = id(group); value = (signature, mask,
+        # bbox). Invalidated when any of the group's space corners change.
+        # Lets a static layout skip cv2.fillConvexPoly every frame — the
+        # common case during a running set.
+        self._group_mask_cache = {}
 
         # Autopilot — engaged by double-tapping Enter, disengaged by any
         # other key press. While engaged, the engine drives clip changes,
@@ -881,8 +886,20 @@ class Engine:
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
         now = time.time()
         self.mapping.tick_autopilot(self, now)
+        # Sweep stale mask cache entries every ~5 s. Cheap, and keeps
+        # the cache tidy across hours of editing.
+        if now - getattr(self, "_mask_cache_gc_at", 0.0) > 5.0:
+            self._invalidate_mask_cache()
+            self._mask_cache_gc_at = now
         for group in self.mapping.groups:
+            # Skip groups with no spaces (no mask) AND skip groups
+            # whose content is blackout (nothing to compose). Saves a
+            # full-resolution generative call per blackout group.
             if not group.spaces:
+                continue
+            if (group.content_kind == "blackout"
+                    or (group.content_kind == "clip" and not group.clip_stem)
+                    or (group.content_kind == "generative" and not group.gen_name)):
                 continue
             source = self._compose_group_source(group, now)
             self._place_group_into_canvas(canvas, source, group)
@@ -1053,40 +1070,76 @@ class Engine:
         dx = int(round(cx - dw * 0.5))
         dy = int(round(cy - dh * 0.5))
 
-        # Clip the destination rect to the canvas.
-        cx0 = max(0, dx)
-        cy0 = max(0, dy)
-        cx1 = min(w, dx + dw)
-        cy1 = min(h, dy + dh)
-        if cx1 <= cx0 or cy1 <= cy0:
+        # Clip the video's destination rect to the canvas.
+        vx0, vy0 = max(0, dx), max(0, dy)
+        vx1, vy1 = min(w, dx + dw), min(h, dy + dh)
+        if vx1 <= vx0 or vy1 <= vy0:
             return  # Video positioned entirely off-canvas.
 
-        # Build the group's mask — the UNION of all its space polygons.
-        # That's what makes side-by-side spaces show one continuous
-        # video rather than two duplicates of it.
-        mask = np.zeros((h, w), dtype=np.uint8)
-        for space in group.spaces:
-            poly = space.corners_px(w, h).astype(np.int32)
-            cv2.fillConvexPoly(mask, poly, 255)
+        # Resolve the group mask + its bounding rect (cached per-group;
+        # only rebuilt when corners change, so a static layout pays the
+        # cv2.fillConvexPoly cost ONCE, not every frame).
+        mask, mbox = self._group_mask(group)
+        mx0, my0, mx1, my1 = mbox
 
-        # Bail if no mask pixels overlap the destination rect — saves the
-        # cv2.resize cost when the spaces aren't where the video is.
-        sub_mask = mask[cy0:cy1, cx0:cx1]
-        if not sub_mask.any():
-            return
+        # Intersection of "where the video lands" and "where the mask
+        # has any pixels" — that's the only region we need to touch.
+        x0, y0 = max(vx0, mx0), max(vy0, my0)
+        x1, y1 = min(vx1, mx1), min(vy1, my1)
+        if x1 <= x0 or y1 <= y0:
+            return  # Mask and video don't overlap.
 
         interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
         resized = cv2.resize(source, (dw, dh), interpolation=interp)
-        sx0 = cx0 - dx
-        sy0 = cy0 - dy
-        sx1 = sx0 + (cx1 - cx0)
-        sy1 = sy0 + (cy1 - cy0)
-        video_region = resized[sy0:sy1, sx0:sx1]
 
-        canvas_region = canvas[cy0:cy1, cx0:cx1]
-        idx = sub_mask > 0
-        canvas_region[idx] = video_region[idx]
-        canvas[cy0:cy1, cx0:cx1] = canvas_region
+        sx0, sy0 = x0 - dx, y0 - dy
+        sx1, sy1 = sx0 + (x1 - x0), sy0 + (y1 - y0)
+        # cv2.copyTo writes `src` into `dst` where `mask` != 0 in pure
+        # C, GIL released — significantly faster than the previous
+        # `dst[mask>0] = src[mask>0]` boolean-fancy-index path which
+        # builds a full-canvas-sized intermediate every call.
+        cv2.copyTo(resized[sy0:sy1, sx0:sx1],
+                   mask[y0:y1, x0:x1],
+                   canvas[y0:y1, x0:x1])
+
+    def _group_mask(self, group):
+        """Return (mask, (x0, y0, x1, y1)) for `group`. Cached by space
+        corners — only rebuilt when the operator edits the layout, so a
+        static set pays the cv2.fillConvexPoly cost ONCE."""
+        signature = tuple(
+            (round(c[0], 6), round(c[1], 6))
+            for space in group.spaces for c in space.corners
+        )
+        key = id(group)
+        cached = self._group_mask_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1], cached[2]
+        h, w = self.h, self.w
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mx0, my0 = w, h
+        mx1, my1 = 0, 0
+        for space in group.spaces:
+            poly = space.corners_px(w, h).astype(np.int32)
+            cv2.fillConvexPoly(mask, poly, 255)
+            mx0 = min(mx0, int(poly[:, 0].min()))
+            my0 = min(my0, int(poly[:, 1].min()))
+            mx1 = max(mx1, int(poly[:, 0].max()) + 1)
+            my1 = max(my1, int(poly[:, 1].max()) + 1)
+        mx0 = max(0, mx0); my0 = max(0, my0)
+        mx1 = min(w, mx1); my1 = min(h, my1)
+        bbox = (mx0, my0, mx1, my1)
+        self._group_mask_cache[key] = (signature, mask, bbox)
+        return mask, bbox
+
+    def _invalidate_mask_cache(self):
+        """Drop cached masks for groups that no longer exist (so the
+        cache doesn't grow unboundedly through a session of editing).
+        Called sporadically — leaks of a few hundred bytes per deleted
+        group are not worth chasing every frame."""
+        live = {id(g) for g in self.mapping.groups}
+        for k in list(self._group_mask_cache):
+            if k not in live:
+                del self._group_mask_cache[k]
 
     def _draw_selection_border(self, canvas):
         """Outline only the currently-selected group's spaces — keeps the
