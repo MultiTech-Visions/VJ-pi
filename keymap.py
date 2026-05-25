@@ -87,13 +87,100 @@ FX_KEYS = {
 
 
 def dispatch(engine, key, mod):
-    # Quit with Shift+Esc, plain Esc = full reset
+    # Shift+Esc quits anywhere. Plain Esc has mode-dependent meaning.
     if key == pygame.K_ESCAPE:
         if mod & pygame.KMOD_SHIFT:
             engine.quit()
-        else:
-            engine.kill_all()
+            return
+        if engine.mode == "mapping" and engine.mapping.edit_mode:
+            # Cancel any in-flight drag / deselect the picked space, but
+            # stay in edit mode so the operator can keep working.
+            engine.mapping_cancel_drag()
+            return
+        engine.kill_all()
         return
+
+    # Mode toggle works in both modes; no Ctrl required.
+    if key == pygame.K_m and not (mod & pygame.KMOD_CTRL):
+        engine.toggle_mapping_mode()
+        return
+
+    # Mapping-mode-only ops.
+    if engine.mode == "mapping":
+        if key == pygame.K_TAB:
+            step = -1 if (mod & pygame.KMOD_SHIFT) else 1
+            engine.cycle_mapping_group(step)
+            return
+        # Edit-mode sub-shortcuts use bare letter keys (the live keymap is
+        # intentionally suppressed in edit mode below).
+        if key == pygame.K_e and not (mod & pygame.KMOD_CTRL):
+            engine.toggle_edit_mode()
+            return
+        if engine.mapping.edit_mode:
+            if key == pygame.K_b and not (mod & pygame.KMOD_CTRL):
+                engine.mapping_arm_bind()
+                return
+            if key == pygame.K_u and not (mod & pygame.KMOD_CTRL):
+                engine.mapping_unbind_selected_space()
+                return
+            if key in (pygame.K_DELETE,):
+                engine.mapping_delete_selected_space()
+                return
+            # In edit mode, swallow the content / FX / favourite keys —
+            # the operator is laying out spaces, not jamming. Mapping
+            # operations under Ctrl below still work, and so do
+            # Tab / M / Esc above.
+            if (key in FAV_KEYS or key in GEN_KEYS or key in HIT_KEYS
+                    or key in FX_KEYS or key in NAV_KEYS
+                    or key in (pygame.K_LEFT, pygame.K_RIGHT,
+                               pygame.K_UP, pygame.K_DOWN)):
+                return
+        if mod & pygame.KMOD_CTRL:
+            if key == pygame.K_n:
+                engine.mapping_add_group()
+                return
+            if key == pygame.K_BACKSPACE:
+                engine.mapping_remove_group()
+                return
+            if key == pygame.K_g:
+                engine.mapping_cycle_grid()
+                return
+            if key == pygame.K_PLUS or key == pygame.K_EQUALS:
+                engine.mapping_add_space()
+                return
+            if key == pygame.K_MINUS:
+                engine.mapping_remove_space()
+                return
+            if key == pygame.K_a:
+                engine.mapping_toggle_autopilot()
+                return
+            if key == pygame.K_k:
+                engine.mapping_cycle_autopilot_kind()
+                return
+            if key == pygame.K_COMMA:
+                engine.mapping_adjust_autopilot_interval(-1.0)
+                return
+            if key == pygame.K_PERIOD:
+                engine.mapping_adjust_autopilot_interval(1.0)
+                return
+            if key == pygame.K_b:
+                engine.mapping_toggle_borders()
+                return
+            if key == pygame.K_LEFTBRACKET:
+                engine.mapping_adjust_border_intensity(-0.1)
+                return
+            if key == pygame.K_RIGHTBRACKET:
+                engine.mapping_adjust_border_intensity(0.1)
+                return
+            if key == pygame.K_SEMICOLON:
+                engine.mapping_adjust_border_thickness(-1)
+                return
+            if key == pygame.K_QUOTE:
+                engine.mapping_adjust_border_thickness(1)
+                return
+            if key == pygame.K_c:
+                engine.mapping_cycle_border_color()
+                return
 
     if key == pygame.K_SPACE:
         engine.toggle_blackout()

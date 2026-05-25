@@ -20,8 +20,34 @@ KEY_CHEAT = [
     ("F11 / F12",    "Cycle output display / APPLY"),
     ("Space",        "Blackout (panic)"),
     ("Backspace",    "Freeze frame"),
+    ("M",            "Toggle MAPPING mode"),
     ("Esc",          "Panic: clear FX / overlay / hits (keeps the clip playing)"),
     ("Shift+Esc",    "Quit"),
+]
+
+MAPPING_KEY_CHEAT = [
+    ("M",            "Leave MAPPING mode"),
+    ("E",            "Toggle EDIT mode (mouse drag-creates spaces)"),
+    ("Tab",          "Next group (Shift+Tab = prev)"),
+    ("EDIT — drag empty",  "rubber-band a new rectangle → new group"),
+    ("EDIT — click space", "select + start move drag"),
+    ("EDIT — drag corner", "reshape the picked space"),
+    ("EDIT — Shift+click", "bind clicked space → selected space's group"),
+    ("EDIT — B / U",  "arm-bind / unbind selected space"),
+    ("EDIT — Delete", "delete selected space"),
+    ("EDIT — Esc",    "cancel drag / deselect"),
+    ("Ctrl+N",       "New group"),
+    ("Ctrl+Back",    "Delete current group"),
+    ("Ctrl+= / -",   "Add / remove a space in current group"),
+    ("Ctrl+G",       "Cycle grid layout (1·2x1·2x2·3x2·3x3·4x2·4x3)"),
+    ("Ctrl+A",       "Toggle autopilot on current group"),
+    ("Ctrl+K",       "Cycle autopilot kind"),
+    ("Ctrl+, / .",   "Autopilot interval ±1s"),
+    ("Ctrl+B",       "Toggle borders"),
+    ("Ctrl+C",       "Cycle border colour"),
+    ("Ctrl+[ / ]",   "Border intensity ±10%"),
+    ("Ctrl+; / '",   "Border thickness ±1px"),
+    ("PERFORM — content keys", "1-0/Q-P/A-L/F1-F7/←→↑↓ → selected group"),
 ]
 
 
@@ -63,29 +89,114 @@ class ControlWindow:
         # Hit-test rects, populated each frame in render().
         self._display_btn_rects = []  # [(idx, pygame.Rect), ...]
         self._apply_rect = None
+        # Preview rect kept current each frame so corner-handle hit tests
+        # know where the preview lives.
+        self._preview_rect = pygame.Rect(0, 0, self.preview_w, self.preview_h)
         try:
             self._window_id = window.id
         except AttributeError:
             self._window_id = None
-        self._cheat_panel = self._build_cheat_panel()
+        self._cheat_panel = self._build_cheat_panel(KEY_CHEAT)
+        self._mapping_cheat_panel = self._build_cheat_panel(MAPPING_KEY_CHEAT)
 
     # ── Event handling ───────────────────────────────────────────────
 
     def handle_event(self, event):
-        """Forward mouse clicks from the control window to its buttons."""
-        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
-            return
+        """Forward mouse activity from the control window to its buttons
+        and (in mapping/edit mode) to the spaces editor."""
         if not self._event_is_ours(event):
+            return
+        e = self.engine
+
+        if event.type == pygame.MOUSEMOTION:
+            if e.mode == "mapping" and e.mapping.drag is not None:
+                pos = getattr(event, "pos", None)
+                if pos is not None:
+                    e.mapping.update_drag(self._preview_to_norm(pos))
+            return
+
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if e.mode == "mapping" and e.mapping.drag is not None:
+                e.mapping.end_drag()
+                e._persist_mapping()
+            return
+
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
             return
         pos = getattr(event, "pos", None)
         if pos is None:
             return
+
+        if (e.mode == "mapping" and e.mapping.edit_mode
+                and self._preview_rect.collidepoint(pos)):
+            if self._handle_edit_click(pos):
+                return
+
         for idx, rect in self._display_btn_rects:
             if rect.collidepoint(pos):
                 self.engine.pending_display = idx
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
             self.engine.apply_pending_display()
+
+    def _handle_edit_click(self, pos):
+        """Edit-mode click priority:
+          1. Shift / bind-armed click on a space     → bind into selected group
+          2. Click on a corner handle of the picked  → corner drag
+             space
+          3. Click on any space's body               → select + start move drag
+          4. Click on empty preview area             → start create drag
+
+        Returns True if the click was consumed."""
+        e = self.engine
+        m = e.mapping
+        norm = self._preview_to_norm(pos)
+
+        shift_held = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+
+        # 1. Bind gesture (shift+click OR bind_armed) on another space.
+        if (shift_held or m.bind_armed) and m.selected_space is not None:
+            hit = m.hit_test_space(norm)
+            if hit is not None and hit != m.selected_space:
+                if hit[0] != m.selected_space[0]:
+                    m.bind_to_selected(*hit)
+                    e._persist_mapping()
+                else:
+                    # Same group already — just clear bind state.
+                    m.bind_armed = False
+                return True
+            # If they shift-clicked empty area, fall through to nothing.
+            m.bind_armed = False
+
+        # 2. Corner handle of the picked space — only the picked space's
+        #    corners are draggable so neighbouring spaces' corners don't
+        #    fight for the click.
+        radius = 12.0 / max(self.preview_w, 1)
+        corner = m.hit_test_corner_of_selected_space(norm, radius)
+        if corner is not None:
+            m.start_corner_drag(corner)
+            return True
+
+        # 3. Body of any space.
+        hit = m.hit_test_space(norm)
+        if hit is not None:
+            m.select_space(*hit)
+            m.start_move(*hit, norm)
+            e._persist_mapping()
+            return True
+
+        # 4. Empty area → drag a brand-new rectangle into existence.
+        m.start_create(norm)
+        return True
+
+    def _preview_to_norm(self, pos):
+        """Convert a preview-window click position into normalized (0..1)
+        output coords. Clamped so out-of-preview drags still produce a
+        valid corner position."""
+        rect = self._preview_rect
+        nx = (pos[0] - rect.x) / max(1, rect.w)
+        ny = (pos[1] - rect.y) / max(1, rect.h)
+        return (max(0.0, min(1.0, nx)), max(0.0, min(1.0, ny)))
 
     def _event_is_ours(self, event):
         win = getattr(event, "window", None)
@@ -106,11 +217,17 @@ class ControlWindow:
         win_w, win_h = self.size
         pad = 12
         e = self.engine
+        mapping_mode = e.mode == "mapping"
 
         # ── Top row: preview (left) + status (right) ─────────────
         self._draw_preview(surface, pad, pad, frame)
+        if mapping_mode:
+            self._draw_space_overlay(surface)
         sx = pad + self.preview_w + 16
-        self._draw_status(surface, sx, pad, win_w - sx - pad)
+        if mapping_mode:
+            self._draw_mapping_status(surface, sx, pad, win_w - sx - pad)
+        else:
+            self._draw_status(surface, sx, pad, win_w - sx - pad)
 
         # Cursor flowing down the page from below the preview row.
         y = pad + self.preview_h + 14
@@ -118,16 +235,32 @@ class ControlWindow:
         # Badges (only renders if anything to show; returns same y otherwise)
         y = self._draw_badges(surface, pad, y)
 
-        # Favourites grids
+        if mapping_mode:
+            y = self._draw_groups_list(surface, pad, y, win_w - pad * 2)
+            y += 6
+
+        # Favourites grids — clarify they target the selected group when in
+        # mapping mode (header gets a "→ Group N" suffix).
+        clip_header = "CLIP FAVS  (1-0)"
+        ovl_header = "OVL  FAVS  (Q-P)"
+        active_clip_stem = e.clips.name(e.clips.active_idx)
+        active_ovl_stem = e.overlays.name(e.overlays.active_idx)
+        if mapping_mode:
+            g = e.mapping.selected_group()
+            if g is not None:
+                clip_header += f"  → {g.name}"
+                ovl_header += f"  → {g.name}"
+                active_clip_stem = g.clip_stem if g.content_kind == "clip" else None
+                active_ovl_stem = g.overlay_stem
         y = self._draw_favorites(surface, pad, y, win_w - pad * 2,
-                                 "CLIP FAVS  (1-0)", "1234567890",
+                                 clip_header, "1234567890",
                                  e.clip_favorites,
-                                 active_stem=e.clips.name(e.clips.active_idx))
+                                 active_stem=active_clip_stem)
         y += 2
         y = self._draw_favorites(surface, pad, y, win_w - pad * 2,
-                                 "OVL  FAVS  (Q-P)", "QWERTYUIOP",
+                                 ovl_header, "QWERTYUIOP",
                                  e.overlay_favorites,
-                                 active_stem=e.overlays.name(e.overlays.active_idx))
+                                 active_stem=active_ovl_stem)
         y += 12
 
         # Display selector
@@ -137,7 +270,7 @@ class ControlWindow:
         # Key cheat sheet — flows naturally after the display selector.
         # If room runs out we just clip at the window bottom (still useful
         # since the top rows are the more important ones).
-        panel = self._cheat_panel
+        panel = self._mapping_cheat_panel if mapping_mode else self._cheat_panel
         avail = max(0, win_h - pad - y)
         if avail > 0:
             src = panel.subsurface(
@@ -154,6 +287,7 @@ class ControlWindow:
     # ── Panel parts ──────────────────────────────────────────────────
 
     def _draw_preview(self, surface, x, y, frame):
+        self._preview_rect = pygame.Rect(x, y, self.preview_w, self.preview_h)
         if frame is not None:
             preview = pygame.image.frombuffer(
                 frame.tobytes(), (frame.shape[1], frame.shape[0]), "RGB"
@@ -166,8 +300,153 @@ class ControlWindow:
                              (x, y, self.preview_w, self.preview_h))
         pygame.draw.rect(surface, (90, 90, 120),
                          (x, y, self.preview_w, self.preview_h), 1)
-        label = self.font_s.render("LIVE OUTPUT", True, (140, 140, 160))
+        label_text = ("MAPPING — drag corner handles to reshape"
+                      if self.engine.mode == "mapping" else "LIVE OUTPUT")
+        label = self.font_s.render(label_text, True, (140, 140, 160))
         surface.blit(label, (x + 6, y + 4))
+
+    def _draw_space_overlay(self, surface):
+        """Outline every group's spaces on the preview, highlight the
+        picked-for-edit space, draw corner handles on the picked space,
+        and rubber-band the create-drag rectangle if one is in flight."""
+        e = self.engine
+        m = e.mapping
+        rect = self._preview_rect
+        sel_idx = m.selected
+        for gi, group in enumerate(m.groups):
+            is_selected_group = (gi == sel_idx)
+            outline = (200, 220, 255) if is_selected_group else (90, 100, 130)
+            for si, space in enumerate(group.spaces):
+                pts = [(rect.x + c[0] * rect.w, rect.y + c[1] * rect.h)
+                       for c in space.corners]
+                pygame.draw.polygon(surface, outline, pts, 1)
+                # Tiny group-index tag at the centre so it's clear which
+                # spaces belong together.
+                cx = sum(p[0] for p in pts) / 4
+                cy = sum(p[1] for p in pts) / 4
+                tag = self.font_s.render(f"G{gi + 1}", True, outline)
+                surface.blit(tag, (cx - tag.get_width() / 2,
+                                   cy - tag.get_height() / 2))
+
+        # Picked space + handles.
+        if m.selected_space is not None:
+            gi, si = m.selected_space
+            if 0 <= gi < len(m.groups) and 0 <= si < len(m.groups[gi].spaces):
+                picked = m.groups[gi].spaces[si]
+                pts = [(rect.x + c[0] * rect.w, rect.y + c[1] * rect.h)
+                       for c in picked.corners]
+                pygame.draw.polygon(surface, (255, 240, 120), pts, 2)
+                drag = m.drag
+                for ci, c in enumerate(picked.corners):
+                    hx = int(rect.x + c[0] * rect.w)
+                    hy = int(rect.y + c[1] * rect.h)
+                    is_dragging = (drag is not None
+                                   and drag.get("kind") == "corner"
+                                   and drag.get("space") == (gi, si)
+                                   and drag.get("corner") == ci)
+                    color = (255, 220, 80) if is_dragging else (255, 240, 180)
+                    pygame.draw.circle(surface, (20, 20, 30), (hx, hy), 6)
+                    pygame.draw.circle(surface, color, (hx, hy), 5)
+                    pygame.draw.circle(surface, (40, 40, 60), (hx, hy), 5, 1)
+
+        # Rubber-band rectangle while drag-creating.
+        if m.drag is not None and m.drag.get("kind") == "create":
+            sx, sy = m.drag["start"]
+            cx, cy = m.drag["current"]
+            x0 = int(rect.x + min(sx, cx) * rect.w)
+            x1 = int(rect.x + max(sx, cx) * rect.w)
+            y0 = int(rect.y + min(sy, cy) * rect.h)
+            y1 = int(rect.y + max(sy, cy) * rect.h)
+            pygame.draw.rect(surface, (200, 255, 200),
+                             pygame.Rect(x0, y0, x1 - x0, y1 - y0), 1)
+
+    def _draw_mapping_status(self, surface, x, y, width):
+        e = self.engine
+        g = e.mapping.selected_group()
+        title = self.font_h.render("MAPPING — selected group",
+                                   True, (220, 220, 240))
+        surface.blit(title, (x, y))
+        y += 22
+        if g is None:
+            none = self.font_s.render("no groups", True, (180, 120, 120))
+            surface.blit(none, (x, y))
+            return
+        n_spaces = len(g.spaces)
+        spaces_label = f"{n_spaces} space{'' if n_spaces == 1 else 's'}"
+        ap = "ON" if g.autopilot_enabled else "off"
+        ap_color = (130, 220, 140) if g.autopilot_enabled else (130, 130, 150)
+        self._row(surface, "NAME", g.name, x, y, width); y += 19
+        self._row(surface, "SPACES", spaces_label, x, y, width); y += 19
+        self._row(surface, "CONTENT", g.content_label(), x, y, width); y += 19
+        fx_on = [k for k, v in g.fx_state.items() if v]
+        self._row(surface, "FX", ", ".join(fx_on) if fx_on else "—",
+                  x, y, width); y += 22
+
+        # Autopilot row with a coloured chip.
+        ls = self.font_m.render("AUTOPILOT", True, (130, 130, 160))
+        surface.blit(ls, (x, y))
+        chip = self.font_s.render(f" {ap} ", True, (20, 20, 30))
+        chip_rect = chip.get_rect(topleft=(x + 88, y + 1))
+        pygame.draw.rect(surface, ap_color, chip_rect.inflate(4, 2),
+                         border_radius=3)
+        surface.blit(chip, chip_rect)
+        info = self.font_s.render(
+            f"  {g.autopilot_kind}  ·  every {g.autopilot_interval_s:.0f}s",
+            True, (180, 180, 200),
+        )
+        surface.blit(info, (chip_rect.right + 8,
+                            y + (ls.get_height() - info.get_height()) // 2))
+        y += 22
+
+        self._param_bar(surface, "PARAM X", g.param_x, x, y, width); y += 18
+        self._param_bar(surface, "PARAM Y", g.param_y, x, y, width); y += 22
+
+        # Border style summary
+        bc = e.mapping.border_color_eff()
+        sw = pygame.Rect(x + 88, y + 2, 18, 12)
+        pygame.draw.rect(surface, bc, sw)
+        pygame.draw.rect(surface, (90, 90, 120), sw, 1)
+        bls = self.font_m.render("BORDER", True, (130, 130, 160))
+        surface.blit(bls, (x, y))
+        on = "on" if e.mapping.show_borders else "OFF"
+        bvs = self.font_s.render(
+            f"  {on}  ·  thick {e.mapping.border_thickness}px"
+            f"  ·  int {int(e.mapping.border_intensity * 100)}%",
+            True, (200, 200, 220),
+        )
+        surface.blit(bvs, (sw.right + 6,
+                           y + (bls.get_height() - bvs.get_height()) // 2))
+
+    def _draw_groups_list(self, surface, x, y, width):
+        e = self.engine
+        title = self.font_h.render(
+            f"GROUPS  ({len(e.mapping.groups)})  — Tab cycles",
+            True, (220, 220, 240),
+        )
+        surface.blit(title, (x, y))
+        y += 22
+        bx = x
+        chip_h = 22
+        for gi, group in enumerate(e.mapping.groups):
+            is_sel = (gi == e.mapping.selected)
+            ap_dot = " ●" if group.autopilot_enabled else ""
+            label = self.font_m.render(
+                f" {group.name} ({len(group.spaces)}){ap_dot} ",
+                True, (255, 255, 255) if is_sel else (220, 220, 240),
+            )
+            rect = pygame.Rect(bx, y, label.get_width() + 10, chip_h)
+            if rect.right > x + width:
+                bx = x
+                y += chip_h + 4
+                rect = pygame.Rect(bx, y, label.get_width() + 10, chip_h)
+            bg = (70, 130, 200) if is_sel else (38, 42, 58)
+            border = (160, 220, 255) if is_sel else (90, 110, 140)
+            pygame.draw.rect(surface, bg, rect, border_radius=4)
+            pygame.draw.rect(surface, border, rect, 1, border_radius=4)
+            surface.blit(label, (rect.x + 5,
+                                 rect.y + (chip_h - label.get_height()) // 2))
+            bx = rect.right + 6
+        return y + chip_h + 4
 
     def _draw_status(self, surface, x, y, width):
         e = self.engine
@@ -192,6 +471,13 @@ class ControlWindow:
     def _draw_badges(self, surface, x, y):
         e = self.engine
         badges = []
+        if e.mode == "mapping":
+            if e.mapping.edit_mode:
+                badges.append(("MAPPING · EDIT", (255, 240, 120)))
+            else:
+                badges.append(("MAPPING · PERFORM", (160, 220, 255)))
+            if e.mapping.bind_armed:
+                badges.append(("BIND: next click", (200, 255, 200)))
         if getattr(e, "auto_mode", False):
             badges.append(("AUTOPILOT", (120, 220, 140)))
         if e.blackout:
@@ -303,21 +589,21 @@ class ControlWindow:
 
         return y + btn_h + 8
 
-    def _build_cheat_panel(self):
-        """Pre-render the static key cheat sheet to a Surface."""
+    def _build_cheat_panel(self, rows):
+        """Pre-render a static key cheat sheet to a Surface."""
         w = self.size[0] - 24
         row_h = 16
-        h = len(KEY_CHEAT) * row_h + 28
+        h = len(rows) * row_h + 28
         panel = pygame.Surface((w, h), pygame.SRCALPHA)
         pygame.draw.line(panel, (60, 60, 80), (0, 0), (w, 0), 1)
         title = self.font_h.render("KEYS", True, (220, 220, 240))
         panel.blit(title, (0, 6))
         y = 28
-        for keys, desc in KEY_CHEAT:
+        for keys, desc in rows:
             ks = self.font_s.render(keys, True, (140, 200, 255))
             ds = self.font_s.render(desc, True, (180, 180, 200))
             panel.blit(ks, (0, y))
-            panel.blit(ds, (130, y))
+            panel.blit(ds, (170, y))
             y += row_h
         return panel
 
