@@ -131,13 +131,31 @@ class ClipPool:
     def read(self):
         if self.active_idx is None:
             return None
-        clip = self.clips[self.active_idx]
+        return self.read_at(self.active_idx)
+
+    def ensure_open(self, idx):
+        """Open the clip at `idx` if not already, and refresh its LRU
+        position. Use this when multiple subscribers (e.g. mapping groups)
+        want to keep a clip alive without taking over `active_idx`."""
+        if not 0 <= idx < len(self.paths):
+            return
+        if self.clips[idx] is None:
+            self.clips[idx] = Clip(self.paths[idx])
+        self._touch_lru(idx)
+        self._evict_lru(protect=idx)
+
+    def read_at(self, idx):
+        """Read one frame from clip `idx` without changing `active_idx`.
+        Opens the clip lazily if it was LRU-evicted. Returns None if the
+        index is invalid or the clip can't be read."""
+        if not 0 <= idx < len(self.paths):
+            return None
+        clip = self.clips[idx]
         if clip is None:
-            # Was evicted between select() and read() — reopen.
-            clip = Clip(self.paths[self.active_idx])
-            self.clips[self.active_idx] = clip
-            self._touch_lru(self.active_idx)
-            self._evict_lru(protect=self.active_idx)
+            clip = Clip(self.paths[idx])
+            self.clips[idx] = clip
+            self._touch_lru(idx)
+            self._evict_lru(protect=idx)
         frame = clip.read()
         if frame is None:
             return None

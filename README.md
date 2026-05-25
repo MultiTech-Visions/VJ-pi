@@ -135,8 +135,50 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `F12`               | Apply the pending output display (and persist it)  |
 | `Space`             | Blackout toggle (panic button)                     |
 | `Backspace`         | Freeze frame toggle                                |
+| `M`                 | Toggle **MAPPING mode** (see section below)        |
 | `Esc`               | Panic: clear FX, overlays, hits, blackout/freeze. **Keeps the current clip playing** so you never drop to black unexpectedly. |
 | `Shift+Esc`         | Quit                                               |
+
+## Projection mapping mode (press `M`)
+
+Mapping mode lets you carve the output into named **spaces** (quadrilaterals
+on the projected frame), tie multiple spaces together into a **group** so a
+single set of controls drives them all symmetrically, and stack multiple
+groups so each one runs its own content + autopilot loop. Setup persists in
+`vj_state.json` between sessions.
+
+| Keys                | Action                                              |
+|---------------------|-----------------------------------------------------|
+| `M`                 | Enter / leave MAPPING mode                          |
+| `Tab` / `Shift+Tab` | Next / previous group (the active group gets a coloured border on the projector so you can see it) |
+| `Ctrl+N`            | New group (added at the end)                       |
+| `Ctrl+Backspace`    | Delete the current group                           |
+| `Ctrl+=` / `Ctrl+-` | Add / remove a space in the current group          |
+| `Ctrl+G`            | Cycle pre-baked grid layouts (1·2x1·1x2·2x2·3x2·3x3·4x2·4x3) for the current group |
+| `Ctrl+A`            | Toggle **autopilot** on the current group          |
+| `Ctrl+K`            | Cycle autopilot kind: cycle/random clips, cycle/random generatives |
+| `Ctrl+,` / `Ctrl+.` | Autopilot interval ± 1 second (default 8 s)        |
+| `Ctrl+B`            | Toggle the on-projector selection border on/off    |
+| `Ctrl+C`            | Cycle border colour (light gray / cyan / amber / violet / mint / red-pink — never white) |
+| `Ctrl+[` / `Ctrl+]` | Border intensity ± 10 %                            |
+| `Ctrl+;` / `Ctrl+'` | Border thickness ± 1 px                            |
+| `1-0` `Q-P` `A-L` `F1-F7` `←→↑↓` `−/=` `[/]` | All apply to the SELECTED group only — change content / FX / params / browse libraries for whichever group you've tabbed to. Each group keeps its own state. |
+| Mouse in HUD preview | Drag a corner handle to reshape that space      |
+
+Pitfalls worth knowing about:
+
+- Border colour defaults to a **light gray** (180,180,180) — not white —
+  with intensity at 100 %. Drop it via `Ctrl+[` / `Ctrl+]` if even light
+  gray is too bright on your surface.
+- Spaces are stored in **normalized 0..1 coordinates** so the mapping
+  survives resolution changes, display switches, and Pi-OS-fontsize-
+  induced surprises.
+- Each group has its own random **time offset** so two groups running the
+  same generative don't visually lock-step.
+- `cv2.warpPerspective` is the bottleneck; we crop to the quad bounding
+  box and apply a convex-poly mask so unmapped pixels stay pure black (no
+  spill onto the wall). If you run >12 groups with different clips, the
+  per-pool LRU may thrash — the live show should stay well below that.
 
 ### Browsing big libraries + favourites
 

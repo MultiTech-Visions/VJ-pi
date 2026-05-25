@@ -92,6 +92,65 @@ def dispatch(engine, key, mod):
             engine.kill_all()
         return
 
+    # Mode toggle works in both modes; no Ctrl required.
+    if key == pygame.K_m and not (mod & pygame.KMOD_CTRL):
+        engine.toggle_mapping_mode()
+        return
+
+    # Mapping-mode-only ops (most keep Ctrl as the prefix to leave the
+    # bare letter keys free for selecting generatives on the current group).
+    if engine.mode == "mapping":
+        if key == pygame.K_TAB:
+            step = -1 if (mod & pygame.KMOD_SHIFT) else 1
+            engine.cycle_mapping_group(step)
+            return
+        if mod & pygame.KMOD_CTRL:
+            if key == pygame.K_n:
+                engine.mapping_add_group()
+                return
+            if key == pygame.K_BACKSPACE:
+                engine.mapping_remove_group()
+                return
+            if key == pygame.K_g:
+                engine.mapping_cycle_grid()
+                return
+            if key == pygame.K_PLUS or key == pygame.K_EQUALS:
+                engine.mapping_add_space()
+                return
+            if key == pygame.K_MINUS:
+                engine.mapping_remove_space()
+                return
+            if key == pygame.K_a:
+                engine.mapping_toggle_autopilot()
+                return
+            if key == pygame.K_k:
+                engine.mapping_cycle_autopilot_kind()
+                return
+            if key == pygame.K_COMMA:
+                engine.mapping_adjust_autopilot_interval(-1.0)
+                return
+            if key == pygame.K_PERIOD:
+                engine.mapping_adjust_autopilot_interval(1.0)
+                return
+            if key == pygame.K_b:
+                engine.mapping_toggle_borders()
+                return
+            if key == pygame.K_LEFTBRACKET:
+                engine.mapping_adjust_border_intensity(-0.1)
+                return
+            if key == pygame.K_RIGHTBRACKET:
+                engine.mapping_adjust_border_intensity(0.1)
+                return
+            if key == pygame.K_SEMICOLON:
+                engine.mapping_adjust_border_thickness(-1)
+                return
+            if key == pygame.K_QUOTE:
+                engine.mapping_adjust_border_thickness(1)
+                return
+            if key == pygame.K_c:
+                engine.mapping_cycle_border_color()
+                return
+
     if key == pygame.K_SPACE:
         engine.toggle_blackout()
         return
