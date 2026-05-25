@@ -50,20 +50,49 @@ def save_rgb(img, name):
 
 
 def read_screen(ctx, size):
-    """Read the default framebuffer back as an (H, W, 3) uint8 RGB array,
-    top-down (GL is bottom-up natively, so we flip)."""
+    """Read the default framebuffer back as an (H, W, 3) uint8 RGB
+    array, top-down (GL is bottom-up natively, so we flip).
+
+    Reads 4 components (RGBA) and drops alpha rather than reading 3
+    components: the GLES 3.0 spec only requires GL_RGBA + UNSIGNED_BYTE
+    to be supported by glReadPixels — GL_RGB + UNSIGNED_BYTE is optional
+    and V3D 7.1 doesn't appear to support it (silent all-zero reads).
+    Calling ctx.finish() first to make sure the GPU has actually
+    completed prior draws / clears before we read.
+    """
     w, h = size
-    data = ctx.screen.read(components=3, alignment=1, dtype="f1")
-    img = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 3)
-    return np.ascontiguousarray(img[::-1])
+    ctx.finish()
+    data = ctx.screen.read(components=4, alignment=1, dtype="f1")
+    img = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 4)
+    return np.ascontiguousarray(img[::-1, :, :3])
 
 
 def read_fbo(fbo, size):
     """Same shape as read_screen but for a moderngl framebuffer."""
     w, h = size
-    data = fbo.read(components=3, alignment=1, dtype="f1")
-    img = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 3)
-    return np.ascontiguousarray(img[::-1])
+    fbo.ctx.finish()
+    data = fbo.read(components=4, alignment=1, dtype="f1")
+    img = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 4)
+    return np.ascontiguousarray(img[::-1, :, :3])
+
+
+def make_fbo(ctx, size):
+    """Build an FBO with a 4-component (RGBA8) colour attachment.
+
+    GLES 3.0 doesn't require GL_RGB8 to be color-renderable, and V3D
+    7.1 doesn't support it as a render target — FBO creation with
+    RGB8 succeeds silently but writes / clears produce undefined
+    (typically zero) results. GL_RGBA8 IS spec-mandated as color-
+    renderable, so every FBO in the test suite (and the main pipeline)
+    uses 4 components.
+    """
+    import moderngl
+    w, h = size
+    tex = ctx.texture((w, h), 4, dtype="f1")
+    tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+    tex.repeat_x = False
+    tex.repeat_y = False
+    return ctx.framebuffer(color_attachments=[tex])
 
 
 def is_near(mean_rgb, expected_rgb, tol=40):

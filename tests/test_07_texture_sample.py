@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import moderngl
-from _common import init_window, read_fbo, save_rgb
+from _common import init_window, read_fbo, save_rgb, make_fbo
 
 W, H = 320, 240
 screen, ctx = init_window(size=(W, H))
@@ -31,12 +31,16 @@ pattern[H//2:, :W//2] = (255, 0, 0)   # BGR blue
 pattern[H//2:, W//2:] = (255, 255, 255)  # white
 save_rgb(np.flip(pattern, axis=2), "07_input_pattern")  # save the input as RGB for reference
 
-# Upload as 3-channel texture (RGB8 internal format).
-src_tex = ctx.texture((W, H), 3, dtype="f1")
+# Upload as 4-channel texture (RGBA8 internal format). RGB8 textures
+# are spec-required to be sampleable in GLES 3.0, but V3D has been
+# observed to give zero samples on RGB8 — RGBA8 is the safe path. We
+# pad the BGR pattern with a constant alpha byte.
+pattern_bgra = np.dstack([pattern, np.full(pattern.shape[:2], 255, dtype=np.uint8)])
+src_tex = ctx.texture((W, H), 4, dtype="f1")
 src_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
 src_tex.repeat_x = False
 src_tex.repeat_y = False
-src_tex.write(pattern.tobytes())
+src_tex.write(pattern_bgra.tobytes())
 
 VS = """#version 300 es
 precision highp float;
@@ -67,8 +71,7 @@ verts = np.array([-1, -1, 1, -1, -1, 1, 1, 1], dtype=np.float32)
 vbo = ctx.buffer(verts.tobytes())
 vao = ctx.vertex_array(prog, [(vbo, "2f", "in_pos")])
 
-dst_tex = ctx.texture((W, H), 3, dtype="f1")
-fbo = ctx.framebuffer(color_attachments=[dst_tex])
+fbo = make_fbo(ctx, (W, H))
 fbo.use()
 ctx.viewport = (0, 0, W, H)
 ctx.clear(0.0, 0.0, 0.0, 1.0)
