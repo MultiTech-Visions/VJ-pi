@@ -54,6 +54,10 @@ class Engine:
         self.fx_state = {fx: False for fx in FX_TOGGLES}
         self.hit_type = None
         self.hit_frames_left = 0
+        # Set of HIT_KEYS we've seen go down without a matching KEYUP.
+        # Sourced from real events (not get_pressed) so a lost KEYUP
+        # never leaves a hit stuck in the on position.
+        self._held_hit_keys = set()
         self.blackout = False
         self.freeze = False
         self.frozen_frame = None
@@ -527,14 +531,21 @@ class Engine:
         compose_frame() decrements hit_frames_left each frame; we top it up
         as long as the corresponding key is pressed. Two frames of headroom
         means an in-flight hit gracefully finishes the frame after release.
+
+        We track held state from KEYDOWN / KEYUP / WINDOWFOCUSLOST events
+        rather than polling pygame.key.get_pressed(). Under Wayland (and
+        sometimes X11 after focus changes) get_pressed() has been seen to
+        report a key as held forever when its KEYUP got dropped, which
+        previously caused a permanent strobe / white-screen lockup.
         """
-        keys = pygame.key.get_pressed()
-        for k, hit_name in hit_keys_map.items():
-            if keys[k]:
-                self.hit_type = hit_name
-                if self.hit_frames_left < 2:
-                    self.hit_frames_left = 2
-                return  # one hit at a time
+        for k in self._held_hit_keys:
+            hit_name = hit_keys_map.get(k)
+            if hit_name is None:
+                continue
+            self.hit_type = hit_name
+            if self.hit_frames_left < 2:
+                self.hit_frames_left = 2
+            return  # one hit at a time
 
     def update_params_from_keys(self, dt):
         """Arrows: tune PARAM X/Y in manual mode, tune auto rates in autopilot.
@@ -1256,6 +1267,12 @@ class Engine:
                     elif is_initial or event.key in NAV_KEYS:
                         dispatch(self, event.key, event.mod)
 
+                    # Mark hit keys as held off REAL events so a missed
+                    # KEYUP can't leave us stuck on (which previously
+                    # made the strobe shader run forever → white-screen).
+                    if event.key in HIT_KEYS:
+                        self._held_hit_keys.add(event.key)
+
                 elif event.type == pygame.KEYUP:
                     if event.key in fav_pressed_at:
                         elapsed = time.time() - fav_pressed_at.pop(event.key)
@@ -1266,10 +1283,12 @@ class Engine:
                             fav_tap(self, event.key)
                         long_press_fired.discard(event.key)
                     held_keys.discard(event.key)
+                    self._held_hit_keys.discard(event.key)
 
                 elif event.type == pygame.WINDOWFOCUSLOST:
                     held_keys.clear()
                     fav_pressed_at.clear()
+                    self._held_hit_keys.clear()
                     long_press_fired.clear()
 
                 elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
