@@ -697,7 +697,12 @@ class Renderer:
         )
 
     def _make_fbo(self, w, h):
-        tex = self.ctx.texture((w, h), 3, dtype="f1")
+        # 4-component RGBA: GLES 3.0 only *requires* RGBA8 to be color-
+        # renderable. RGB8 *is* in the required list per spec, but Pi 5's
+        # V3D Mesa driver is happier with 4-component render targets and
+        # the alpha byte is rounding error on 4-8GB of RAM. Shaders all
+        # write `out vec4 frag;` already, so the change is free for them.
+        tex = self.ctx.texture((w, h), 4, dtype="f1")
         tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
         tex.repeat_x = False
         tex.repeat_y = False
@@ -1195,12 +1200,19 @@ class Renderer:
         """Read the current composited frame back to a numpy uint8 RGB
         array. Reuses one buffer to avoid per-frame allocations.
         Returns a view; callers MUST copy if they want to retain it
-        past the next readback() call."""
-        data = self._current.read(components=3, alignment=1, dtype="f1")
+        past the next readback() call.
+
+        Reads 4 components (RGBA) and drops alpha, because OpenGL ES 3.0
+        only guarantees glReadPixels(GL_RGBA, GL_UNSIGNED_BYTE) — RGB
+        readback is not a required format and Pi 5's V3D Mesa driver
+        returns a zero buffer for it (which surfaced as a permanently
+        black HUD preview and `readback_mean=0.0` in the diag log)."""
+        data = self._current.read(components=4, alignment=1, dtype="f1")
         # moderngl read returns bottom-up; flip to top-down to match
-        # the cv2-style frames the rest of the codebase expects.
-        buf = np.frombuffer(data, dtype=np.uint8).reshape(self.h, self.w, 3)
-        np.copyto(self._readback, buf[::-1])
+        # the cv2-style frames the rest of the codebase expects, and
+        # slice off the alpha channel on the way through.
+        buf = np.frombuffer(data, dtype=np.uint8).reshape(self.h, self.w, 4)
+        np.copyto(self._readback, buf[::-1, :, :3])
         return self._readback
 
     # ── Present ──────────────────────────────────────────────────────
