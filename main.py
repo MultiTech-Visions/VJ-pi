@@ -49,22 +49,16 @@ def _set_sdl_hints():
 
 
 def _request_gl_attributes():
-    """Ask SDL for a desktop OpenGL 3.3 core context BEFORE set_mode().
-
-    Pi 5's V3D Mesa driver exposes OpenGL 3.3 on the open-source stack,
-    which is what moderngl + our `#version 330 core` shaders target.
-    Must run AFTER pygame.init() and BEFORE pygame.display.set_mode()
-    or the request is silently ignored. If the driver can't satisfy the
-    request we still get a context — just maybe an older one — and
-    moderngl will report mismatch at compile time.
+    """Ask SDL for double-buffered OpenGL. We deliberately DON'T pin
+    a specific version, profile, or depth size: on Pi 5's V3D Mesa
+    driver, asking for `CORE` + `DEPTH_SIZE=0` together has been
+    observed to trigger `GLXBadFBConfig` because no matching FBConfig
+    exists. The driver gives us OpenGL 3.3 by default anyway — moderngl
+    reports the actual version it negotiated on startup, and our
+    `#version 330` shaders compile against both core and compatibility
+    contexts.
     """
-    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
-    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
-    pygame.display.gl_set_attribute(
-        pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE
-    )
     pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
-    pygame.display.gl_set_attribute(pygame.GL_DEPTH_SIZE, 0)
 
 
 def _display_size(display_idx, fallback):
