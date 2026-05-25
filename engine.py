@@ -591,6 +591,10 @@ class Engine:
                 # somewhere for the first dragged rectangle to land.
                 self.mapping.groups[0].spaces = []
                 self.mapping.edit_mode = True
+            elif all(len(g.spaces) == 0 for g in self.mapping.groups):
+                # Nothing to perform against — drop straight into EDIT so
+                # the operator can immediately start drawing.
+                self.mapping.edit_mode = True
         self._persist_mapping()
         pygame.mouse.set_visible(True)
 
@@ -615,6 +619,100 @@ class Engine:
         self.mapping.cancel_drag()
         self.mapping.bind_armed = False
         self.mapping.deselect_space()
+
+    def _handle_output_mouse_event(self, event):
+        """Mouse input that landed on the OUTPUT (projector) window.
+
+        Only meaningful in mapping/edit mode — it's the natural way to
+        do projection mapping, pointing at physical features through the
+        projection itself. Coords are screen-pixel; we normalize against
+        the output window size since fullscreen rescales away from
+        cfg.width/height."""
+        if not (self.mode == "mapping" and self.mapping.edit_mode):
+            return
+        sw, sh = self.screen.get_size()
+        m = self.mapping
+
+        if event.type == pygame.MOUSEMOTION:
+            pos = event.pos
+            norm = (max(0.0, min(1.0, pos[0] / max(1, sw))),
+                    max(0.0, min(1.0, pos[1] / max(1, sh))))
+            if m.drag is not None:
+                m.update_drag(norm)
+            else:
+                m.update_hover(norm)
+            return
+
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if m.drag is not None:
+                m.end_drag()
+                self._persist_mapping()
+            return
+
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+            return
+        pos = event.pos
+        norm = (max(0.0, min(1.0, pos[0] / max(1, sw))),
+                max(0.0, min(1.0, pos[1] / max(1, sh))))
+        self._mapping_handle_click(norm)
+
+    def _mapping_handle_click(self, norm):
+        """Shared edit-mode click priority for both projector and HUD
+        clicks: hover-toolbar button > shift-bind > corner > body > empty
+        area → create."""
+        m = self.mapping
+        shift_held = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+
+        # 1. Hover toolbar (× delete, + bind, ⊘ unbind, G group tag).
+        btn = m.hit_test_hover_button(norm)
+        if btn is not None:
+            kind, gi, si = btn
+            if kind == "delete":
+                m.select_space(gi, si)
+                m.delete_selected_space()
+                self._persist_mapping()
+            elif kind == "bind":
+                m.bind_to_selected(gi, si)
+                self._persist_mapping()
+            elif kind == "unbind":
+                m.select_space(gi, si)
+                m.unbind_selected_space()
+                self._persist_mapping()
+            elif kind == "group":
+                # Tap the group chip to make this space the picked one.
+                m.select_space(gi, si)
+                self._persist_mapping()
+            return
+
+        # 2. Keyboard-fallback Shift+click bind / bind-armed.
+        if (shift_held or m.bind_armed) and m.selected_space is not None:
+            hit = m.hit_test_space(norm)
+            if hit is not None and hit != m.selected_space:
+                if hit[0] != m.selected_space[0]:
+                    m.bind_to_selected(*hit)
+                    self._persist_mapping()
+                else:
+                    m.bind_armed = False
+                return
+            m.bind_armed = False
+
+        # 3. Corner handle of the picked space.
+        radius_norm = 0.025
+        corner = m.hit_test_corner_of_selected_space(norm, radius_norm)
+        if corner is not None:
+            m.start_corner_drag(corner)
+            return
+
+        # 4. Click on any space's body → select + start move drag.
+        hit = m.hit_test_space(norm)
+        if hit is not None:
+            m.select_space(*hit)
+            m.start_move(*hit, norm)
+            self._persist_mapping()
+            return
+
+        # 5. Empty area → drag a brand-new rectangle into existence.
+        m.start_create(norm)
 
     def cycle_mapping_group(self, step=1):
         self.mapping.cycle_selected(step)
@@ -889,14 +987,16 @@ class Engine:
 
     def _draw_edit_overlay(self, canvas):
         """Edit-mode UI drawn onto the actual projector output: outlines
-        on every group (dim) + the picked space (bright) + the in-flight
-        create-drag rubber-band rectangle. Lets the operator align spaces
-        to real-world features without looking at the HUD."""
+        on every group (dim) + the picked space (bright) + corner handles
+        + hover toolbars + the in-flight create-drag rectangle. Lets the
+        operator align spaces to real-world features and operate the
+        editor without looking at the HUD."""
         w, h = self.w, self.h
-        for gi, group in enumerate(self.mapping.groups):
+        m = self.mapping
+        for gi, group in enumerate(m.groups):
             for si, space in enumerate(group.spaces):
                 pts = space.corners_px(w, h).astype(np.int32).reshape(-1, 1, 2)
-                is_picked = (self.mapping.selected_space == (gi, si))
+                is_picked = (m.selected_space == (gi, si))
                 color = (255, 240, 120) if is_picked else (90, 110, 140)
                 thickness = 3 if is_picked else 1
                 cv2.polylines(canvas, [pts], True, color, thickness, cv2.LINE_AA)
@@ -906,8 +1006,13 @@ class Engine:
                     for cx, cy in space.corners_px(w, h).astype(np.int32):
                         cv2.circle(canvas, (int(cx), int(cy)), 6, (20, 20, 30), -1)
                         cv2.circle(canvas, (int(cx), int(cy)), 5, (255, 240, 120), -1)
+
+        # Hover toolbars — selected always; hovered too if different.
+        for cand in {m.selected_space, m.hovered_space} - {None}:
+            self._draw_hover_toolbar(canvas, *cand)
+
         # Rubber-band rectangle while dragging-to-create a new space.
-        drag = self.mapping.drag
+        drag = m.drag
         if drag is not None and drag.get("kind") == "create":
             sx, sy = drag["start"]
             cx, cy = drag["current"]
@@ -915,6 +1020,40 @@ class Engine:
             y0, y1 = int(min(sy, cy) * h), int(max(sy, cy) * h)
             if x1 - x0 >= 2 and y1 - y0 >= 2:
                 cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 255, 200), 1)
+
+    def _draw_hover_toolbar(self, canvas, gi, si):
+        """Render the per-space hover toolbar on the projector output."""
+        w, h = self.w, self.h
+        for kind, (nx, ny, nw, nh) in self.mapping.hover_toolbar_buttons(gi, si):
+            x0, y0 = int(nx * w), int(ny * h)
+            x1, y1 = int((nx + nw) * w), int((ny + nh) * h)
+            cv2.rectangle(canvas, (x0, y0), (x1, y1), (28, 30, 40), -1)
+            cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 210, 230), 1)
+            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+            r = max(2, min(x1 - x0, y1 - y0) // 4)
+            if kind == "delete":
+                col = (90, 90, 255)
+                cv2.line(canvas, (cx - r, cy - r), (cx + r, cy + r), col, 2, cv2.LINE_AA)
+                cv2.line(canvas, (cx + r, cy - r), (cx - r, cy + r), col, 2, cv2.LINE_AA)
+            elif kind == "bind":
+                col = (140, 230, 140)
+                cv2.line(canvas, (cx - r, cy), (cx + r, cy), col, 2, cv2.LINE_AA)
+                cv2.line(canvas, (cx, cy - r), (cx, cy + r), col, 2, cv2.LINE_AA)
+            elif kind == "unbind":
+                col = (255, 180, 80)
+                cv2.line(canvas, (cx - r, cy + r), (cx + r, cy - r), col, 2, cv2.LINE_AA)
+                cv2.circle(canvas, (cx, cy), 2, (28, 30, 40), -1)
+            elif kind == "group":
+                label = f"G{gi + 1}"
+                # Size text relative to button height so it stays legible
+                # whether the projector is 720p or the HUD preview is small.
+                scale = max(0.3, (y1 - y0) / 40.0)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
+                tx = cx - tw // 2
+                ty = cy + th // 2
+                cv2.putText(canvas, label, (tx, ty), font, scale,
+                            (220, 230, 250), 1, cv2.LINE_AA)
 
     def blit_to_output(self, frame):
         surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
@@ -987,7 +1126,15 @@ class Engine:
                     # so taps on 1-0 / Q-P don't fire content actions.
                     editing = (self.mode == "mapping"
                                and self.mapping.edit_mode)
-                    if event.key in FAV_KEYS and not editing:
+                    # K_e collides with the slot-2 overlay favourite, but in
+                    # MAPPING mode E is the EDIT-mode toggle — route it
+                    # straight to dispatch so the favourite handler doesn't
+                    # eat the keystroke before the mapping dispatcher sees it.
+                    is_mapping_e = (self.mode == "mapping"
+                                    and event.key == pygame.K_e
+                                    and not (event.mod & pygame.KMOD_CTRL))
+                    if (event.key in FAV_KEYS and not editing
+                            and not is_mapping_e):
                         if is_initial:
                             fav_pressed_at[event.key] = time.time()
                             long_press_fired.discard(event.key)
@@ -1013,8 +1160,23 @@ class Engine:
 
                 elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                                     pygame.MOUSEMOTION):
-                    if control is not None:
+                    # SDL2 puts the source window on each event. If it's
+                    # the HUD's window, let the control panel handle it
+                    # (preview drags, display picker buttons). Otherwise
+                    # it's a click on the projector itself — in mapping/
+                    # edit mode that's how the operator paints spaces
+                    # directly onto the projection surface.
+                    win = getattr(event, "window", None)
+                    hud_id = (control._window_id if control is not None
+                              else None)
+                    ev_win_id = (getattr(win, "id", None)
+                                 if win is not None else None)
+                    is_hud_event = (hud_id is not None
+                                    and ev_win_id == hud_id)
+                    if is_hud_event and control is not None:
                         control.handle_event(event)
+                    else:
+                        self._handle_output_mouse_event(event)
 
             # Per-frame long-press detection
             now = time.time()

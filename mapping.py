@@ -224,8 +224,14 @@ class MappingManager:
         # (group_idx, space_idx) of the space currently picked up for
         # editing; clicking another space changes it.
         self.selected_space: Optional[tuple] = None
+        # (group_idx, space_idx) the cursor is currently over — updated on
+        # MOUSEMOTION in either the HUD preview or the projector output,
+        # used to decide which space's hover toolbar to render.
+        self.hovered_space: Optional[tuple] = None
         # When True, the NEXT space click binds into the selected space's
         # group (instead of becoming the new selection). Reset after use.
+        # Still used by the keyboard fallback path; the hover toolbar's +
+        # button is the primary way to bind now.
         self.bind_armed: bool = False
         # Active drag, one of {None, {"kind": "corner", "space": (gi,si), "corner": ci},
         # {"kind": "move", "space": (gi,si), "last": (nx,ny)},
@@ -474,10 +480,12 @@ class MappingManager:
 
     def bind_to_selected(self, gi, si):
         """Move space (gi, si) into the selected space's group. If the
-        source group ends up empty it is removed."""
+        source group ends up empty it is removed. The selection stays on
+        the originator so you can chain multiple binds into one group
+        without re-selecting."""
         if self.selected_space is None:
             return
-        dst_gi = self.selected_space[0]
+        dst_gi, dst_si = self.selected_space
         if gi == dst_gi or not (0 <= gi < len(self.groups)):
             return
         if not (0 <= si < len(self.groups[gi].spaces)):
@@ -490,8 +498,10 @@ class MappingManager:
             if gi < dst_gi:
                 dst_gi -= 1
         self.selected = dst_gi
-        self.selected_space = (dst_gi, len(self.groups[dst_gi].spaces) - 1)
+        self.selected_space = (dst_gi, dst_si)
         self.bind_armed = False
+        # The space the cursor was over is gone or moved — invalidate.
+        self.hovered_space = None
 
     # ── Hit testing ──────────────────────────────────────────────────
 
@@ -604,3 +614,110 @@ class MappingManager:
 
     def cancel_drag(self):
         self.drag = None
+
+    # ── Hover toolbars (mouse-first editing UI) ──────────────────────
+
+    # Per-button width in normalized canvas units. ~4 % means the icons
+    # render readably on a 1280×720 projector (≈ 51 px) and stay clickable
+    # on a 640-wide HUD preview (≈ 26 px).
+    TOOLBAR_BTN = 0.04
+    TOOLBAR_GAP = 0.008
+
+    def update_hover(self, norm_xy):
+        """Track which space the cursor is over so the renderer knows where
+        to put the hover toolbar. Includes a small slop band ABOVE each
+        space so the toolbar's own footprint counts as "still hovering"
+        — otherwise moving the cursor onto a button would clear hover
+        and the button would vanish."""
+        if norm_xy is None:
+            self.hovered_space = None
+            return
+        # Direct hit on the body always wins.
+        hit = self.hit_test_space(norm_xy)
+        if hit is not None:
+            self.hovered_space = hit
+            return
+        # If the cursor is over the selected space's toolbar, keep
+        # showing that space's toolbar.
+        for cand in (self.selected_space, self.hovered_space):
+            if cand is None:
+                continue
+            gi, si = cand
+            for _kind, (nx, ny, nw, nh) in self.hover_toolbar_buttons(gi, si):
+                if nx <= norm_xy[0] <= nx + nw and ny <= norm_xy[1] <= ny + nh:
+                    self.hovered_space = (gi, si)
+                    return
+        self.hovered_space = None
+
+    def _toolbar_kinds(self, gi, si):
+        """Decide which buttons appear on the toolbar for space (gi, si)."""
+        is_sel = (self.selected_space == (gi, si))
+        kinds = []
+        if is_sel:
+            kinds.append("delete")
+            if len(self.groups[gi].spaces) > 1:
+                kinds.append("unbind")
+        else:
+            kinds.append("delete")
+            # Show "bind into selected" only when a different group's
+            # space is selected — same-group spaces are already bound.
+            if (self.selected_space is not None
+                    and self.selected_space[0] != gi):
+                kinds.append("bind")
+        kinds.append("group")  # always show the group tag last
+        return kinds
+
+    def hover_toolbar_buttons(self, gi, si):
+        """Returns [(kind, (nx, ny, nw, nh)), ...] for the hover toolbar of
+        space (gi, si). All coords normalized 0..1. Same layout used for
+        rendering and hit-testing — the caller just scales by surface
+        size. Returns [] if the space doesn't exist."""
+        if not (0 <= gi < len(self.groups)):
+            return []
+        if not (0 <= si < len(self.groups[gi].spaces)):
+            return []
+        space = self.groups[gi].spaces[si]
+        xs = [c[0] for c in space.corners]
+        ys = [c[1] for c in space.corners]
+        bx0, by0 = min(xs), min(ys)
+        bx1, by1 = max(xs), max(ys)
+
+        kinds = self._toolbar_kinds(gi, si)
+        btn = self.TOOLBAR_BTN
+        gap = self.TOOLBAR_GAP
+        # Group label chip is a bit wider so a 2-digit "G12" fits.
+        widths = [btn * 1.4 if k == "group" else btn for k in kinds]
+        total = sum(widths) + gap * (len(widths) - 1)
+
+        # Prefer above the bbox; fall back to below if no room.
+        above_y = by0 - btn - gap
+        toolbar_y = above_y if above_y >= 0 else min(1.0 - btn, by1 + gap)
+        # Anchor at bbox left, clamp so the strip stays on canvas.
+        toolbar_x = bx0
+        if toolbar_x + total > 1.0:
+            toolbar_x = max(0.0, 1.0 - total)
+
+        result = []
+        x = toolbar_x
+        for kind, w in zip(kinds, widths):
+            result.append((kind, (x, toolbar_y, w, btn)))
+            x += w + gap
+        return result
+
+    def hit_test_hover_button(self, norm_xy):
+        """If the click landed on a hover-toolbar button, return
+        (kind, gi, si). Toolbar candidates are the hovered space AND the
+        selected space (so the selected space's toolbar stays clickable
+        even when the cursor briefly leaves the body)."""
+        candidates = []
+        if self.hovered_space is not None:
+            candidates.append(self.hovered_space)
+        if (self.selected_space is not None
+                and self.selected_space not in candidates):
+            candidates.append(self.selected_space)
+        nx, ny = norm_xy
+        for gi, si in candidates:
+            for kind, (bx, by, bw, bh) in self.hover_toolbar_buttons(gi, si):
+                if bx <= nx <= bx + bw and by <= ny <= by + bh:
+                    return (kind, gi, si)
+        return None

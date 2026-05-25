@@ -27,15 +27,17 @@ KEY_CHEAT = [
 
 MAPPING_KEY_CHEAT = [
     ("M",            "Leave MAPPING mode"),
-    ("E",            "Toggle EDIT mode (mouse drag-creates spaces)"),
+    ("E",            "Toggle EDIT mode (mouse drives the editor)"),
     ("Tab",          "Next group (Shift+Tab = prev)"),
     ("EDIT — drag empty",  "rubber-band a new rectangle → new group"),
-    ("EDIT — click space", "select + start move drag"),
+    ("EDIT — click body",  "pick that space (handles + toolbar appear)"),
+    ("EDIT — drag body",   "move the whole space"),
     ("EDIT — drag corner", "reshape the picked space"),
-    ("EDIT — Shift+click", "bind clicked space → selected space's group"),
-    ("EDIT — B / U",  "arm-bind / unbind selected space"),
-    ("EDIT — Delete", "delete selected space"),
-    ("EDIT — Esc",    "cancel drag / deselect"),
+    ("EDIT — toolbar ×",   "delete this space"),
+    ("EDIT — toolbar +",   "bind this space into the selected space's group"),
+    ("EDIT — toolbar ⊘",   "unbind this space into its own new group"),
+    ("EDIT — toolbar G·",  "tag chip = which group this space belongs to"),
+    ("EDIT — Esc",   "cancel drag / deselect"),
     ("Ctrl+N",       "New group"),
     ("Ctrl+Back",    "Delete current group"),
     ("Ctrl+= / -",   "Add / remove a space in current group"),
@@ -109,8 +111,18 @@ class ControlWindow:
         e = self.engine
 
         if event.type == pygame.MOUSEMOTION:
-            if e.mode == "mapping" and e.mapping.drag is not None:
-                pos = getattr(event, "pos", None)
+            pos = getattr(event, "pos", None)
+            if (e.mode == "mapping" and e.mapping.edit_mode
+                    and pos is not None
+                    and self._preview_rect.collidepoint(pos)):
+                norm = self._preview_to_norm(pos)
+                if e.mapping.drag is not None:
+                    e.mapping.update_drag(norm)
+                else:
+                    e.mapping.update_hover(norm)
+            elif e.mode == "mapping" and e.mapping.drag is not None:
+                # Drag continues even if the cursor briefly leaves the
+                # preview (matches usual UX for click+drag).
                 if pos is not None:
                     e.mapping.update_drag(self._preview_to_norm(pos))
             return
@@ -129,8 +141,11 @@ class ControlWindow:
 
         if (e.mode == "mapping" and e.mapping.edit_mode
                 and self._preview_rect.collidepoint(pos)):
-            if self._handle_edit_click(pos):
-                return
+            # Delegate to the engine's shared click handler so the HUD
+            # preview and the projector share one source of truth for
+            # edit-mode gestures (and any future ones).
+            e._mapping_handle_click(self._preview_to_norm(pos))
+            return
 
         for idx, rect in self._display_btn_rects:
             if rect.collidepoint(pos):
@@ -138,56 +153,6 @@ class ControlWindow:
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
             self.engine.apply_pending_display()
-
-    def _handle_edit_click(self, pos):
-        """Edit-mode click priority:
-          1. Shift / bind-armed click on a space     → bind into selected group
-          2. Click on a corner handle of the picked  → corner drag
-             space
-          3. Click on any space's body               → select + start move drag
-          4. Click on empty preview area             → start create drag
-
-        Returns True if the click was consumed."""
-        e = self.engine
-        m = e.mapping
-        norm = self._preview_to_norm(pos)
-
-        shift_held = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
-
-        # 1. Bind gesture (shift+click OR bind_armed) on another space.
-        if (shift_held or m.bind_armed) and m.selected_space is not None:
-            hit = m.hit_test_space(norm)
-            if hit is not None and hit != m.selected_space:
-                if hit[0] != m.selected_space[0]:
-                    m.bind_to_selected(*hit)
-                    e._persist_mapping()
-                else:
-                    # Same group already — just clear bind state.
-                    m.bind_armed = False
-                return True
-            # If they shift-clicked empty area, fall through to nothing.
-            m.bind_armed = False
-
-        # 2. Corner handle of the picked space — only the picked space's
-        #    corners are draggable so neighbouring spaces' corners don't
-        #    fight for the click.
-        radius = 12.0 / max(self.preview_w, 1)
-        corner = m.hit_test_corner_of_selected_space(norm, radius)
-        if corner is not None:
-            m.start_corner_drag(corner)
-            return True
-
-        # 3. Body of any space.
-        hit = m.hit_test_space(norm)
-        if hit is not None:
-            m.select_space(*hit)
-            m.start_move(*hit, norm)
-            e._persist_mapping()
-            return True
-
-        # 4. Empty area → drag a brand-new rectangle into existence.
-        m.start_create(norm)
-        return True
 
     def _preview_to_norm(self, pos):
         """Convert a preview-window click position into normalized (0..1)
@@ -359,6 +324,47 @@ class ControlWindow:
             y1 = int(rect.y + max(sy, cy) * rect.h)
             pygame.draw.rect(surface, (200, 255, 200),
                              pygame.Rect(x0, y0, x1 - x0, y1 - y0), 1)
+
+        # Hover toolbars — render on the selected space always, and on the
+        # hovered space when it's a different one. Reuses the manager's
+        # normalized-coord layout so the projector and HUD show the same
+        # buttons in the same relative positions.
+        for cand in {m.selected_space, m.hovered_space} - {None}:
+            self._draw_preview_toolbar(surface, *cand)
+
+    def _draw_preview_toolbar(self, surface, gi, si):
+        m = self.engine.mapping
+        rect = self._preview_rect
+        for kind, (nx, ny, nw, nh) in m.hover_toolbar_buttons(gi, si):
+            x0 = int(rect.x + nx * rect.w)
+            y0 = int(rect.y + ny * rect.h)
+            x1 = int(rect.x + (nx + nw) * rect.w)
+            y1 = int(rect.y + (ny + nh) * rect.h)
+            btn_rect = pygame.Rect(x0, y0, x1 - x0, y1 - y0)
+            pygame.draw.rect(surface, (28, 30, 40), btn_rect, border_radius=3)
+            pygame.draw.rect(surface, (200, 210, 230), btn_rect, 1, border_radius=3)
+            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+            r = max(2, min(x1 - x0, y1 - y0) // 4)
+            if kind == "delete":
+                pygame.draw.line(surface, (255, 90, 90),
+                                 (cx - r, cy - r), (cx + r, cy + r), 2)
+                pygame.draw.line(surface, (255, 90, 90),
+                                 (cx + r, cy - r), (cx - r, cy + r), 2)
+            elif kind == "bind":
+                pygame.draw.line(surface, (140, 230, 140),
+                                 (cx - r, cy), (cx + r, cy), 2)
+                pygame.draw.line(surface, (140, 230, 140),
+                                 (cx, cy - r), (cx, cy + r), 2)
+            elif kind == "unbind":
+                pygame.draw.line(surface, (255, 180, 80),
+                                 (cx - r, cy + r), (cx + r, cy - r), 2)
+                pygame.draw.rect(surface, (28, 30, 40),
+                                 pygame.Rect(cx - 1, cy - 1, 3, 3))
+            elif kind == "group":
+                label = self.font_s.render(f"G{gi + 1}", True, (220, 230, 250))
+                surface.blit(label,
+                             (cx - label.get_width() // 2,
+                              cy - label.get_height() // 2))
 
     def _draw_mapping_status(self, surface, x, y, width):
         e = self.engine
