@@ -1,4 +1,17 @@
+"""Keyboard → action dispatch.
+
+Each pygame key maps to an `action` dict (see `actions.py` for the
+registry). The engine's main loop runs the action via `actions.run()`,
+the same path the web control panel uses — so keyboard and phone can
+never drift apart.
+
+Arrow keys are special: they sample continuously each frame in
+`Engine.update_params_from_keys()` so a held key produces smooth motion.
+They don't go through this dispatch.
+"""
 import pygame
+
+import actions
 
 
 # ── Library cycling ──────────────────────────────────────────────────
@@ -39,22 +52,25 @@ FAV_KEYS = set(CLIP_FAV_KEYS) | set(OVERLAY_FAV_KEYS)
 
 def fav_tap(engine, key):
     if key in CLIP_FAV_KEYS:
-        engine.play_clip_favorite(CLIP_FAV_KEYS.index(key))
+        actions.run(engine, {"name": "play_clip_favorite",
+                             "args": {"slot": CLIP_FAV_KEYS.index(key)}})
     elif key in OVERLAY_FAV_KEYS:
-        engine.play_overlay_favorite(OVERLAY_FAV_KEYS.index(key))
+        actions.run(engine, {"name": "play_overlay_favorite",
+                             "args": {"slot": OVERLAY_FAV_KEYS.index(key)}})
 
 
 def fav_long(engine, key):
     if key in CLIP_FAV_KEYS:
-        engine.save_clip_favorite(CLIP_FAV_KEYS.index(key))
+        actions.run(engine, {"name": "save_clip_favorite",
+                             "args": {"slot": CLIP_FAV_KEYS.index(key)}})
     elif key in OVERLAY_FAV_KEYS:
-        engine.save_overlay_favorite(OVERLAY_FAV_KEYS.index(key))
+        actions.run(engine, {"name": "save_overlay_favorite",
+                             "args": {"slot": OVERLAY_FAV_KEYS.index(key)}})
 
 
 # ── Generative bases / hits / FX ─────────────────────────────────────
 
-# Home row → generative base layers.
-# Indices match engine.GENERATIVES:
+# Home row → generative base layers. Indices match engine.GENERATIVES:
 #   A=plasma  S=tunnel  D=starfield  F=warp  G=waves  H=cells
 #   J=lissajous  K=moiré  L=metaballs
 GEN_KEYS = [
@@ -87,27 +103,29 @@ def dispatch(engine, key, mod):
     # Quit with Shift+Esc, plain Esc = full reset
     if key == pygame.K_ESCAPE:
         if mod & pygame.KMOD_SHIFT:
+            # Quit is intentionally NOT exposed as a registered action —
+            # we don't want a phone in the audience killing the show.
             engine.quit()
         else:
-            engine.kill_all()
+            actions.run(engine, {"name": "kill_all"})
         return
 
     if key == pygame.K_SPACE:
-        engine.toggle_blackout()
+        actions.run(engine, {"name": "toggle_blackout"})
         return
 
     if key == pygame.K_BACKSPACE:
-        engine.toggle_freeze()
+        actions.run(engine, {"name": "toggle_freeze"})
         return
 
     # Output-display picker (works regardless of which window has focus,
     # since these fire wherever keyboard focus happens to land — important
     # for fullscreen mode where the control HUD is hard to click into).
     if key == pygame.K_F11:
-        engine.cycle_pending_display()
+        actions.run(engine, {"name": "cycle_pending_display"})
         return
     if key == pygame.K_F12:
-        engine.apply_pending_display()
+        actions.run(engine, {"name": "apply_pending_display"})
         return
 
     # Arrow keys are sampled continuously each frame in Engine.run() — no
@@ -116,29 +134,31 @@ def dispatch(engine, key, mod):
         return
 
     if key == CYCLE_CLIPS_PREV:
-        engine.browse_clips("step", -1)
+        actions.run(engine, {"name": "browse_clips", "args": {"action": "step", "arg": -1}})
         return
     if key == CYCLE_CLIPS_NEXT:
-        engine.browse_clips("step", 1)
+        actions.run(engine, {"name": "browse_clips", "args": {"action": "step", "arg": 1}})
         return
     if key == CYCLE_OVRS_PREV:
-        engine.browse_overlays("step", -1)
+        actions.run(engine, {"name": "browse_overlays", "args": {"action": "step", "arg": -1}})
         return
     if key == CYCLE_OVRS_NEXT:
-        engine.browse_overlays("step", 1)
+        actions.run(engine, {"name": "browse_overlays", "args": {"action": "step", "arg": 1}})
         return
 
     # Favourite keys (1-0, Q-P) are handled in Engine.run()'s long-press
     # logic — they don't go through dispatch at all.
 
     if key in GEN_KEYS:
-        engine.select_generative(GEN_KEYS.index(key))
+        from engine import GENERATIVES
+        actions.run(engine, {"name": "select_generative",
+                             "args": {"name": GENERATIVES[GEN_KEYS.index(key)]}})
         return
 
     if key in HIT_KEYS:
-        engine.fire_hit(HIT_KEYS[key], frames=5)
+        actions.run(engine, {"name": "fire_hit", "args": {"kind": HIT_KEYS[key]}})
         return
 
     if key in FX_KEYS:
-        engine.toggle_fx(FX_KEYS[key])
+        actions.run(engine, {"name": "toggle_fx", "args": {"name": FX_KEYS[key]}})
         return

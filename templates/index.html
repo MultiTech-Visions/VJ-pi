@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0f1018">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>VJ Control</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <span class="title">VJ</span>
+    <span id="status" class="status disconnected">connecting…</span>
+    <button id="panic" class="panic" data-action="kill_all">PANIC</button>
+  </header>
+
+  <main>
+    <section class="card now-playing">
+      <div class="np-row"><span class="lbl">CLIP</span><span id="np-clip">—</span></div>
+      <div class="np-row"><span class="lbl">GEN</span><span id="np-gen">—</span></div>
+      <div class="np-row"><span class="lbl">OVL</span><span id="np-ovl">—</span></div>
+      <div class="np-row"><span class="lbl">FX</span><span id="np-fx">—</span></div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">CLIP</div>
+      <div class="row">
+        <button class="big" data-action="browse_clips" data-args='{"action":"step","arg":-1}'>◀ PREV</button>
+        <button class="big" data-action="browse_clips" data-args='{"action":"random"}'>RAND</button>
+        <button class="big" data-action="browse_clips" data-args='{"action":"step","arg":1}'>NEXT ▶</button>
+      </div>
+      <div id="clip-favs" class="favs" data-kind="clip"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">OVERLAY</div>
+      <div class="row">
+        <button class="big" data-action="browse_overlays" data-args='{"action":"step","arg":-1}'>◀ PREV</button>
+        <button class="big" data-action="browse_overlays" data-args='{"action":"off"}'>OFF</button>
+        <button class="big" data-action="browse_overlays" data-args='{"action":"step","arg":1}'>NEXT ▶</button>
+      </div>
+      <div id="overlay-favs" class="favs" data-kind="overlay"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">GENERATIVE</div>
+      <div id="gen-grid" class="grid grid-3"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">HITS</div>
+      <div class="grid grid-3">
+        <button class="hit" data-action="fire_hit" data-args='{"kind":"strobe"}'>STROBE</button>
+        <button class="hit" data-action="fire_hit" data-args='{"kind":"black_flash"}'>BLACK</button>
+        <button class="hit" data-action="fire_hit" data-args='{"kind":"invert_flash"}'>INVERT</button>
+        <button class="hit" data-action="fire_hit" data-args='{"kind":"zoom_punch"}'>ZOOM</button>
+        <button class="hit" data-action="fire_hit" data-args='{"kind":"rgb_smash"}'>RGB</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">FX</div>
+      <div id="fx-grid" class="grid grid-3"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">PARAM X
+        <span id="param-x-val" class="val">0.50</span></div>
+      <input id="param-x" type="range" min="0" max="1" step="0.01" value="0.5"
+             class="slider">
+    </section>
+    <section class="card">
+      <div class="card-title">PARAM Y
+        <span id="param-y-val" class="val">0.50</span></div>
+      <input id="param-y" type="range" min="0" max="1" step="0.01" value="0.5"
+             class="slider">
+    </section>
+  </main>
+
+  <footer class="bottombar">
+    <button class="bb" id="blackout" data-action="toggle_blackout">BLACKOUT</button>
+    <button class="bb" id="freeze"   data-action="toggle_freeze">FREEZE</button>
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

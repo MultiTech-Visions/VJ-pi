@@ -54,6 +54,29 @@ Live FX parameters are tuned with the **arrow keys** (← → for PARAM X,
 ↑ ↓ for PARAM Y) so you don't have to fight the trackpad/mouse cursor
 mid-set. The current values show as bars in the HUD.
 
+### Phone control (web UI)
+
+Anyone on the same Wi-Fi as the Pi can drive the rig from their phone.
+The control HUD displays a QR code + URL in the top-right corner —
+scan the QR and the mobile control panel opens in the browser, no app
+install. Multiple phones can connect at once; they all see live state
+(currently-playing clip, lit FX, param sliders) and can fire actions
+at the same time as the keyboard. Live state syncs between phones, so
+when one user toggles an FX, every other phone shows it lit.
+
+Everything the keyboard can do, the phone can do — clip/overlay
+browse, favourites (tap=play, long-press=assign, same ½-second
+threshold), generative pad, hit pad, FX toggles, param X/Y sliders,
+blackout, freeze, panic. The only thing kept keyboard-only is
+`Shift+Esc` (quit) so the audience can't end the set.
+
+The web server runs on port 8080 by default and is auto-started with
+the engine. Pass `--no-web` to disable it, or `--web-port N` to move it.
+Captive-portal detect URLs (`/hotspot-detect.html`, `/generate_204`,
+etc.) all 302-redirect to the control page, so when the Pi is running
+as a Wi-Fi access point (see "AP mode" below — coming soon) phones
+auto-open the control sheet on join.
+
 ### Switching the output display
 
 The HUD has an **OUTPUT DISPLAY** picker. Two ways to drive it:
@@ -204,17 +227,28 @@ compositor treats as transparent).
 ```
 main.py        argparse + pygame init + main loop wiring; opens the
                output window via pygame.display + a second SDL2
-               Window+Renderer for the control HUD
+               Window+Renderer for the control HUD; spawns web.py
+               threads.
 engine.py      Engine class: state, render pipeline, public actions.
                Splits compose_frame() (numpy) from blit_to_output()
                (pygame) so the same frame can feed both windows.
+               Drains pygame USEREVENTs in the main loop so web
+               actions run on the render thread alongside key events.
 control.py     ControlWindow: preview, state badges, cached key
-               cheat sheet. Renders to an offscreen Surface and
-               uploads as a Texture each frame.
+               cheat sheet, web URL + QR. Renders to an offscreen
+               Surface and uploads as a Texture each frame.
 effects.py     Generative + transformative numpy/OpenCV effects
 clips.py       ClipPool: lazy MP4 loader keyed by slot index
-keymap.py      Pygame key → engine action dispatch table
+actions.py     Central registry mapping action-name → engine method.
+               Both keymap.py and web.py dispatch through here so
+               keyboard and phone can never drift.
+keymap.py      Pygame key → action-name dispatch table
+web.py         Flask + SSE mobile control server (daemon thread).
+               Posts actions as pygame USEREVENTs (thread-safe in
+               SDL2) so the engine never sees the web thread.
 config.py      Config dataclass
+templates/     Jinja2 templates for the web UI (index.html)
+static/        app.css + app.js for the mobile control page
 ```
 
 Render pipeline each frame:

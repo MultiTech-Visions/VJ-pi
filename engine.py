@@ -275,6 +275,58 @@ class Engine:
         except (TypeError, pygame.error, ValueError) as exc:
             print(f"[vj] switch_output_display({new_idx}) failed: {exc!r}")
 
+    def snapshot(self):
+        """Cheap dict of all UI-visible state.
+
+        Called by the web layer ~10x/sec from a worker thread. Reading
+        these plain attributes from another thread is safe in CPython
+        (single bytecode load), and the worst-case "torn" read just
+        causes the next SSE diff to fix it. We never write engine state
+        from the web thread — everything mutates via posted USEREVENTs.
+        """
+        return {
+            "clip": {
+                "active_idx": self.clips.active_idx,
+                "name": self.clips.name(self.clips.active_idx),
+                "total": len(self.clips),
+            },
+            "overlay": {
+                "active_idx": self.overlays.active_idx,
+                "name": self.overlays.name(self.overlays.active_idx),
+                "total": len(self.overlays),
+            },
+            "generative": self.active_generative,
+            "fx": dict(self.fx_state),
+            "hit": {
+                "kind": self.hit_type if self.hit_frames_left > 0 else None,
+                "frames_left": self.hit_frames_left,
+            },
+            "blackout": self.blackout,
+            "freeze": self.freeze,
+            "param_x": round(self.param_x, 4),
+            "param_y": round(self.param_y, 4),
+            "favorites": {
+                "clips": list(self.clip_favorites),
+                "overlays": list(self.overlay_favorites),
+            },
+            "display": {
+                "current": self.cfg.display,
+                "pending": self.pending_display,
+                "count": self.num_displays,
+            },
+        }
+
+    def catalog(self):
+        """All clip / overlay names — needed by the web UI for browse
+        controls. Sent once on connect, refreshed only when the count
+        changes (libraries don't grow during a set)."""
+        return {
+            "clips": [p.stem for p in self.clips.paths],
+            "overlays": [p.stem for p in self.overlays.paths],
+            "generatives": list(GENERATIVES),
+            "fx": list(FX_TOGGLES),
+        }
+
     def update_params_from_keys(self, dt):
         """Arrow keys nudge param_x / param_y while held."""
         keys = pygame.key.get_pressed()
@@ -379,6 +431,7 @@ class Engine:
         return frame
 
     def run(self, control=None):
+        import actions
         from keymap import dispatch, NAV_KEYS, FAV_KEYS, fav_tap, fav_long
         # Enable system key-repeat. We filter below so only NAV_KEYS
         # auto-fire on hold — toggle/hit keys still need a fresh press.
@@ -395,6 +448,16 @@ class Engine:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
+
+                elif event.type == pygame.USEREVENT:
+                    # Web control panel posts actions onto the SDL event
+                    # queue from a worker thread; SDL_PushEvent is
+                    # thread-safe in SDL2, so we just run them inline here
+                    # on the main thread alongside keyboard events. The
+                    # action dict is in event.dict["action"].
+                    action = getattr(event, "action", None)
+                    if action is not None:
+                        actions.run(self, action)
 
                 elif event.type == pygame.KEYDOWN:
                     is_initial = event.key not in held_keys

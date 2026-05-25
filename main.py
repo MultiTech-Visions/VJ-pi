@@ -26,6 +26,10 @@ def parse_args():
                    help="Display index for the Control HUD window")
     p.add_argument("--control-size", default="680x720",
                    help="Control HUD size as WxH (default 680x720)")
+    p.add_argument("--web", action=argparse.BooleanOptionalAction, default=True,
+                   help="Run the mobile web control panel (default on). Disable with --no-web.")
+    p.add_argument("--web-port", type=int, default=8080,
+                   help="Port for the web control panel (default 8080)")
     return p.parse_args()
 
 
@@ -149,6 +153,16 @@ def main():
 
     engine = Engine(cfg, output_screen)
 
+    web_url = None
+    if args.web:
+        try:
+            import web
+            ip, port, _ = web.start(engine, port=args.web_port)
+            web_url = f"http://{ip}:{port}/"
+            print(f"[vj] web control: {web_url}  (open this on a phone on the same network)")
+        except Exception as exc:  # noqa: BLE001 — never let the web layer kill the show
+            print(f"[vj] web control failed to start: {exc!r}  (continuing without it)")
+
     control = None
     if args.control:
         from control import ControlWindow
@@ -164,6 +178,7 @@ def main():
             engine, ctrl_win, ctrl_renderer,
             size=(ctrl_w, ctrl_h),
             preview_size=(preview_w, preview_h),
+            web_url=web_url,
         )
 
     print(f"[vj] output:      {cfg.width}x{cfg.height} fullscreen={cfg.fullscreen} display={cfg.display}")

@@ -34,13 +34,16 @@ class ControlWindow:
 
     PREVIEW_TARGET_H = 180  # tall enough to read, narrow enough to share the row
 
-    def __init__(self, engine, window, renderer, size, preview_size):
+    def __init__(self, engine, window, renderer, size, preview_size,
+                 web_url=None):
         from pygame._sdl2.video import Texture
         self.engine = engine
         self.window = window
         self.renderer = renderer
         self.size = size  # (w, h)
         self.surface = pygame.Surface(size)
+        self.web_url = web_url
+        self._qr_surface = self._build_qr_surface(web_url) if web_url else None
 
         # Preview keeps source aspect, fixed target height. Width is then
         # capped so the status panel beside it always has at least 280px.
@@ -110,6 +113,16 @@ class ControlWindow:
         self._draw_preview(surface, pad, pad, frame)
         sx = pad + self.preview_w + 16
         self._draw_status(surface, sx, pad, win_w - sx - pad)
+
+        # QR + URL sits to the right of the preview if there's room;
+        # otherwise it appears at the bottom of the cheat sheet. Done
+        # before the badges/favs flow so the preview row gets the QR
+        # tucked in beside it without disturbing anything else.
+        if self._qr_surface is not None:
+            qr_x = win_w - pad - self._qr_surface.get_width()
+            qr_y = pad
+            if qr_x > sx + 220:  # enough room beside the status panel
+                surface.blit(self._qr_surface, (qr_x, qr_y))
 
         # Cursor flowing down the page from below the preview row.
         y = pad + self.preview_h + 14
@@ -290,11 +303,51 @@ class ControlWindow:
 
         return y + btn_h + 8
 
+    def _build_qr_surface(self, url):
+        """Render a small QR + URL caption to a pygame.Surface, once.
+
+        Returns None if qrcode isn't installed — the HUD just won't show
+        a QR, which is fine. The URL is still rendered as text in the
+        cheat-sheet footer (see _build_cheat_panel).
+        """
+        try:
+            import qrcode
+        except ImportError:
+            return None
+        try:
+            qr = qrcode.QRCode(border=1, box_size=4,
+                               error_correction=qrcode.constants.ERROR_CORRECT_M)
+            qr.add_data(url)
+            qr.make(fit=True)
+            matrix = qr.get_matrix()  # 2D list of True/False
+        except Exception as exc:  # noqa: BLE001
+            print(f"[vj] QR build failed for {url!r}: {exc!r}")
+            return None
+
+        cell = 4
+        n = len(matrix)
+        size = n * cell
+        caption_h = 16
+        surface = pygame.Surface((size + 12, size + caption_h + 6),
+                                 pygame.SRCALPHA)
+        surface.fill((255, 255, 255, 230),
+                     pygame.Rect(6, 0, size, size))
+        for y, row in enumerate(matrix):
+            for x, on in enumerate(row):
+                if on:
+                    pygame.draw.rect(surface, (10, 12, 20),
+                                     (6 + x * cell, y * cell, cell, cell))
+        label = self.font_s.render(url, True, (200, 200, 220))
+        surface.blit(label, ((surface.get_width() - label.get_width()) // 2,
+                             size + 2))
+        return surface
+
     def _build_cheat_panel(self):
         """Pre-render the static key cheat sheet to a Surface."""
         w = self.size[0] - 24
         row_h = 16
-        h = len(KEY_CHEAT) * row_h + 28
+        footer_h = 22 if self.web_url else 0
+        h = len(KEY_CHEAT) * row_h + 28 + footer_h
         panel = pygame.Surface((w, h), pygame.SRCALPHA)
         pygame.draw.line(panel, (60, 60, 80), (0, 0), (w, 0), 1)
         title = self.font_h.render("KEYS", True, (220, 220, 240))
@@ -306,6 +359,10 @@ class ControlWindow:
             panel.blit(ks, (0, y))
             panel.blit(ds, (130, y))
             y += row_h
+        if self.web_url:
+            web = self.font_m.render(f"phone control:  {self.web_url}",
+                                     True, (180, 220, 180))
+            panel.blit(web, (0, y + 4))
         return panel
 
     @staticmethod
