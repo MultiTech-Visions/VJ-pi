@@ -163,27 +163,42 @@ between EDIT and PERFORM inside it. The first time you enter mapping mode
 the rig drops you straight into EDIT with a blank canvas; later launches
 resume in PERFORM with your saved layout.
 
-### Edit sub-mode (mouse)
+### Edit sub-mode (mouse-first)
 
-| Gesture in HUD preview | Action                                          |
+Edit gestures work in **both** the HUD preview AND on the projector
+itself — pointing at physical features through the projection is the
+natural way to do projection mapping.
+
+| Gesture                | Action                                          |
 |------------------------|-------------------------------------------------|
 | Click + drag empty area | Rubber-band a rectangle → becomes a new space in a new group |
-| Click a space's body    | Select it (its group also becomes the active group) |
-| Click + drag a space's body | Move the whole space                       |
-| Click + drag a corner handle | Reshape that corner of the selected space |
-| Shift + click a different space | Bind it into the selected space's group (the source group is deleted if it becomes empty) |
+| Click a space's body    | Pick that space (its group becomes the active group; corner handles + hover toolbar appear) |
+| Click + drag a space's body | Move the whole space                        |
+| Click + drag a corner handle | Reshape that corner of the picked space    |
+| Hover any space         | A small toolbar sprouts above its bounding box  |
 
-### Edit sub-mode (keys)
+The hover toolbar replaces the old keyboard-only editing commands. Each
+button is a 4 %-of-canvas chip drawn just above the space:
 
-| Key             | Action                                                |
-|-----------------|-------------------------------------------------------|
-| `E`             | Leave EDIT sub-mode (back to PERFORM)                 |
-| `B`             | Arm bind — the next clicked space is bound (no Shift) |
-| `U`             | Unbind selected space into its own new group          |
-| `Delete`        | Delete the selected space                             |
-| `Esc`           | Cancel any in-flight drag / deselect                  |
+| Button | Appears on              | Action                                  |
+|--------|-------------------------|-----------------------------------------|
+| **×**  | Every space             | Delete this space (group goes too if it was the last) |
+| **+**  | Hovered space that's in a different group from the picked one | Bind this space into the picked space's group (source group is deleted if it becomes empty); selection stays on the originator so you can chain binds |
+| **⊘**  | Picked space whose group has ≥ 2 spaces | Unbind this space into its own new group |
+| **G·n** | Every space            | Group-membership chip — also tappable to pick this space |
+
+### Edit sub-mode (keyboard fallbacks)
+
+| Key                 | Action                                            |
+|---------------------|---------------------------------------------------|
+| `E`                 | Leave EDIT sub-mode (back to PERFORM)             |
+| `Esc`               | Cancel any in-flight drag / deselect              |
 | `Tab` / `Shift+Tab` | Cycle the active group (same as PERFORM)          |
-| `M`             | Leave MAPPING entirely                                |
+| `M`                 | Leave MAPPING entirely                            |
+| `Shift+click` other space | Bind into the picked space's group (same as toolbar **+**) |
+| `B`                 | Arm bind — next plain click binds (alternative to Shift) |
+| `U`                 | Unbind picked space (same as toolbar **⊘**)       |
+| `Delete`            | Delete the picked space (same as toolbar **×**)   |
 
 ### Perform sub-mode + global mapping ops
 
