@@ -291,15 +291,17 @@ class ControlWindow:
 
         # Upload the composed surface and present it.
         #
-        # When the operator resizes / fullscreens the HUD window, keep
-        # the HUD content at its native design size centred in the
-        # window and let the surrounding area stay black. On a small
-        # OLED control screen that means most of the panel is "off",
-        # which both saves pixels and avoids the HUD looking absurdly
-        # stretched at e.g. 1080p. When the window is SMALLER than the
-        # native HUD size we fall back to stretching so nothing gets
-        # cropped — and _window_to_surface() inverts whichever path we
-        # took so mouse hit-tests still land on the right rect.
+        # The HUD always renders at its native design size (no scaling)
+        # so proportions stay correct regardless of how the operator
+        # has resized / fullscreened the window. Black fills any slack.
+        #   * window bigger than native → centre, black around all sides
+        #   * window smaller than native on an axis → pin to top-left
+        #     on that axis so the preview + status + badges stay visible
+        #     (only the cheat sheet at the bottom gets clipped)
+        # Stretching the surface to fit the window was producing huge,
+        # awkwardly proportioned text any time the operator gave the
+        # window a non-native aspect ratio. Native-size + letterbox is
+        # consistent regardless of window dimensions.
         tex = self._Texture.from_surface(self.renderer, surface)
         try:
             win_w, win_h = self.window.size
@@ -307,17 +309,11 @@ class ControlWindow:
             win_w, win_h = self.size
         surf_w, surf_h = self.size
 
-        if win_w >= surf_w and win_h >= surf_h:
-            ox = (win_w - surf_w) // 2
-            oy = (win_h - surf_h) // 2
-            dst = pygame.Rect(ox, oy, surf_w, surf_h)
-            self._window_offset = (ox, oy)
-            self._window_scale = (1.0, 1.0)
-        else:
-            dst = pygame.Rect(0, 0, win_w, win_h)
-            self._window_offset = (0, 0)
-            self._window_scale = (win_w / max(1, surf_w),
-                                  win_h / max(1, surf_h))
+        ox = max(0, (win_w - surf_w) // 2)
+        oy = max(0, (win_h - surf_h) // 2)
+        dst = pygame.Rect(ox, oy, surf_w, surf_h)
+        self._window_offset = (ox, oy)
+        self._window_scale = (1.0, 1.0)
 
         self.renderer.draw_color = (0, 0, 0, 255)
         self.renderer.clear()
