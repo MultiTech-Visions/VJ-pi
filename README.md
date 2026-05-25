@@ -268,11 +268,20 @@ blit to pygame screen
   so it doesn't look pixelated on a 1080p projector. Clip downsampling
   uses `cv2.INTER_AREA` for clean anti-aliased shrinking and
   `cv2.INTER_LINEAR` for upscaling.
+- **`assets/Process Assets.sh` bakes every clip to the render
+  resolution** so the per-frame `cv2.resize` is a no-op at playback —
+  the only per-frame cost is the unavoidable H.264 decode and a BGR→RGB
+  shuffle. The processor reads its target size from `config.py`, so
+  the two stay in sync. If you change the render resolution (via
+  `--width / --height` or by editing `config.py`), **re-run the
+  processor** so your library is at the new size; otherwise the engine
+  will live-resize every frame and print a one-time warning per file.
 - If 30 fps starts dropping on slower hardware, fall back to the old
-  defaults: `--width 854 --height 480`.
+  defaults: `--width 854 --height 480` (and re-process your clips).
 - For Pi 5 + a 1080p projector with detail-heavy 2K source loops, try
   `--width 1920 --height 1080` (full-quality, ~2× more pixels than 720p
-  — kaleidoscope + feedback at once can get tight).
+  — kaleidoscope + feedback at once can get tight). Re-process at the
+  new size.
 - `kaleidoscope` is the heaviest effect (per-pixel remap). Stack 2-3
   effects max for headroom.
 - MP4 decode uses OpenCV's `VideoCapture` — relies on libavcodec; on
