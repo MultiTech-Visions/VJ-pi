@@ -70,6 +70,22 @@ class ControlWindow:
         self.size = size  # (w, h)
         self.surface = pygame.Surface(size)
 
+        # Let SDL do the window-size → HUD-size scaling for us via
+        # `logical_size`. SDL_RenderSetLogicalSize draws into a virtual
+        # canvas of our HUD's design size (680×720) and stretches that
+        # canvas to fill the window with letterbox/pillarbox bars to
+        # preserve aspect ratio. We don't have to compute offsets, and
+        # the HUD always shows its full content regardless of how the
+        # operator resizes the window.
+        try:
+            self.renderer.logical_size = self.size
+        except (AttributeError, pygame.error) as exc:
+            # Older pygame / SDL builds might not expose logical_size.
+            # Fall back to manual draw with whatever the renderer gives
+            # us — the texture will still draw at native size at (0, 0).
+            print(f"[vj] HUD logical_size unavailable ({exc!r}); HUD may not "
+                  f"scale with window resizes")
+
         # Preview keeps source aspect, fixed target height. Width is then
         # capped so the status panel beside it always has at least 280px.
         target_h = self.PREVIEW_TARGET_H
@@ -102,15 +118,6 @@ class ControlWindow:
             self._window_id = None
         self._cheat_panel = self._build_cheat_panel(KEY_CHEAT)
         self._mapping_cheat_panel = self._build_cheat_panel(MAPPING_KEY_CHEAT)
-
-        # Window-to-surface transform, refreshed every render() so that
-        # resizing / fullscreening the HUD window keeps the HUD content
-        # at its native design size in the centre of the window with
-        # black margins around it (much of an OLED stays "off"), and
-        # mouse hit-tests still hit the right rects regardless of the
-        # current window size. See _window_to_surface().
-        self._window_offset = (0, 0)
-        self._window_scale = (1.0, 1.0)
 
     # ── Event handling ───────────────────────────────────────────────
 
@@ -180,14 +187,28 @@ class ControlWindow:
             self.engine.apply_pending_display()
 
     def _window_to_surface(self, pos):
-        """Map a window-pixel position to HUD-surface coords using the
-        offset+scale most recently set by render(). Returns None if pos
-        is None so callers can short-circuit the same way they used to."""
+        """Map a window-pixel position to HUD-surface coords.
+
+        Mirrors what `logical_size` does inside SDL: the HUD lives in
+        a 680×720 logical canvas that's fit-with-letterboxed into the
+        window. To undo that, compute the same scale + offset and
+        invert. Returns None if pos is None so callers can
+        short-circuit the same way they used to."""
         if pos is None:
             return None
-        ox, oy = self._window_offset
-        sx, sy = self._window_scale
-        return (int((pos[0] - ox) / sx), int((pos[1] - oy) / sy))
+        surf_w, surf_h = self.size
+        try:
+            win_w, win_h = self.window.size
+        except (AttributeError, pygame.error):
+            win_w, win_h = self.size
+        if win_w <= 0 or win_h <= 0:
+            return (0, 0)
+        scale = min(win_w / surf_w, win_h / surf_h)
+        dst_w = surf_w * scale
+        dst_h = surf_h * scale
+        ox = (win_w - dst_w) / 2
+        oy = (win_h - dst_h) / 2
+        return (int((pos[0] - ox) / scale), int((pos[1] - oy) / scale))
 
     def _invoke_frame_action(self, action, args):
         e = self.engine
@@ -291,33 +312,17 @@ class ControlWindow:
 
         # Upload the composed surface and present it.
         #
-        # The HUD always renders at its native design size (no scaling)
-        # so proportions stay correct regardless of how the operator
-        # has resized / fullscreened the window. Black fills any slack.
-        #   * window bigger than native → centre, black around all sides
-        #   * window smaller than native on an axis → pin to top-left
-        #     on that axis so the preview + status + badges stay visible
-        #     (only the cheat sheet at the bottom gets clipped)
-        # Stretching the surface to fit the window was producing huge,
-        # awkwardly proportioned text any time the operator gave the
-        # window a non-native aspect ratio. Native-size + letterbox is
-        # consistent regardless of window dimensions.
+        # `logical_size` on the renderer means SDL is already doing the
+        # fit-with-letterbox math: we render into the 680×720 logical
+        # canvas and SDL scales that to the actual window with black
+        # bars to preserve aspect ratio. So we just draw the texture
+        # over the whole logical canvas — no offsets, no manual
+        # scaling, no surprises when the WM gives the window a
+        # different size than we asked for.
         tex = self._Texture.from_surface(self.renderer, surface)
-        try:
-            win_w, win_h = self.window.size
-        except (AttributeError, pygame.error):
-            win_w, win_h = self.size
-        surf_w, surf_h = self.size
-
-        ox = max(0, (win_w - surf_w) // 2)
-        oy = max(0, (win_h - surf_h) // 2)
-        dst = pygame.Rect(ox, oy, surf_w, surf_h)
-        self._window_offset = (ox, oy)
-        self._window_scale = (1.0, 1.0)
-
         self.renderer.draw_color = (0, 0, 0, 255)
         self.renderer.clear()
-        tex.draw(dstrect=dst)
+        tex.draw(dstrect=pygame.Rect(0, 0, self.size[0], self.size[1]))
         self.renderer.present()
 
     # ── Panel parts ──────────────────────────────────────────────────
