@@ -957,6 +957,8 @@ class Engine:
         if had_feedback:
             self.gpu.update_feedback_trail()
 
+        self._diag_log(cpu_frame)
+
         return cpu_frame
 
     @property
@@ -964,6 +966,36 @@ class Engine:
         # control window plumbing happens via Engine.run(control=...);
         # we lazily mark availability when a HUD is attached.
         return getattr(self, "_control_attached", False)
+
+    def _diag_log(self, cpu_frame):
+        """One-line state dump every ~2s so the launcher log shows what
+        the GPU pipeline thinks it's doing. The `readback_mean` value is
+        the most useful clue: 0.0 means the FBO is fully black after
+        compose, so shader draws aren't landing on the target — most
+        likely a V3D-specific GL issue. Non-zero means content IS on the
+        FBO; if the projector still shows black, the present pass is
+        the culprit. Does a one-shot small readback when no HUD is open
+        so the diagnostic still works headlessly."""
+        n = getattr(self, "_diag_frame", 0) + 1
+        self._diag_frame = n
+        # Frames 30, 60, 120, 300 cover the first 10s; every 600 (~20s)
+        # after that. Tunable.
+        if n not in (30, 60, 120, 300) and n % 600 != 0:
+            return
+        try:
+            sample = cpu_frame if cpu_frame is not None else self.gpu.readback()
+            mean = float(sample.mean()) if sample is not None else None
+            nonzero = int((sample != 0).sum()) if sample is not None else None
+        except Exception as exc:  # noqa: BLE001
+            mean = None
+            nonzero = None
+            print(f"[vj.diag] readback failed: {exc!r}")
+        fx_on = [k for k, v in self.fx_state.items() if v]
+        print(f"[vj.diag] frame={n} mode={self.mode} "
+              f"clip={self.clips.name(self.clips.active_idx)} "
+              f"gen={self.active_generative} fx={fx_on} "
+              f"blackout={self.blackout} freeze={self.freeze} "
+              f"readback_mean={mean} readback_nonzero={nonzero}")
 
     # ── Mapping render pipeline (GPU) ─────────────────────────────────
 
