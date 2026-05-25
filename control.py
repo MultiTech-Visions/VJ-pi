@@ -25,31 +25,30 @@ KEY_CHEAT = [
     ("Shift+Esc",    "Quit"),
 ]
 
+# Mapping-mode cheat sheet, trimmed once the on-hover toolbar landed:
+#   * Toolbar buttons (× delete / + bind / ⊘ unbind / G· group tag) are
+#     visible the moment the cursor lands on a space, so the per-button
+#     rows that used to spell them out are gone.
+#   * Click-body / drag-body are standard click+drag UX — no need to
+#     spell those out either.
+#   * Keyboard fallbacks for the toolbar buttons (bare B / U / Delete in
+#     EDIT mode) are still wired in keymap.py for power users; they
+#     stay undocumented here so the panel fits on a 720-tall screen.
 MAPPING_KEY_CHEAT = [
-    ("M",            "Leave MAPPING mode"),
-    ("E",            "Toggle EDIT mode (mouse drives the editor)"),
-    ("Tab",          "Next group (Shift+Tab = prev)"),
-    ("EDIT — drag empty",  "rubber-band a new rectangle → new group"),
-    ("EDIT — click body",  "pick that space (handles + toolbar appear)"),
-    ("EDIT — drag body",   "move the whole space"),
-    ("EDIT — drag corner", "reshape the picked space"),
-    ("EDIT — toolbar ×",   "delete this space"),
-    ("EDIT — toolbar +",   "bind this space into the selected space's group"),
-    ("EDIT — toolbar ⊘",   "unbind this space into its own new group"),
-    ("EDIT — toolbar G·",  "tag chip = which group this space belongs to"),
-    ("EDIT — Esc",   "cancel drag / deselect"),
-    ("Ctrl+N",       "New group"),
-    ("Ctrl+Back",    "Delete current group"),
-    ("Ctrl+= / -",   "Add / remove a space in current group"),
-    ("Ctrl+G",       "Cycle grid layout (1·2x1·2x2·3x2·3x3·4x2·4x3)"),
-    ("Ctrl+A",       "Toggle autopilot on current group"),
-    ("Ctrl+K",       "Cycle autopilot kind"),
-    ("Ctrl+, / .",   "Autopilot interval ±1s"),
-    ("Ctrl+B",       "Toggle borders"),
-    ("Ctrl+C",       "Cycle border colour"),
-    ("Ctrl+[ / ]",   "Border intensity ±10%"),
-    ("Ctrl+; / '",   "Border thickness ±1px"),
-    ("PERFORM — content keys", "1-0/Q-P/A-L/F1-F7/←→↑↓ → selected group"),
+    ("M / E / Tab",          "leave MAPPING / toggle EDIT / next group"),
+    ("EDIT — drag empty",    "rubber-band a new rectangle (new group)"),
+    ("EDIT — drag corner",   "reshape the picked space"),
+    ("EDIT — hover toolbar", "× delete · + bind · ⊘ unbind"),
+    ("EDIT — Esc",           "cancel drag / deselect"),
+    ("Ctrl+N / Back",        "new group / delete current group"),
+    ("Ctrl+= / -",           "add / remove a space"),
+    ("Ctrl+G",               "cycle grid layout (1 · 2x1 · … · 4x3)"),
+    ("Ctrl+A / K",           "toggle autopilot / cycle kind"),
+    ("Ctrl+, / .",           "autopilot interval ± 1s"),
+    ("Ctrl+B / C",           "toggle borders / cycle colour"),
+    ("Ctrl+[ / ]",           "border intensity ± 10%"),
+    ("Ctrl+; / '",           "border thickness ± 1px"),
+    ("PERFORM",              "1-0 / Q-P / A-L / F1-F7 / ←→↑↓ → group"),
 ]
 
 
