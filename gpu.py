@@ -466,6 +466,12 @@ void main() {
 # group's source texture. Discards fragments outside [0,1]² so the
 # fragment outside the quad's projection of the source rectangle goes
 # transparent (no colour spill outside the actual quad).
+#
+# Note the `1.0 - uv.y` flip when sampling — the source FBO has its
+# canvas-top content at high GL-t (we rendered into it with NDC y=+1 at
+# the visual top), but our homography was set up with src_uv (0,0) =
+# canvas-top-left (cv2 convention). Without the flip the warped output
+# would render upside-down.
 FS_MAPPING_WARP = """
 #version 330 core
 in vec2 v_pix;
@@ -476,7 +482,27 @@ void main() {
     vec3 h = u_inv_h * vec3(v_pix, 1.0);
     vec2 uv = h.xy / h.z;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
-    frag = vec4(texture(u_src, uv).rgb, 1.0);
+    frag = vec4(texture(u_src, vec2(uv.x, 1.0 - uv.y)).rgb, 1.0);
+}
+"""
+
+# Windows-into-video fragment: each space-quad is rasterised in NDC
+# while the source texture is treated as a single rectangle laid down
+# across the canvas at (u_dst_xy, u_dst_size). Each fragment computes
+# its sample UV from canvas-pixel position so spaces in the same
+# group reveal different parts of ONE underlying video plane — the
+# multi-window mapping behaviour. Same Y-flip as FS_MAPPING_WARP.
+FS_MAPPING_WINDOW = """
+#version 330 core
+in vec2 v_pix;
+out vec4 frag;
+uniform sampler2D u_src;
+uniform vec2 u_dst_xy;     // top-left of the video rect on canvas, pixels
+uniform vec2 u_dst_size;   // width/height of the video rect, pixels
+void main() {
+    vec2 uv = (v_pix - u_dst_xy) / u_dst_size;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
+    frag = vec4(texture(u_src, vec2(uv.x, 1.0 - uv.y)).rgb, 1.0);
 }
 """
 
@@ -599,12 +625,16 @@ class Renderer:
             ("blit_swizzle", FS_BLIT_SWIZZLE),
         ]:
             self._prog(name, VS_FULLSCREEN, fs)
-        # Present pass needs to flip Y because the FBO texture has its
-        # origin at the bottom-left but our cv2-style frames go top-down.
-        self._prog("present", VS_FULLSCREEN_FLIP, FS_COPY)
+        # Present pass uses the standard fullscreen VS (no Y flip): our
+        # ping-pong FBOs are rendered with NDC y=+1 at canvas-top, so
+        # sampling at v_uv.y=1 returns canvas-top — that lines up with
+        # screen-top under the standard fullscreen VS.
+        self._prog("present", VS_FULLSCREEN, FS_COPY)
 
         # Mapping warp uses a per-quad NDC VS + the inverse-homography FS.
         self._prog("warp", VS_QUAD_NDC, FS_MAPPING_WARP)
+        # Windows mode: per-space quad rasterises with canvas-pixel UV.
+        self._prog("warp_window", VS_QUAD_NDC, FS_MAPPING_WINDOW)
 
         # Primitive shaders.
         self._prog("points_disc", VS_POINTS, FS_POINTS_DISC)
@@ -1025,6 +1055,44 @@ class Renderer:
         p["u_src"].value = 0
         p["u_res"].value = (float(sw), float(sh))
         p["u_inv_h"].write(H.astype("f4").T.tobytes())  # column-major
+        vao.render(mode=moderngl.TRIANGLE_FAN, vertices=4)
+
+    def warp_source_into_window(self, source_tex, dst_corners_norm,
+                                dst_xy, dst_size):
+        """Stamp `source_tex` onto the canvas as a single rectangle at
+        (dst_xy, dst_size), but only paint inside the quad defined by
+        `dst_corners_norm` (a 4×2 in [0,1] canvas coords).
+
+        Used by mapping-mode fit_mode in {window, fit, fill}: every
+        space in a group calls this with the same dst_xy/dst_size, so
+        each space is a window onto one underlying video plane. Spaces
+        that overlap the same canvas pixel sample the same source UV,
+        so multi-window groups stay visually continuous.
+
+        Caller is expected to have already called `begin_frame()` and
+        composed prior groups; this paints additively into _current.
+        """
+        sw, sh = self.w, self.h
+        # Bounding NDC quad — we rasterise only the dst quad, the FS
+        # discards fragments outside the video rect on top of that.
+        ndc = np.empty((4, 2), dtype=np.float32)
+        ndc[:, 0] = 2.0 * dst_corners_norm[:, 0] - 1.0
+        ndc[:, 1] = 1.0 - 2.0 * dst_corners_norm[:, 1]
+
+        self._current.use()
+        self.ctx.viewport = (0, 0, sw, sh)
+        source_tex.use(location=0)
+        buf, vao = self._ensure_dyn(
+            "warp_window_quad", ("2f", "in_pos"), "warp_window",
+        )
+        if buf.size < ndc.nbytes:
+            buf.orphan(ndc.nbytes)
+        buf.write(ndc.tobytes())
+        p = self._programs["warp_window"]
+        p["u_src"].value = 0
+        p["u_res"].value = (float(sw), float(sh))
+        p["u_dst_xy"].value = (float(dst_xy[0]), float(dst_xy[1]))
+        p["u_dst_size"].value = (float(dst_size[0]), float(dst_size[1]))
         vao.render(mode=moderngl.TRIANGLE_FAN, vertices=4)
 
     # ── Aux: render a generative / clip / FX into an ARBITRARY FBO ──

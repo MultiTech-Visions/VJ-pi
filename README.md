@@ -200,6 +200,28 @@ button is a 4 %-of-canvas chip drawn just above the space:
 | `U`                 | Unbind picked space (same as toolbar **⊘**)       |
 | `Delete`            | Delete the picked space (same as toolbar **×**)   |
 
+### Per-group frame controls (FRAME panel in the HUD)
+
+A group's content plays **once, across the whole canvas**, and the group's
+spaces are holes through which it shows. Two side-by-side spaces in one
+group reveal the left and right portions of the same playing video —
+not two copies of it. That's how you build "many windows, one underlying
+video" compositions and use spaces as physical layers.
+
+The video keeps its natural aspect — no warp distortion. Click the FRAME
+panel buttons in the selected group's status panel to compose how the
+video sits on the canvas:
+
+| Control     | Action                                                    |
+|-------------|-----------------------------------------------------------|
+| Mode pill   | Click to cycle: `window` → `fit` → `fill` → `stretch`. `window`, `fit`, `fill` all use the canvas as the playback surface and reveal it through the group's spaces. `stretch` is per-space — each quad warps its own copy of the video (the old billboard look, opt in when you want the angled-perspective distortion on purpose). |
+| `−` / `+`   | Zoom the video ±15 % per click (window mode)              |
+| `RESET`     | Zoom 1.0, pan 0,0                                          |
+| ◀ ▲ ▼ ▶     | Pan the video ± 10 % of the canvas half-size per click — all spaces in the group shift in sync because they're windows onto the same plane |
+
+Frame settings are saved per group in `vj_state.json` so the composition
+you set up for a show is there again the next time you launch.
+
 ### Perform sub-mode + global mapping ops
 
 | Key                 | Action                                              |
@@ -392,10 +414,19 @@ GPU-resident.
   with kaleidoscope + feedback + an overlay running simultaneously.
 - The FX chain has effectively no per-effect cost — stacking three or
   four effects is one extra shader pass each, all on-GPU.
+- `--gen-render-scale` is a no-op on the GPU pipeline — generatives
+  are fragment shaders so rendering at canvas resolution is already
+  free. The flag stays accepted for backwards compatibility with
+  launcher scripts but doesn't do anything.
 - MP4 decode is still software H.264 via OpenCV `VideoCapture` — that's
   the one thing left on the CPU. Stays well under a frame budget at
   854×480 / 720p; for 1080p heavy clips, pre-process with the bundled
   script.
+- In **mapping mode**, each group's source is composed into its own
+  GPU framebuffer once per frame, then either projective-warped per
+  space (`fit_mode=stretch`) or stamped down once with each space as
+  a window onto that single plane (`fit_mode=window/fit/fill`) — so
+  multi-space groups stay visually continuous across the projection.
 - Clip frames are read **once per render**, so don't try to play more
   than one clip slot simultaneously — only the most recently selected
   base and overlay are advanced.

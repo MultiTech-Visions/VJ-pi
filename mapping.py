@@ -36,6 +36,13 @@ AUTOPILOT_KINDS = [
     "cycle_generatives", "random_generatives",
 ]
 
+# How a group's content (clip frame or generative) is placed inside its
+# spaces' quads. "window" is the default — the quad is a viewport into
+# the video, free zoom + pan. "stretch" is the legacy warp-to-quad
+# behaviour, kept as an opt-in for when the operator actually wants the
+# perspective distortion (mapping onto an angled surface as a billboard).
+FIT_MODES = ["window", "fit", "fill", "stretch"]
+
 # Pre-baked grid layouts available on Ctrl+G. (cols, rows).
 GRID_PRESETS = [
     (1, 1), (2, 1), (1, 2), (2, 2), (3, 2), (3, 3), (4, 2), (4, 3),
@@ -115,6 +122,15 @@ class Group:
     param_y: float = 0.5
     fx_state: dict = field(default_factory=dict)
 
+    # How the content frame is placed inside the spaces' quads. Default
+    # is "window" — the quad is a viewport, NOT a stretch target — so
+    # the video keeps its natural aspect / framing and the operator
+    # adjusts zoom + pan to compose what shows through each space.
+    fit_mode: str = "window"
+    zoom: float = 1.0              # 1.0 = video fits the bbox
+    pan_x: float = 0.0             # -1..+1 of bbox half-width
+    pan_y: float = 0.0             # -1..+1 of bbox half-height
+
     # Autopilot
     autopilot_enabled: bool = False
     autopilot_kind: str = "cycle_clips"
@@ -143,6 +159,9 @@ class Group:
         kind = d.get("autopilot_kind", "cycle_clips")
         if kind not in AUTOPILOT_KINDS:
             kind = "cycle_clips"
+        fit_mode = d.get("fit_mode", "window")
+        if fit_mode not in FIT_MODES:
+            fit_mode = "window"
         g = cls(
             name=d.get("name", "Group"),
             spaces=spaces,
@@ -157,6 +176,10 @@ class Group:
             autopilot_kind=kind,
             autopilot_interval_s=max(1.0, float(d.get("autopilot_interval_s", 8.0))),
             grid_idx=int(d.get("grid_idx", 0)) % len(GRID_PRESETS),
+            fit_mode=fit_mode,
+            zoom=max(0.1, min(10.0, float(d.get("zoom", 1.0)))),
+            pan_x=max(-3.0, min(3.0, float(d.get("pan_x", 0.0)))),
+            pan_y=max(-3.0, min(3.0, float(d.get("pan_y", 0.0)))),
         )
         return g
 
@@ -175,6 +198,10 @@ class Group:
             "autopilot_kind": self.autopilot_kind,
             "autopilot_interval_s": self.autopilot_interval_s,
             "grid_idx": self.grid_idx,
+            "fit_mode": self.fit_mode,
+            "zoom": self.zoom,
+            "pan_x": self.pan_x,
+            "pan_y": self.pan_y,
         }
 
     def content_label(self):
@@ -615,6 +642,41 @@ class MappingManager:
     def cancel_drag(self):
         self.drag = None
 
+    # ── Frame controls (per-group zoom / pan / fit mode) ─────────────
+
+    def cycle_fit_mode(self, step=1):
+        g = self.selected_group()
+        if g is None:
+            return
+        try:
+            i = FIT_MODES.index(g.fit_mode)
+        except ValueError:
+            i = 0
+        g.fit_mode = FIT_MODES[(i + step) % len(FIT_MODES)]
+
+    def adjust_zoom(self, factor):
+        """Multiply zoom by `factor` (e.g. 1.1 for +10 %)."""
+        g = self.selected_group()
+        if g is None:
+            return
+        g.zoom = max(0.1, min(10.0, g.zoom * factor))
+
+    def adjust_pan(self, dx, dy):
+        g = self.selected_group()
+        if g is None:
+            return
+        g.pan_x = max(-3.0, min(3.0, g.pan_x + dx))
+        g.pan_y = max(-3.0, min(3.0, g.pan_y + dy))
+
+    def reset_frame(self):
+        """Recenter & unzoom the selected group's content."""
+        g = self.selected_group()
+        if g is None:
+            return
+        g.zoom = 1.0
+        g.pan_x = 0.0
+        g.pan_y = 0.0
+
     # ── Hover toolbars (mouse-first editing UI) ──────────────────────
 
     # Per-button width in normalized canvas units. ~4 % means the icons
@@ -625,29 +687,56 @@ class MappingManager:
 
     def update_hover(self, norm_xy):
         """Track which space the cursor is over so the renderer knows where
-        to put the hover toolbar. Includes a small slop band ABOVE each
-        space so the toolbar's own footprint counts as "still hovering"
-        — otherwise moving the cursor onto a button would clear hover
-        and the button would vanish."""
+        to put the hover toolbar.
+
+        Hover stays "sticky" while the cursor is anywhere inside the union
+        of body + toolbar bounding rect, so traversing the gap between
+        body and toolbar doesn't drop hover and make the buttons vanish.
+        Without this the toolbar of a non-selected space (the one with the
+        `+` bind button) is impossible to click — the cursor passes
+        through the dead zone and the toolbar disappears before the click
+        lands."""
         if norm_xy is None:
             self.hovered_space = None
             return
-        # Direct hit on the body always wins.
+        # Direct body hit always wins — clicking on a new space changes
+        # hover to that space immediately.
         hit = self.hit_test_space(norm_xy)
         if hit is not None:
             self.hovered_space = hit
             return
-        # If the cursor is over the selected space's toolbar, keep
-        # showing that space's toolbar.
-        for cand in (self.selected_space, self.hovered_space):
-            if cand is None:
-                continue
-            gi, si = cand
-            for _kind, (nx, ny, nw, nh) in self.hover_toolbar_buttons(gi, si):
-                if nx <= norm_xy[0] <= nx + nw and ny <= norm_xy[1] <= ny + nh:
-                    self.hovered_space = (gi, si)
-                    return
+        # Otherwise: prefer the currently-hovered space (sticky), then
+        # the selected space. Both have toolbars rendered, so both have
+        # hover regions that should stay alive.
+        nx, ny = norm_xy
+        candidates = []
+        if self.hovered_space is not None:
+            candidates.append(self.hovered_space)
+        if (self.selected_space is not None
+                and self.selected_space not in candidates):
+            candidates.append(self.selected_space)
+        for gi, si in candidates:
+            x0, y0, x1, y1 = self._hover_region(gi, si)
+            if x0 <= nx <= x1 and y0 <= ny <= y1:
+                self.hovered_space = (gi, si)
+                return
         self.hovered_space = None
+
+    def _hover_region(self, gi, si):
+        """Bounding rect (nx0, ny0, nx1, ny1) covering body + toolbar +
+        the gap between them. Used as the "sticky" hover area so the
+        toolbar stays visible while the cursor walks from body to button."""
+        space = self.groups[gi].spaces[si]
+        xs = [c[0] for c in space.corners]
+        ys = [c[1] for c in space.corners]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        for _kind, (bx, by, bw, bh) in self.hover_toolbar_buttons(gi, si):
+            x0 = min(x0, bx)
+            y0 = min(y0, by)
+            x1 = max(x1, bx + bw)
+            y1 = max(y1, by + bh)
+        return (x0, y0, x1, y1)
 
     def _toolbar_kinds(self, gi, si):
         """Decide which buttons appear on the toolbar for space (gi, si)."""

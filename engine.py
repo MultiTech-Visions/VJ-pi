@@ -786,34 +786,40 @@ class Engine:
         self.mapping.cycle_border_color()
         self._persist_mapping()
 
+    # ── Frame controls (per-group zoom / pan / fit mode) ─────────────
+
+    def mapping_cycle_fit_mode(self, step=1):
+        self.mapping.cycle_fit_mode(step)
+        self._persist_mapping()
+
+    def mapping_adjust_zoom(self, factor):
+        self.mapping.adjust_zoom(factor)
+        self._persist_mapping()
+
+    def mapping_adjust_pan(self, dx, dy):
+        self.mapping.adjust_pan(dx, dy)
+        self._persist_mapping()
+
+    def mapping_reset_frame(self):
+        self.mapping.reset_frame()
+        self._persist_mapping()
+
     # ── Render pipeline (GPU) ─────────────────────────────────────────
     #
-    # The whole compose pipeline is now driven by `self.gpu` (moderngl).
+    # The whole compose pipeline is driven by `self.gpu` (moderngl).
     # Generatives are fragment shaders, FX are shader passes through a
-    # ping-pong FBO pair, clips/overlays are textures, and mapping warps
-    # are projective-textured quads.
-    #
-    # `compose_frame()` returns a numpy RGB frame ONLY when something on
-    # the CPU side still needs to look at the pixels — currently:
-    #   * the HUD preview window is open, OR
-    #   * we're in mapping/edit mode (the edit overlays are still drawn
-    #     with cv2 because they include text and small UI chips).
-    # When neither applies the pipeline stays fully GPU-resident and we
-    # return None; `blit_to_output(None)` then presents the GPU FBO
-    # directly to the screen.
+    # ping-pong FBO pair, clips/overlays are textures, and mapping
+    # warps are projective-textured quads. `compose_frame()` returns a
+    # numpy RGB frame ONLY when the CPU side still needs to look at
+    # pixels (HUD open, mapping/edit-mode overlays, PERFORM borders);
+    # otherwise the pipeline stays fully GPU-resident and we return
+    # None for blit_to_output() to present the GPU FBO directly.
 
     def _needs_cpu_frame(self):
-        # HUD always needs a CPU frame for the preview panel.
         if self._has_hud:
             return True
-        # Mapping/edit mode draws the toolbar / handle / outline UI with
-        # cv2 onto the readback.
         if self.mode == "mapping" and self.mapping.edit_mode:
             return True
-        # Mapping/PERFORM with borders on still uses cv2.polylines for
-        # the selected-group outline (until we move that to a GL line
-        # primitive). Skip the readback entirely when no border is
-        # going to be drawn anyway.
         if (self.mode == "mapping"
                 and self.mapping.show_borders
                 and self.mapping.selected_group() is not None):
@@ -832,8 +838,7 @@ class Engine:
             self.gpu.draw_generative(self.active_generative, ctx.t,
                                      (ctx.px, ctx.py))
             return
-        # Nothing selected — leave the current FBO as the black that
-        # begin_frame() cleared it to.
+        # Nothing selected — current FBO stays at begin_frame() black.
 
     def _apply_fx_gpu(self, fx_state, ctx):
         """Run each enabled FX as one shader pass through the ping-pong.
@@ -951,10 +956,11 @@ class Engine:
 
     def _compose_mapping_frame_gpu(self):
         """For each group: compose its source into a persistent FBO,
-        then warp that source into every space's quad on the main
-        canvas. Hits + selection borders + edit overlays are applied at
-        the end (borders/edit are drawn on the CPU readback in
-        compose_frame())."""
+        then either project that source per-space (fit_mode=stretch) or
+        treat each space as a window onto a single canvas-wide video
+        plane (fit_mode in {window, fit, fill}). Hits applied at the
+        end; borders + edit overlays are drawn on the CPU readback
+        further down in compose_frame()."""
         now = time.time()
         self.mapping.tick_autopilot(self, now)
 
@@ -965,7 +971,17 @@ class Engine:
             self._group_prev_fbos.pop(stale, None)
 
         for group in self.mapping.groups:
+            # Skip groups with no spaces (no mask) AND skip groups
+            # whose content is blackout (nothing to compose). Saves a
+            # full-resolution generative call per blackout group.
             if not group.spaces:
+                continue
+            # Skip groups with no real content to compose. Matches the
+            # CPU pipeline's optimisation — saves a generative-shader
+            # pass per blackout group.
+            if (group.content_kind == "blackout"
+                    or (group.content_kind == "clip" and not group.clip_stem)
+                    or (group.content_kind == "generative" and not group.gen_name)):
                 continue
             gid = id(group)
             src_fbo = self._group_src_fbos.get(gid)
@@ -979,11 +995,49 @@ class Engine:
 
             self._compose_group_source_gpu(group, now, src_fbo, prev_fbo)
             source_tex = src_fbo.color_attachments[0]
-            for space in group.spaces:
-                corners = np.array(space.corners, dtype=np.float64)
-                self.gpu.warp_source_into_quad(source_tex, corners)
+
+            # fit_mode dispatch:
+            #   * stretch → each space gets its own perspective-warped
+            #     copy of the source (legacy billboard).
+            #   * window / fit / fill → the source is laid down ONCE
+            #     across the canvas (with zoom + pan in window mode),
+            #     and each space is a window onto that single plane,
+            #     so multi-space groups stay visually continuous.
+            if group.fit_mode == "stretch":
+                for space in group.spaces:
+                    corners = np.array(space.corners, dtype=np.float64)
+                    self.gpu.warp_source_into_quad(source_tex, corners)
+            else:
+                dst_xy, dst_size = self._mapping_window_rect(group)
+                for space in group.spaces:
+                    corners = np.array(space.corners, dtype=np.float64)
+                    self.gpu.warp_source_into_window(
+                        source_tex, corners, dst_xy, dst_size,
+                    )
 
         self._apply_hits_gpu()
+
+    def _mapping_window_rect(self, group):
+        """Pixel-space (top-left xy, width-height) for the video plane
+        a group's content gets stamped onto when fit_mode is window /
+        fit / fill. Mirrors the CPU `_window_group_into_canvas` math;
+        on the GPU side the source FBO is always canvas-sized so the
+        base-scale math collapses to 1.0, and zoom/pan only kick in for
+        window mode (fit and fill are equivalent and pass through 1:1)."""
+        w, h = self.w, self.h
+        mode = group.fit_mode
+        if mode == "window":
+            zoom = max(0.05, float(group.zoom))
+            pan_x, pan_y = float(group.pan_x), float(group.pan_y)
+        else:  # "fit" / "fill"
+            zoom, pan_x, pan_y = 1.0, 0.0, 0.0
+        dw = max(2, int(round(w * zoom)))
+        dh = max(2, int(round(h * zoom)))
+        cx = w * 0.5 + pan_x * w * 0.5
+        cy = h * 0.5 + pan_y * h * 0.5
+        dx = int(round(cx - dw * 0.5))
+        dy = int(round(cy - dh * 0.5))
+        return (dx, dy), (dw, dh)
 
     def _compose_group_source_gpu(self, group, now, src_fbo, prev_fbo):
         """Render one group's source content into `src_fbo`. `prev_fbo`
