@@ -362,6 +362,21 @@ class Engine:
         except (TypeError, pygame.error, ValueError) as exc:
             print(f"[vj] switch_output_display({new_idx}) failed: {exc!r}")
 
+    def update_held_hits(self, hit_keys_map):
+        """Sustain a punch-in hit while its key is held down.
+
+        compose_frame() decrements hit_frames_left each frame; we top it up
+        as long as the corresponding key is pressed. Two frames of headroom
+        means an in-flight hit gracefully finishes the frame after release.
+        """
+        keys = pygame.key.get_pressed()
+        for k, hit_name in hit_keys_map.items():
+            if keys[k]:
+                self.hit_type = hit_name
+                if self.hit_frames_left < 2:
+                    self.hit_frames_left = 2
+                return  # one hit at a time
+
     def update_params_from_keys(self, dt):
         """Arrows: tune PARAM X/Y in manual mode, tune auto rates in autopilot."""
         keys = pygame.key.get_pressed()
@@ -479,7 +494,7 @@ class Engine:
         return frame
 
     def run(self, control=None):
-        from keymap import dispatch, NAV_KEYS, FAV_KEYS, fav_tap, fav_long
+        from keymap import dispatch, NAV_KEYS, FAV_KEYS, HIT_KEYS, fav_tap, fav_long
         # Enable system key-repeat. We filter below so only NAV_KEYS
         # auto-fire on hold — toggle/hit keys still need a fresh press.
         pygame.key.set_repeat(350, 80)
@@ -563,6 +578,7 @@ class Engine:
             last_t = now
             self.update_auto(now)
             self.update_params_from_keys(dt)
+            self.update_held_hits(HIT_KEYS)
             frame = self.compose_frame()
             self.blit_to_output(frame)
             if control is not None:
