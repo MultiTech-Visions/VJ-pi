@@ -131,6 +131,7 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `F7`                | FX: RGB split / chromatic aberration (offset = PARAM X) |
 | `← →`               | Adjust PARAM X (active-FX horizontal control)      |
 | `↑ ↓`               | Adjust PARAM Y (active-FX vertical control)        |
+| `Enter Enter`       | Engage **AUTOPILOT** (double-tap within 600 ms). Any other key takes over again and executes immediately. While engaged, `↑/↓` tune the clip-change rate and `←/→` tune the FX-change rate. |
 | `F11`               | Cycle the pending output display                   |
 | `F12`               | Apply the pending output display (and persist it)  |
 | `Space`             | Blackout toggle (panic button)                     |
@@ -166,6 +167,28 @@ bloat memory.
 
 Pick a clip then a generative (`A`-`L`) — generative wins until you
 pick another clip.
+
+### Autopilot
+
+Double-tap **Enter** (within 600 ms) to engage autopilot. The engine
+then drives itself:
+
+- Picks a random clip (sometimes a generative instead) every
+  ~`auto_clip_interval` seconds, with jitter.
+- Toggles a random FX every ~`auto_fx_interval` seconds (caps active
+  FX at 3).
+- Drifts PARAM X/Y toward fresh random targets every couple of seconds.
+- Occasionally fires a hit / swaps an overlay.
+
+While autopilot is engaged, the HUD shows a green **AUTOPILOT** badge
+with the current rates. The arrow keys retune the rates instead of
+PARAM X/Y: `↑/↓` make clip changes faster/slower, `←/→` make FX
+changes faster/slower.
+
+**Any other key press** (Z for a strobe, a `5` to recall favourite 5,
+F3 to switch on feedback, …) immediately disengages autopilot and
+performs the action — perfect for grabbing back control when the
+random output happens to land on something you want to embellish.
 
 ## Asset sources
 
