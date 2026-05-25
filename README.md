@@ -200,6 +200,23 @@ button is a 4 %-of-canvas chip drawn just above the space:
 | `U`                 | Unbind picked space (same as toolbar **⊘**)       |
 | `Delete`            | Delete the picked space (same as toolbar **×**)   |
 
+### Per-group frame controls (FRAME panel in the HUD)
+
+By default a space is a **window into the video**, not a stretch target —
+the video keeps its natural aspect / orientation and the quad just masks
+what shows through. Click the FRAME panel buttons in the selected
+group's status panel to compose the framing:
+
+| Control     | Action                                                    |
+|-------------|-----------------------------------------------------------|
+| Mode pill   | Click to cycle: `window` → `fit` → `fill` → `stretch`. `window` is free zoom + pan; `fit` letterboxes; `fill` covers + crops; `stretch` is the old "warp video corners onto quad corners" look — opt in when you want the angled-billboard distortion on purpose. |
+| `−` / `+`   | Zoom out / in by 15 % per click (window mode)             |
+| `RESET`     | Zoom 1.0, pan 0,0                                          |
+| ◀ ▲ ▼ ▶     | Pan the video ± 10 % of the space's bbox per click        |
+
+Frame settings are saved per group in `vj_state.json` so the composition
+you set up for a show is there again the next time you launch.
+
 ### Perform sub-mode + global mapping ops
 
 | Key                 | Action                                              |

@@ -766,6 +766,24 @@ class Engine:
         self.mapping.cycle_border_color()
         self._persist_mapping()
 
+    # ── Frame controls (per-group zoom / pan / fit mode) ─────────────
+
+    def mapping_cycle_fit_mode(self, step=1):
+        self.mapping.cycle_fit_mode(step)
+        self._persist_mapping()
+
+    def mapping_adjust_zoom(self, factor):
+        self.mapping.adjust_zoom(factor)
+        self._persist_mapping()
+
+    def mapping_adjust_pan(self, dx, dy):
+        self.mapping.adjust_pan(dx, dy)
+        self._persist_mapping()
+
+    def mapping_reset_frame(self):
+        self.mapping.reset_frame()
+        self._persist_mapping()
+
     # ── Render pipeline ───────────────────────────────────────────────
 
     def _build_base(self, ctx):
@@ -862,7 +880,7 @@ class Engine:
                 continue
             source = self._compose_group_source(group, now)
             for space in group.spaces:
-                self._warp_into_canvas(canvas, source, space.corners_px(w, h))
+                self._place_into_canvas(canvas, source, group, space)
         canvas = self._apply_hits(canvas)
         if self.mapping.show_borders:
             self._draw_selection_border(canvas)
@@ -934,8 +952,23 @@ class Engine:
 
         return frame
 
+    def _place_into_canvas(self, canvas, source, group, space):
+        """Dispatch into the right placement strategy based on the group's
+        fit_mode. "stretch" warps the source corners to the quad corners
+        (legacy perspective behaviour). The other three modes treat the
+        quad as a WINDOW into the source — the video keeps its natural
+        aspect, the quad polygon just masks what shows through."""
+        dst_corners = space.corners_px(self.w, self.h)
+        if group.fit_mode == "stretch":
+            self._warp_into_canvas(canvas, source, dst_corners)
+        else:
+            self._window_into_canvas(canvas, source, group, dst_corners)
+
     def _warp_into_canvas(self, canvas, source, dst_corners):
-        """Warp `source` into the quad `dst_corners` on `canvas`.
+        """Warp `source` into the quad `dst_corners` on `canvas` — the
+        old "stretch to fit the quad" behaviour, kept as an opt-in
+        fit_mode so the operator can deliberately get the perspective-
+        billboard look (good for projecting onto an angled flat surface).
 
         Pitfall: cv2.warpPerspective on the full canvas is expensive. We
         crop output to the quad's bounding box and apply a convex-poly mask
@@ -971,6 +1004,87 @@ class Engine:
         idx = sub_mask > 0
         sub_canvas[idx] = sub_warp[idx]
         canvas[y_min:y_max, x_min:x_max] = sub_canvas
+
+    def _window_into_canvas(self, canvas, source, group, dst_corners):
+        """Place `source` as if the quad were a "window" into it: the
+        source is scaled by mode + zoom and shifted by pan, then only the
+        portion inside the quad polygon shows. Source aspect is preserved
+        — no warp distortion.
+
+        fit_mode = "fit"   : uniform scale so the source fits inside the
+                             bbox (letterboxed). Zoom / pan ignored.
+        fit_mode = "fill"  : uniform scale so the source covers the bbox
+                             (cropped). Zoom / pan ignored.
+        fit_mode = "window": "fit" base scale times group.zoom, plus
+                             pan offset. Operator's free composition.
+        """
+        h, w = canvas.shape[:2]
+        sh, sw = source.shape[:2]
+        if sw < 2 or sh < 2:
+            return
+
+        # Bounding box of the destination quad, in canvas pixels.
+        bx0 = float(dst_corners[:, 0].min())
+        bx1 = float(dst_corners[:, 0].max())
+        by0 = float(dst_corners[:, 1].min())
+        by1 = float(dst_corners[:, 1].max())
+        bw = bx1 - bx0
+        bh = by1 - by0
+        if bw < 2 or bh < 2:
+            return
+
+        mode = group.fit_mode
+        if mode == "fill":
+            scale = max(bw / sw, bh / sh)
+            zoom = 1.0
+            pan_x = 0.0
+            pan_y = 0.0
+        else:  # "window" or "fit"
+            scale = min(bw / sw, bh / sh)
+            if mode == "window":
+                zoom = group.zoom
+                pan_x = group.pan_x
+                pan_y = group.pan_y
+            else:
+                zoom, pan_x, pan_y = 1.0, 0.0, 0.0
+        scale *= max(0.05, zoom)
+
+        dw = max(2, int(round(sw * scale)))
+        dh = max(2, int(round(sh * scale)))
+        # Centre of the destination rect within the bbox, offset by pan.
+        cx = bx0 + bw * 0.5 + pan_x * bw * 0.5
+        cy = by0 + bh * 0.5 + pan_y * bh * 0.5
+        dx = int(round(cx - dw * 0.5))
+        dy = int(round(cy - dh * 0.5))
+
+        # Clip the destination rect to the canvas.
+        cx0 = max(0, dx)
+        cy0 = max(0, dy)
+        cx1 = min(w, dx + dw)
+        cy1 = min(h, dy + dh)
+        if cx1 <= cx0 or cy1 <= cy0:
+            return  # Off-canvas entirely.
+
+        # Resize the source to the destination size, then slice to the
+        # visible region. Using INTER_AREA on shrink keeps fine detail.
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        resized = cv2.resize(source, (dw, dh), interpolation=interp)
+        sx0 = cx0 - dx
+        sy0 = cy0 - dy
+        sx1 = sx0 + (cx1 - cx0)
+        sy1 = sy0 + (cy1 - cy0)
+        video_region = resized[sy0:sy1, sx0:sx1]
+
+        # Mask to the quad polygon (so a tilted parallelogram space only
+        # shows the part of the video falling inside the parallelogram —
+        # the rest of the bbox stays whatever the canvas was already).
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, dst_corners.astype(np.int32), 255)
+        mask_region = mask[cy0:cy1, cx0:cx1]
+        canvas_region = canvas[cy0:cy1, cx0:cx1]
+        idx = mask_region > 0
+        canvas_region[idx] = video_region[idx]
+        canvas[cy0:cy1, cx0:cx1] = canvas_region
 
     def _draw_selection_border(self, canvas):
         """Outline only the currently-selected group's spaces — keeps the
