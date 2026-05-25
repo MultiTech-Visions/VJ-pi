@@ -792,12 +792,17 @@ class Engine:
     # ── Render pipeline ───────────────────────────────────────────────
 
     def _build_base(self, ctx):
+        """Live-mode base layer. Clips read at canvas resolution; generatives
+        render at the reduced internal resolution and get upscaled in
+        compose_frame() before overlay/hits paint on top."""
         clip_frame = self.clips.read()
         if clip_frame is not None:
             return clip_frame
         fn = GENERATIVE_FNS.get(self.active_generative)
         if fn is not None:
-            return fn(ctx)
+            gw, gh = self._gen_render_size()
+            small_ctx = EffectContext(gw, gh, ctx.t, (ctx.px, ctx.py))
+            return fn(small_ctx)
         return np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
     def _apply_fx(self, frame, ctx):
@@ -861,6 +866,12 @@ class Engine:
             )
             frame = self._build_base(ctx)
             frame = self._apply_fx(frame, ctx)
+            # _build_base may return a sub-canvas frame (generatives render
+            # at cfg.gen_render_scale). Upscale to canvas before overlay
+            # and hits — those expect canvas-sized buffers.
+            if frame.shape[:2] != (self.h, self.w):
+                frame = cv2.resize(frame, (self.w, self.h),
+                                   interpolation=cv2.INTER_LINEAR)
             frame = self._apply_overlay(frame)
             frame = self._apply_hits(frame)
 
@@ -911,9 +922,18 @@ class Engine:
         return canvas
 
     def _compose_group_source(self, group, now):
-        """Build the unwarped source frame for one group (clip / gen / FX)."""
+        """Build the unwarped source frame for one group (clip / gen / FX).
+
+        Generative sources render at cfg.gen_render_scale × canvas (default
+        0.5) — they're smooth procedural patterns, no detail lost from
+        upscaling, but 4× fewer pixels under the per-frame sin/sqrt/etc.
+        Clips stay at canvas resolution since they carry real detail.
+        FX runs at whatever size the base was rendered at (kaleido / mirror
+        / etc. adapt via frame.shape internally).
+        """
         w, h = self.w, self.h
-        if group.content_kind == "clip" and group.clip_stem:
+        is_clip = (group.content_kind == "clip" and group.clip_stem)
+        if is_clip:
             idx = self.clips.find_by_stem(group.clip_stem)
             if idx is not None:
                 self.clips.ensure_open(idx)
@@ -927,8 +947,10 @@ class Engine:
             if fn is None:
                 frame = np.zeros((h, w, 3), dtype=np.uint8)
             else:
+                # Render at the reduced internal resolution.
+                gw, gh = self._gen_render_size()
                 ctx = EffectContext(
-                    w, h,
+                    gw, gh,
                     now - self.start_time + group._time_offset,
                     (group.param_x, group.param_y),
                 )
@@ -936,9 +958,13 @@ class Engine:
         else:
             frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # Per-group FX chain
+        fh, fw = frame.shape[:2]
+
+        # Per-group FX chain. Runs at whatever size the base is — kaleido
+        # uses frame.shape; mirror, posterize, rgb_split, edges, invert
+        # all are shape-agnostic.
         if any(group.fx_state.values()):
-            ctx = EffectContext(w, h,
+            ctx = EffectContext(fw, fh,
                                 now - self.start_time + group._time_offset,
                                 (group.param_x, group.param_y))
             s = group.fx_state
@@ -956,23 +982,41 @@ class Engine:
                 frame = invert(frame)
             if s.get("feedback"):
                 # Mapping-mode feedback uses the previous full canvas as
-                # the trail buffer. Skip if we don't have one yet.
-                if self.prev_frame is not None:
+                # the trail buffer. Skip if we don't have one yet OR if
+                # dimensions don't match (avoids a feedback artefact on
+                # a low-res generative pulling from the canvas-sized
+                # prev_frame; the warp would inflate a thumbnail).
+                if (self.prev_frame is not None
+                        and self.prev_frame.shape[:2] == frame.shape[:2]):
                     zoom = 1.0 + ctx.px * 0.08
                     rot = (ctx.py - 0.5) * 4.0
                     frame = feedback_blend(self.prev_frame, frame,
                                            zoom=zoom, rotate=rot)
 
-        # Per-group overlay screen-blend
+        # Per-group overlay screen-blend. Overlay pool reads at canvas
+        # size; resize to match the source if the source was rendered
+        # smaller (cheap — one resize at fw×fh).
         if group.overlay_stem:
             ov_idx = self.overlays.find_by_stem(group.overlay_stem)
             if ov_idx is not None:
                 self.overlays.ensure_open(ov_idx)
                 ov = self.overlays.read_at(ov_idx)
                 if ov is not None:
+                    if ov.shape[:2] != (fh, fw):
+                        ov = cv2.resize(ov, (fw, fh),
+                                        interpolation=cv2.INTER_AREA)
                     frame = screen_blend(frame, ov)
 
         return frame
+
+    def _gen_render_size(self):
+        """Internal generative resolution = cfg.width/height × scale,
+        floored at 64×36 so we never burn cycles below the cv2 minimum
+        practical block size."""
+        scale = max(0.1, min(1.0, getattr(self.cfg, "gen_render_scale", 1.0)))
+        gw = max(64, int(self.w * scale))
+        gh = max(36, int(self.h * scale))
+        return gw, gh
 
     def _place_group_into_canvas(self, canvas, source, group):
         """Dispatch into the right placement strategy based on the group's
