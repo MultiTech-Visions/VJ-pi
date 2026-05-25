@@ -13,19 +13,17 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _common import init_window, read_fbo, save_rgb, is_near
+from _common import init_window, read_fbo, save_rgb, is_near, make_fbo
 
 W, H = 320, 240
 screen, ctx = init_window(size=(W, H))
 
 print(f"GL: {ctx.info.get('GL_VERSION', '?')}")
 
-# Build an FBO the same way main code does (RGB8 colour attachment).
-import moderngl
-tex = ctx.texture((W, H), 3, dtype="f1")
-tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
-fbo = ctx.framebuffer(color_attachments=[tex])
-print(f"FBO created: w={W} h={H} components=3 dtype=f1")
+# RGBA8 colour attachment (see make_fbo() for the V3D / GLES 3.0
+# spec rationale — RGB8 isn't required to be color-renderable).
+fbo = make_fbo(ctx, (W, H))
+print(f"FBO created: w={W} h={H} components=4 dtype=f1 (RGBA8)")
 
 # Clear it.
 fbo.use()
@@ -42,7 +40,6 @@ print(f"expected:  [255, 0, 255]  (magenta)")
 if is_near(mean, (255, 0, 255), tol=30):
     print("[PASS] FBO clear produces magenta")
     sys.exit(0)
-print("[FAIL] FBO clear did NOT produce magenta")
-print("       → V3D may not support GL_RGB8 as a render target.")
-print("       → Try recreating with 4 components (RGBA8) and re-run.")
+print("[FAIL] FBO clear did NOT produce magenta even with RGBA8")
+print("       → readback path itself is broken (driver / moderngl / Wayland).")
 sys.exit(1)

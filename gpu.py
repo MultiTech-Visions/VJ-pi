@@ -706,6 +706,12 @@ class Renderer:
         )
 
     def _make_fbo(self, w, h):
+        # GLES 3.0 spec only mandates GL_RGBA8 as color-renderable —
+        # GL_RGB8 is optional and V3D 7.1 doesn't actually support it
+        # as a render target (FBO creation succeeds silently but clears
+        # and shader draws produce undefined / zero results). RGBA8 is
+        # universally supported. Shaders write `vec4(rgb, 1.0)` so the
+        # alpha channel just stays at 1.0.
         # 4-component RGBA: GLES 3.0 only *requires* RGBA8 to be color-
         # renderable. RGB8 *is* in the required list per spec, but Pi 5's
         # V3D Mesa driver is happier with 4-component render targets and
@@ -716,7 +722,6 @@ class Renderer:
         tex.repeat_x = False
         tex.repeat_y = False
         fbo = self.ctx.framebuffer(color_attachments=[tex])
-        # Attach the texture by reference so we can sample it elsewhere.
         return fbo
 
     # ── FBO ping-pong helpers ────────────────────────────────────────
@@ -1211,6 +1216,19 @@ class Renderer:
         Returns a view; callers MUST copy if they want to retain it
         past the next readback() call.
 
+        Reads 4 components (RGBA) and drops alpha rather than asking
+        for 3 components — GLES 3.0 only spec-requires
+        GL_RGBA + UNSIGNED_BYTE for glReadPixels, and on V3D the 3-
+        component (GL_RGB) read silently returns all zeros. Also calls
+        ctx.finish() first so the GPU has actually completed all
+        prior draws / clears before we sample (the read otherwise
+        races draws on V3D's tiled architecture).
+        """
+        self.ctx.finish()
+        data = self._current.read(components=4, alignment=1, dtype="f1")
+        buf = np.frombuffer(data, dtype=np.uint8).reshape(self.h, self.w, 4)
+        # moderngl returns bottom-up; flip rows to top-down (cv2 convention)
+        # and drop the alpha channel — the rest of the codebase expects RGB.
         Reads 4 components (RGBA) and drops alpha, because OpenGL ES 3.0
         only guarantees glReadPixels(GL_RGBA, GL_UNSIGNED_BYTE) — RGB
         readback is not a required format and Pi 5's V3D Mesa driver

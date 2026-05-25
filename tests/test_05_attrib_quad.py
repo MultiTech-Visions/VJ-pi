@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import moderngl
-from _common import init_window, read_fbo, save_rgb
+from _common import init_window, read_fbo, save_rgb, make_fbo
 
 W, H = 320, 240
 screen, ctx = init_window(size=(W, H))
@@ -61,8 +61,7 @@ verts = np.array([
 vbo = ctx.buffer(verts.tobytes())
 vao = ctx.vertex_array(prog, [(vbo, "2f", "in_pos")])
 
-tex = ctx.texture((W, H), 3, dtype="f1")
-fbo = ctx.framebuffer(color_attachments=[tex])
+fbo = make_fbo(ctx, (W, H))
 fbo.use()
 ctx.viewport = (0, 0, W, H)
 ctx.clear(0.0, 0.0, 0.0, 1.0)
