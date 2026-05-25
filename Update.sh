@@ -1,6 +1,8 @@
 #!/bin/bash
 # pi-paint VJ — update from GitHub.
-# Double-click this file in the file manager and choose "Execute in Terminal".
+# Double-click in the file manager and choose "Execute" (or "Execute
+# in Terminal" if you want to watch it live).
+#
 # Pulls the latest version from the `main` branch and updates Python
 # dependencies if requirements.txt changed. Safe to re-run.
 #
@@ -11,9 +13,75 @@
 #     .git folder into place, and force-syncing tracked files. Your own
 #     MP4 clips in assets/clips/ and assets/overlays/ are untracked, so
 #     they're left alone. Same for venv/ and vj_state.json.
+#
+# Failure reporting: when launched via "Execute" the file manager
+# gives this script no terminal, so the old `read -p "Press Enter
+# to close..."` prompts EOF-ed instantly and the window vanished
+# without showing anything. We now tee all output to vj_update.log
+# and pop a scrollable zenity dialog on exit (success or failure)
+# so the operator always sees what happened.
 
 set -e
 cd "$(dirname "$0")"
+
+LOG="$(pwd)/vj_update.log"
+
+if [ -t 1 ]; then
+  FROM_TERMINAL=1
+else
+  FROM_TERMINAL=0
+  # Mirror every byte of stdout+stderr into the log so the GUI dialog
+  # can show what happened. tee makes the output visible to a terminal
+  # too if one happens to be attached upstream (unlikely with file
+  # manager launch but harmless).
+  exec > >(tee "$LOG") 2>&1
+fi
+
+show_log_dialog() {
+  local title="$1"
+  local logfile="$2"
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --text-info --title="$title" --filename="$logfile" \
+      --width=900 --height=600 --no-wrap 2>/dev/null
+    return
+  fi
+  if command -v xmessage >/dev/null 2>&1; then
+    xmessage -file "$logfile" -title "$title" 2>/dev/null
+    return
+  fi
+  for term in lxterminal xterm gnome-terminal mate-terminal x-terminal-emulator; do
+    if command -v "$term" >/dev/null 2>&1; then
+      "$term" -e bash -c "less '$logfile'; read -p 'Press Enter to close...'"
+      return
+    fi
+  done
+}
+
+# Single exit handler — fires on success, error, or `set -e` blowup.
+# Cleans up any half-finished bootstrap TMPDIR and surfaces the result.
+TMPDIR=""
+on_exit() {
+  local code=$?
+  if [ -n "$TMPDIR" ] && [ -d "$TMPDIR" ]; then
+    rm -rf "$TMPDIR"
+  fi
+  if [ "$FROM_TERMINAL" = "1" ]; then
+    if [ "$code" -ne 0 ]; then
+      echo ""
+      echo "Update FAILED (exit $code) — see error above."
+    fi
+    read -p "Press Enter to close..." 2>/dev/null || true
+  else
+    local title
+    if [ "$code" -eq 0 ]; then
+      title="VJ-pi: Update complete — $LOG"
+    else
+      title="VJ-pi: Update FAILED (exit $code) — $LOG"
+    fi
+    show_log_dialog "$title" "$LOG"
+  fi
+}
+trap on_exit EXIT
 
 REPO_URL="https://github.com/MultiTech-Visions/VJ-pi.git"
 
@@ -27,7 +95,6 @@ echo ""
 if ! command -v git >/dev/null 2>&1; then
   echo "ERROR: 'git' is not installed. Install it with:"
   echo "       sudo apt-get install -y git"
-  read -p "Press Enter to close..."
   exit 1
 fi
 
@@ -38,7 +105,6 @@ if [ ! -d ".git" ]; then
   echo ""
 
   TMPDIR=$(mktemp -d)
-  trap 'rm -rf "$TMPDIR"' EXIT
 
   for attempt in 1 2 3 4; do
     if git clone --branch main "$REPO_URL" "$TMPDIR/repo"; then
@@ -47,7 +113,6 @@ if [ ! -d ".git" ]; then
     if [ "$attempt" -eq 4 ]; then
       echo "ERROR: could not clone $REPO_URL after 4 attempts."
       echo "       Check your internet connection and try again."
-      read -p "Press Enter to close..."
       exit 1
     fi
     WAIT=$((2 ** attempt))
@@ -59,7 +124,7 @@ if [ ! -d ".git" ]; then
   # real git checkout. Untracked files (your clips, venv, etc.) stay put.
   mv "$TMPDIR/repo/.git" ./.git
   rm -rf "$TMPDIR"
-  trap - EXIT
+  TMPDIR=""
 
   # Force-sync tracked files to origin/main. Untracked files are untouched.
   echo "    Syncing tracked files to latest main..."
@@ -98,7 +163,6 @@ else
     if [ "$attempt" -eq 4 ]; then
       echo "ERROR: could not fetch from origin after 4 attempts."
       echo "       Check your internet connection and try again."
-      read -p "Press Enter to close..."
       exit 1
     fi
     WAIT=$((2 ** attempt))
@@ -152,4 +216,3 @@ if [ "$STASHED" -eq 1 ]; then
 fi
 echo "You can now double-click 'Start VJ.sh' to launch."
 echo ""
-read -p "Press Enter to close this window..."

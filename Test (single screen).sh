@@ -14,7 +14,7 @@ show_error() {
   local title="$1"
   local body="$2"
   if command -v zenity >/dev/null 2>&1; then
-    zenity --error --width=720 --title="$title" --text="$body" 2>/dev/null
+    zenity --error --width=720 --title="$title" --no-markup --text="$body" 2>/dev/null
     return
   fi
   if command -v xmessage >/dev/null 2>&1; then
@@ -24,6 +24,26 @@ show_error() {
   for term in lxterminal xterm gnome-terminal mate-terminal x-terminal-emulator; do
     if command -v "$term" >/dev/null 2>&1; then
       "$term" -e bash -c "printf '%s\n\n%s\n\n' '$title' '$body'; read -p 'Press Enter to close...'"
+      return
+    fi
+  done
+}
+
+show_log_dialog() {
+  local title="$1"
+  local logfile="$2"
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --text-info --title="$title" --filename="$logfile" \
+      --width=900 --height=600 --no-wrap 2>/dev/null
+    return
+  fi
+  if command -v xmessage >/dev/null 2>&1; then
+    xmessage -file "$logfile" -title "$title" 2>/dev/null
+    return
+  fi
+  for term in lxterminal xterm gnome-terminal mate-terminal x-terminal-emulator; do
+    if command -v "$term" >/dev/null 2>&1; then
+      "$term" -e bash -c "less '$logfile'; read -p 'Press Enter to close...'"
       return
     fi
   done
@@ -39,8 +59,7 @@ fi
 if ! ./venv/bin/python -c "import pygame, moderngl, numpy, cv2" >>"$LOG" 2>&1; then
   echo "[VJ] missing python deps — running pip install -r requirements.txt..." >>"$LOG"
   if ! ./venv/bin/pip install -r requirements.txt >>"$LOG" 2>&1; then
-    show_error "VJ-pi: dependency install failed" \
-      "pip install -r requirements.txt failed. Full log:\n\n$LOG\n\nLast lines:\n\n$(tail -30 "$LOG")"
+    show_log_dialog "VJ-pi: dependency install failed — $LOG" "$LOG"
     exit 1
   fi
 fi
@@ -53,8 +72,6 @@ fi
 EXIT=$?
 
 if [ "$EXIT" -ne 0 ]; then
-  TAIL=$(tail -40 "$LOG" 2>/dev/null)
-  show_error "VJ-pi crashed (exit $EXIT)" \
-    "main.py exited with status $EXIT.\n\nFull log:  $LOG\n\nLast lines:\n\n$TAIL"
+  show_log_dialog "VJ-pi crashed (exit $EXIT) — $LOG" "$LOG"
 fi
 exit "$EXIT"
