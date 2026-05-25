@@ -244,13 +244,24 @@ def mirror_h(src):
 
 
 def feedback_blend(prev, new_frame, zoom=1.02, rotate=0.5, fade=0.92):
+    """Trails / mirroring feedback.
+
+    Old behaviour was addWeighted(warped, 1.0, new, 1.0) — a literal sum
+    that saturated bright content to pure white within a handful of
+    frames. Max-blend on a faded warped copy preserves the trail look
+    without ever exceeding 255, so we don't wash out. BORDER_CONSTANT=0
+    also stops edge reflection from pumping extra brightness in from
+    outside the frame.
+    """
     if prev is None:
         return new_frame.copy()
     h, w = new_frame.shape[:2]
     M = cv2.getRotationMatrix2D((w * 0.5, h * 0.5), rotate, zoom)
-    warped = cv2.warpAffine(prev, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+    warped = cv2.warpAffine(prev, M, (w, h),
+                            borderMode=cv2.BORDER_CONSTANT,
+                            borderValue=(0, 0, 0))
     warped = (warped.astype(np.float32) * fade).astype(np.uint8)
-    return cv2.addWeighted(warped, 1.0, new_frame, 1.0, 0)
+    return cv2.max(warped, new_frame)
 
 
 def rgb_split(src, offset=8):
