@@ -546,16 +546,18 @@ class Engine:
             return
         keys = pygame.key.get_pressed()
         if self.auto_mode:
-            # Up = faster clip changes, Down = slower
-            # Right = faster FX changes, Left = slower
+            # Arrows in autopilot tune the INTERVALS directly (longer
+            # interval = slower changes). Pressing up adds time, down
+            # subtracts; right adds, left subtracts — so the direction
+            # matches the value on the bar, not "how fast it feels".
             if keys[pygame.K_UP]:
-                self.auto_clip_interval = max(1.0, self.auto_clip_interval - dt * 4.0)
-            if keys[pygame.K_DOWN]:
                 self.auto_clip_interval = min(60.0, self.auto_clip_interval + dt * 4.0)
+            if keys[pygame.K_DOWN]:
+                self.auto_clip_interval = max(1.0, self.auto_clip_interval - dt * 4.0)
             if keys[pygame.K_RIGHT]:
-                self.auto_fx_interval   = max(0.5, self.auto_fx_interval   - dt * 3.0)
-            if keys[pygame.K_LEFT]:
                 self.auto_fx_interval   = min(30.0, self.auto_fx_interval  + dt * 3.0)
+            if keys[pygame.K_LEFT]:
+                self.auto_fx_interval   = max(0.5, self.auto_fx_interval   - dt * 3.0)
             return
 
         step = PARAM_RATE * dt
