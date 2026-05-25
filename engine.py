@@ -591,6 +591,10 @@ class Engine:
                 # somewhere for the first dragged rectangle to land.
                 self.mapping.groups[0].spaces = []
                 self.mapping.edit_mode = True
+            elif all(len(g.spaces) == 0 for g in self.mapping.groups):
+                # Nothing to perform against — drop straight into EDIT so
+                # the operator can immediately start drawing.
+                self.mapping.edit_mode = True
         self._persist_mapping()
         pygame.mouse.set_visible(True)
 
@@ -615,6 +619,70 @@ class Engine:
         self.mapping.cancel_drag()
         self.mapping.bind_armed = False
         self.mapping.deselect_space()
+
+    def _handle_output_mouse_event(self, event):
+        """Mouse input that landed on the OUTPUT (projector) window.
+
+        Only meaningful in mapping/edit mode — it's the natural way to
+        do projection mapping, pointing at physical features through the
+        projection itself. Coords are screen-pixel; we normalize against
+        the output window size since fullscreen rescales away from
+        cfg.width/height."""
+        if not (self.mode == "mapping" and self.mapping.edit_mode):
+            return
+        sw, sh = self.screen.get_size()
+        m = self.mapping
+
+        if event.type == pygame.MOUSEMOTION:
+            if m.drag is None:
+                return
+            pos = event.pos
+            m.update_drag((max(0.0, min(1.0, pos[0] / max(1, sw))),
+                           max(0.0, min(1.0, pos[1] / max(1, sh)))))
+            return
+
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if m.drag is not None:
+                m.end_drag()
+                self._persist_mapping()
+            return
+
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+            return
+        pos = event.pos
+        norm = (max(0.0, min(1.0, pos[0] / max(1, sw))),
+                max(0.0, min(1.0, pos[1] / max(1, sh))))
+        shift_held = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+
+        # Same priority as the HUD edit-click flow: bind > corner > body
+        # > empty area → create.
+        if (shift_held or m.bind_armed) and m.selected_space is not None:
+            hit = m.hit_test_space(norm)
+            if hit is not None and hit != m.selected_space:
+                if hit[0] != m.selected_space[0]:
+                    m.bind_to_selected(*hit)
+                    self._persist_mapping()
+                else:
+                    m.bind_armed = False
+                return
+            m.bind_armed = False
+
+        # ~2.5% of width — bigger than the HUD radius since the projector
+        # is the actual mapping target so fingers / pointers are coarser.
+        radius_norm = 0.025
+        corner = m.hit_test_corner_of_selected_space(norm, radius_norm)
+        if corner is not None:
+            m.start_corner_drag(corner)
+            return
+
+        hit = m.hit_test_space(norm)
+        if hit is not None:
+            m.select_space(*hit)
+            m.start_move(*hit, norm)
+            self._persist_mapping()
+            return
+
+        m.start_create(norm)
 
     def cycle_mapping_group(self, step=1):
         self.mapping.cycle_selected(step)
@@ -987,7 +1055,15 @@ class Engine:
                     # so taps on 1-0 / Q-P don't fire content actions.
                     editing = (self.mode == "mapping"
                                and self.mapping.edit_mode)
-                    if event.key in FAV_KEYS and not editing:
+                    # K_e collides with the slot-2 overlay favourite, but in
+                    # MAPPING mode E is the EDIT-mode toggle — route it
+                    # straight to dispatch so the favourite handler doesn't
+                    # eat the keystroke before the mapping dispatcher sees it.
+                    is_mapping_e = (self.mode == "mapping"
+                                    and event.key == pygame.K_e
+                                    and not (event.mod & pygame.KMOD_CTRL))
+                    if (event.key in FAV_KEYS and not editing
+                            and not is_mapping_e):
                         if is_initial:
                             fav_pressed_at[event.key] = time.time()
                             long_press_fired.discard(event.key)
@@ -1013,8 +1089,23 @@ class Engine:
 
                 elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                                     pygame.MOUSEMOTION):
-                    if control is not None:
+                    # SDL2 puts the source window on each event. If it's
+                    # the HUD's window, let the control panel handle it
+                    # (preview drags, display picker buttons). Otherwise
+                    # it's a click on the projector itself — in mapping/
+                    # edit mode that's how the operator paints spaces
+                    # directly onto the projection surface.
+                    win = getattr(event, "window", None)
+                    hud_id = (control._window_id if control is not None
+                              else None)
+                    ev_win_id = (getattr(win, "id", None)
+                                 if win is not None else None)
+                    is_hud_event = (hud_id is not None
+                                    and ev_win_id == hud_id)
+                    if is_hud_event and control is not None:
                         control.handle_event(event)
+                    else:
+                        self._handle_output_mouse_event(event)
 
             # Per-frame long-press detection
             now = time.time()
