@@ -866,11 +866,17 @@ class Engine:
     # ── Mapping render pipeline ───────────────────────────────────────
 
     def _compose_mapping_frame(self):
-        """Render projection-mapping: source per group, warp into spaces.
+        """Render projection-mapping: one source per group, painted onto
+        the canvas under a mask built from the UNION of the group's
+        spaces. Multiple spaces in one group act as multiple windows
+        into the same video — they reveal different parts of one
+        playing video, not separate copies of it.
+
         In edit mode also draw outlines of every group + a highlight on
         the picked-for-edit space + the create-drag rubber-band, so the
         projector itself helps the operator align spaces to physical
-        surfaces while editing."""
+        surfaces while editing.
+        """
         w, h = self.w, self.h
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
         now = time.time()
@@ -879,8 +885,7 @@ class Engine:
             if not group.spaces:
                 continue
             source = self._compose_group_source(group, now)
-            for space in group.spaces:
-                self._place_into_canvas(canvas, source, group, space)
+            self._place_group_into_canvas(canvas, source, group)
         canvas = self._apply_hits(canvas)
         if self.mapping.show_borders:
             self._draw_selection_border(canvas)
@@ -952,17 +957,21 @@ class Engine:
 
         return frame
 
-    def _place_into_canvas(self, canvas, source, group, space):
+    def _place_group_into_canvas(self, canvas, source, group):
         """Dispatch into the right placement strategy based on the group's
-        fit_mode. "stretch" warps the source corners to the quad corners
-        (legacy perspective behaviour). The other three modes treat the
-        quad as a WINDOW into the source — the video keeps its natural
-        aspect, the quad polygon just masks what shows through."""
-        dst_corners = space.corners_px(self.w, self.h)
+        fit_mode. "stretch" is per-space (each quad warps its own copy of
+        the video — legacy billboard look). The other three modes are
+        per-GROUP: the video plays once across the whole canvas at the
+        chosen zoom / pan, and the union of the group's space polygons
+        is the mask through which it shows. Multiple spaces in one
+        group → multiple windows onto one playing video."""
+        w, h = self.w, self.h
         if group.fit_mode == "stretch":
-            self._warp_into_canvas(canvas, source, dst_corners)
-        else:
-            self._window_into_canvas(canvas, source, group, dst_corners)
+            for space in group.spaces:
+                self._warp_into_canvas(canvas, source,
+                                       space.corners_px(w, h))
+            return
+        self._window_group_into_canvas(canvas, source, group)
 
     def _warp_into_canvas(self, canvas, source, dst_corners):
         """Warp `source` into the quad `dst_corners` on `canvas` — the
@@ -1005,55 +1014,42 @@ class Engine:
         sub_canvas[idx] = sub_warp[idx]
         canvas[y_min:y_max, x_min:x_max] = sub_canvas
 
-    def _window_into_canvas(self, canvas, source, group, dst_corners):
-        """Place `source` as if the quad were a "window" into it: the
-        source is scaled by mode + zoom and shifted by pan, then only the
-        portion inside the quad polygon shows. Source aspect is preserved
-        — no warp distortion.
+    def _window_group_into_canvas(self, canvas, source, group):
+        """Place `source` ONCE across the canvas at the group's chosen
+        zoom / pan, then reveal it only through the union of the group's
+        space polygons. The video keeps its natural aspect (no warp);
+        each space is a hole onto a single underlying video plane, so
+        two spaces side-by-side in one group show the video continuously
+        across both — different parts of the same video, in sync.
 
-        fit_mode = "fit"   : uniform scale so the source fits inside the
-                             bbox (letterboxed). Zoom / pan ignored.
-        fit_mode = "fill"  : uniform scale so the source covers the bbox
-                             (cropped). Zoom / pan ignored.
+        fit_mode = "fit"   : uniform scale so the source fits the
+                             canvas (letterboxed). Zoom / pan ignored.
+        fit_mode = "fill"  : uniform scale so the source covers the
+                             canvas (cropped). Zoom / pan ignored.
         fit_mode = "window": "fit" base scale times group.zoom, plus
-                             pan offset. Operator's free composition.
+                             pan offset (-1..+1 of half-canvas).
         """
         h, w = canvas.shape[:2]
         sh, sw = source.shape[:2]
         if sw < 2 or sh < 2:
             return
 
-        # Bounding box of the destination quad, in canvas pixels.
-        bx0 = float(dst_corners[:, 0].min())
-        bx1 = float(dst_corners[:, 0].max())
-        by0 = float(dst_corners[:, 1].min())
-        by1 = float(dst_corners[:, 1].max())
-        bw = bx1 - bx0
-        bh = by1 - by0
-        if bw < 2 or bh < 2:
-            return
-
         mode = group.fit_mode
         if mode == "fill":
-            scale = max(bw / sw, bh / sh)
-            zoom = 1.0
-            pan_x = 0.0
-            pan_y = 0.0
+            scale = max(w / sw, h / sh)
+            zoom, pan_x, pan_y = 1.0, 0.0, 0.0
         else:  # "window" or "fit"
-            scale = min(bw / sw, bh / sh)
+            scale = min(w / sw, h / sh)
             if mode == "window":
-                zoom = group.zoom
-                pan_x = group.pan_x
-                pan_y = group.pan_y
+                zoom, pan_x, pan_y = group.zoom, group.pan_x, group.pan_y
             else:
                 zoom, pan_x, pan_y = 1.0, 0.0, 0.0
         scale *= max(0.05, zoom)
 
         dw = max(2, int(round(sw * scale)))
         dh = max(2, int(round(sh * scale)))
-        # Centre of the destination rect within the bbox, offset by pan.
-        cx = bx0 + bw * 0.5 + pan_x * bw * 0.5
-        cy = by0 + bh * 0.5 + pan_y * bh * 0.5
+        cx = w * 0.5 + pan_x * w * 0.5
+        cy = h * 0.5 + pan_y * h * 0.5
         dx = int(round(cx - dw * 0.5))
         dy = int(round(cy - dh * 0.5))
 
@@ -1063,10 +1059,22 @@ class Engine:
         cx1 = min(w, dx + dw)
         cy1 = min(h, dy + dh)
         if cx1 <= cx0 or cy1 <= cy0:
-            return  # Off-canvas entirely.
+            return  # Video positioned entirely off-canvas.
 
-        # Resize the source to the destination size, then slice to the
-        # visible region. Using INTER_AREA on shrink keeps fine detail.
+        # Build the group's mask — the UNION of all its space polygons.
+        # That's what makes side-by-side spaces show one continuous
+        # video rather than two duplicates of it.
+        mask = np.zeros((h, w), dtype=np.uint8)
+        for space in group.spaces:
+            poly = space.corners_px(w, h).astype(np.int32)
+            cv2.fillConvexPoly(mask, poly, 255)
+
+        # Bail if no mask pixels overlap the destination rect — saves the
+        # cv2.resize cost when the spaces aren't where the video is.
+        sub_mask = mask[cy0:cy1, cx0:cx1]
+        if not sub_mask.any():
+            return
+
         interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
         resized = cv2.resize(source, (dw, dh), interpolation=interp)
         sx0 = cx0 - dx
@@ -1075,14 +1083,8 @@ class Engine:
         sy1 = sy0 + (cy1 - cy0)
         video_region = resized[sy0:sy1, sx0:sx1]
 
-        # Mask to the quad polygon (so a tilted parallelogram space only
-        # shows the part of the video falling inside the parallelogram —
-        # the rest of the bbox stays whatever the canvas was already).
-        mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.fillConvexPoly(mask, dst_corners.astype(np.int32), 255)
-        mask_region = mask[cy0:cy1, cx0:cx1]
         canvas_region = canvas[cy0:cy1, cx0:cx1]
-        idx = mask_region > 0
+        idx = sub_mask > 0
         canvas_region[idx] = video_region[idx]
         canvas[cy0:cy1, cx0:cx1] = canvas_region
 

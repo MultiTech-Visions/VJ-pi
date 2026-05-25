@@ -202,17 +202,22 @@ button is a 4 %-of-canvas chip drawn just above the space:
 
 ### Per-group frame controls (FRAME panel in the HUD)
 
-By default a space is a **window into the video**, not a stretch target —
-the video keeps its natural aspect / orientation and the quad just masks
-what shows through. Click the FRAME panel buttons in the selected
-group's status panel to compose the framing:
+A group's content plays **once, across the whole canvas**, and the group's
+spaces are holes through which it shows. Two side-by-side spaces in one
+group reveal the left and right portions of the same playing video —
+not two copies of it. That's how you build "many windows, one underlying
+video" compositions and use spaces as physical layers.
+
+The video keeps its natural aspect — no warp distortion. Click the FRAME
+panel buttons in the selected group's status panel to compose how the
+video sits on the canvas:
 
 | Control     | Action                                                    |
 |-------------|-----------------------------------------------------------|
-| Mode pill   | Click to cycle: `window` → `fit` → `fill` → `stretch`. `window` is free zoom + pan; `fit` letterboxes; `fill` covers + crops; `stretch` is the old "warp video corners onto quad corners" look — opt in when you want the angled-billboard distortion on purpose. |
-| `−` / `+`   | Zoom out / in by 15 % per click (window mode)             |
+| Mode pill   | Click to cycle: `window` → `fit` → `fill` → `stretch`. `window`, `fit`, `fill` all use the canvas as the playback surface and reveal it through the group's spaces. `stretch` is per-space — each quad warps its own copy of the video (the old billboard look, opt in when you want the angled-perspective distortion on purpose). |
+| `−` / `+`   | Zoom the video ±15 % per click (window mode)              |
 | `RESET`     | Zoom 1.0, pan 0,0                                          |
-| ◀ ▲ ▼ ▶     | Pan the video ± 10 % of the space's bbox per click        |
+| ◀ ▲ ▼ ▶     | Pan the video ± 10 % of the canvas half-size per click — all spaces in the group shift in sync because they're windows onto the same plane |
 
 Frame settings are saved per group in `vj_state.json` so the composition
 you set up for a show is there again the next time you launch.
