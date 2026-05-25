@@ -15,7 +15,8 @@ KEY_CHEAT = [
     ("J K L",        "Gen: lissajous / moiré / metaballs"),
     ("Z X C V B",    "Hits: strobe / black / inv / zoom / RGB"),
     ("F1 - F7",      "Persistent FX toggles"),
-    ("← → ↑ ↓",      "Tune PARAM X / Y (active-FX controls)"),
+    ("← → ↑ ↓",      "Tune PARAM X/Y  (auto: ←→ FX rate · ↑↓ clip rate)"),
+    ("Enter Enter",  "Engage AUTOPILOT (any key hands control back)"),
     ("F11 / F12",    "Cycle output display / APPLY"),
     ("Space",        "Blackout (panic)"),
     ("Backspace",    "Freeze frame"),
@@ -477,22 +478,34 @@ class ControlWindow:
                 badges.append(("MAPPING · PERFORM", (160, 220, 255)))
             if e.mapping.bind_armed:
                 badges.append(("BIND: next click", (200, 255, 200)))
+        if getattr(e, "auto_mode", False):
+            badges.append(("AUTOPILOT", (120, 220, 140)))
         if e.blackout:
             badges.append(("BLACKOUT", (255, 80, 80)))
         if e.freeze:
             badges.append(("FREEZE", (130, 200, 255)))
         if e.hit_frames_left > 0:
             badges.append((f"HIT: {e.hit_type}", (255, 200, 80)))
-        if not badges:
-            return y
-        bx = x
-        for text, color in badges:
-            chip = self.font_m.render(f"  {text}  ", True, (20, 20, 30))
-            rect = chip.get_rect(topleft=(bx, y))
-            pygame.draw.rect(surface, color, rect.inflate(4, 4), border_radius=4)
-            surface.blit(chip, rect)
-            bx += rect.width + 12
-        return y + 26
+        end_y = y
+        if badges:
+            bx = x
+            for text, color in badges:
+                chip = self.font_m.render(f"  {text}  ", True, (20, 20, 30))
+                rect = chip.get_rect(topleft=(bx, y))
+                pygame.draw.rect(surface, color, rect.inflate(4, 4), border_radius=4)
+                surface.blit(chip, rect)
+                bx += rect.width + 12
+            end_y = y + 26
+        if getattr(e, "auto_mode", False):
+            info = self.font_s.render(
+                f"clip every {e.auto_clip_interval:4.1f}s   ·   "
+                f"fx every {e.auto_fx_interval:4.1f}s   ·   "
+                f"↑↓ tune clip · ←→ tune fx",
+                True, (150, 220, 170),
+            )
+            surface.blit(info, (x, end_y))
+            end_y += 18
+        return end_y
 
     def _draw_favorites(self, surface, x, y, width, label, keys, favs,
                         active_stem=None):

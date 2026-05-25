@@ -131,6 +131,7 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `F7`                | FX: RGB split / chromatic aberration (offset = PARAM X) |
 | `← →`               | Adjust PARAM X (active-FX horizontal control)      |
 | `↑ ↓`               | Adjust PARAM Y (active-FX vertical control)        |
+| `Enter Enter`       | Engage **AUTOPILOT** (double-tap within 600 ms). Any other key takes over again and executes immediately. While engaged, `↑/↓` tune the clip-change rate and `←/→` tune the FX-change rate. |
 | `F11`               | Cycle the pending output display                   |
 | `F12`               | Apply the pending output display (and persist it)  |
 | `Space`             | Blackout toggle (panic button)                     |
@@ -246,6 +247,33 @@ bloat memory.
 Pick a clip then a generative (`A`-`L`) — generative wins until you
 pick another clip.
 
+### Autopilot
+
+Double-tap **Enter** (within 600 ms) to engage autopilot. The engine
+then drives itself:
+
+- Picks a random clip (sometimes a generative instead) every
+  ~`auto_clip_interval` seconds, with jitter.
+- Toggles a random FX every ~`auto_fx_interval` seconds (caps active
+  FX at 3).
+- Drifts PARAM X/Y toward fresh random targets every couple of seconds.
+- Occasionally swaps the overlay (or clears it).
+
+Autopilot **never fires the punch-in hits** (strobe / black flash /
+invert flash / zoom punch / RGB smash). Those are seizure / migraine
+risks and only the operator should trigger them — `Z X C V B` are
+always your call.
+
+While autopilot is engaged, the HUD shows a green **AUTOPILOT** badge
+with the current rates. The arrow keys retune the rates instead of
+PARAM X/Y: `↑/↓` make clip changes faster/slower, `←/→` make FX
+changes faster/slower.
+
+**Any other key press** (Z for a strobe, a `5` to recall favourite 5,
+F3 to switch on feedback, …) immediately disengages autopilot and
+performs the action — perfect for grabbing back control when the
+random output happens to land on something you want to embellish.
+
 ## Asset sources
 
 Free libraries (download once, no internet needed at the party):
@@ -314,7 +342,25 @@ blit to pygame screen
 
 ## Performance notes
 
-- Targets 30 fps at 854×480 on Pi 5. Generatives are vectorized numpy.
+- Default render resolution is **1280×720** (HD); the output surface
+  scales to the display via `pygame.transform.smoothscale` (bilinear)
+  so it doesn't look pixelated on a 1080p projector. Clip downsampling
+  uses `cv2.INTER_AREA` for clean anti-aliased shrinking and
+  `cv2.INTER_LINEAR` for upscaling.
+- **`assets/Process Assets.sh` bakes every clip to the render
+  resolution** so the per-frame `cv2.resize` is a no-op at playback —
+  the only per-frame cost is the unavoidable H.264 decode and a BGR→RGB
+  shuffle. The processor reads its target size from `config.py`, so
+  the two stay in sync. If you change the render resolution (via
+  `--width / --height` or by editing `config.py`), **re-run the
+  processor** so your library is at the new size; otherwise the engine
+  will live-resize every frame and print a one-time warning per file.
+- If 30 fps starts dropping on slower hardware, fall back to the old
+  defaults: `--width 854 --height 480` (and re-process your clips).
+- For Pi 5 + a 1080p projector with detail-heavy 2K source loops, try
+  `--width 1920 --height 1080` (full-quality, ~2× more pixels than 720p
+  — kaleidoscope + feedback at once can get tight). Re-process at the
+  new size.
 - `kaleidoscope` is the heaviest effect (per-pixel remap). Stack 2-3
   effects max for headroom.
 - MP4 decode uses OpenCV's `VideoCapture` — relies on libavcodec; on

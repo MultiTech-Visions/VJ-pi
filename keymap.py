@@ -62,7 +62,10 @@ GEN_KEYS = [
     pygame.K_h, pygame.K_j, pygame.K_k, pygame.K_l,
 ]
 
-# Bottom row → one-shot hits
+# Bottom row → punch-in hits. Tap = a short one-shot; hold = sustained
+# for as long as the key is down (handled by per-frame polling in
+# Engine.run, not via pygame's KEYDOWN auto-repeat — the auto-repeat
+# initial delay is longer than a single hit's duration so it'd flicker).
 HIT_KEYS = {
     pygame.K_z: "strobe",
     pygame.K_x: "black_flash",

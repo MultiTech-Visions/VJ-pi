@@ -1,4 +1,5 @@
 import os
+import random
 import time
 
 import pygame
@@ -101,6 +102,20 @@ class Engine:
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
         self._mapping_persist_dirty = False
+
+        # Autopilot — engaged by double-tapping Enter, disengaged by any
+        # other key press. While engaged, the engine drives clip changes,
+        # FX toggling and param drift on jittered intervals.
+        self.auto_mode = False
+        self.auto_clip_interval = 8.0   # seconds between clip changes
+        self.auto_fx_interval   = 4.0   # seconds between FX toggles
+        self.last_enter_t = 0.0
+        self._auto_next_clip_at    = 0.0
+        self._auto_next_fx_at      = 0.0
+        self._auto_next_param_at   = 0.0
+        self._auto_next_overlay_at = 0.0
+        self._auto_target_x = 0.5
+        self._auto_target_y = 0.5
 
         self.running = True
 
@@ -358,6 +373,74 @@ class Engine:
         state["overlay_favorites"] = self.overlay_favorites
         save_state(state)
 
+    # ── Autopilot ─────────────────────────────────────────────────────
+
+    def engage_auto(self):
+        if self.auto_mode:
+            return
+        self.auto_mode = True
+        now = time.time()
+        # First clip change waits a beat so the operator can see what's
+        # happening; FX changes start a touch later.
+        self._auto_next_clip_at    = now + 1.0
+        self._auto_next_fx_at      = now + self.auto_fx_interval
+        self._auto_next_param_at   = now
+        self._auto_next_overlay_at = now + random.uniform(10, 25)
+        print(f"[vj] AUTOPILOT engaged — clip every {self.auto_clip_interval:.1f}s, "
+              f"fx every {self.auto_fx_interval:.1f}s")
+
+    def disengage_auto(self):
+        if not self.auto_mode:
+            return
+        self.auto_mode = False
+        print("[vj] autopilot disengaged")
+
+    def update_auto(self, now):
+        if not self.auto_mode:
+            return
+
+        # Base layer cycling: usually a clip, sometimes a generative.
+        if now >= self._auto_next_clip_at:
+            if len(self.clips) > 0 and random.random() < 0.75:
+                self.clips.pick_random()
+                self.active_generative = None
+            elif GENERATIVES:
+                self.active_generative = random.choice(GENERATIVES)
+                self.clips.deselect()
+            self._auto_next_clip_at = now + self.auto_clip_interval * random.uniform(0.6, 1.7)
+
+        # FX toggling — keep total active count manageable.
+        if now >= self._auto_next_fx_at:
+            active_on = [k for k, v in self.fx_state.items() if v]
+            active_off = [k for k, v in self.fx_state.items() if not v]
+            if active_on and (len(active_on) >= 3 or random.random() < 0.45):
+                self.fx_state[random.choice(active_on)] = False
+            elif active_off:
+                self.fx_state[random.choice(active_off)] = True
+            self._auto_next_fx_at = now + self.auto_fx_interval * random.uniform(0.5, 1.8)
+
+        # Drift PARAM X/Y toward fresh random targets every few seconds.
+        if now >= self._auto_next_param_at:
+            self._auto_target_x = random.random()
+            self._auto_target_y = random.random()
+            self._auto_next_param_at = now + random.uniform(2.0, 5.0)
+        lerp = 0.04
+        self.param_x += (self._auto_target_x - self.param_x) * lerp
+        self.param_y += (self._auto_target_y - self.param_y) * lerp
+
+        # NOTE: autopilot deliberately does NOT fire punch-in hits
+        # (strobe / black_flash / invert_flash / zoom_punch / rgb_smash).
+        # They're seizure / migraine risks for people on hallucinogens —
+        # only the operator can decide to fire them with Z/X/C/V/B.
+
+        # Occasional overlay swap / clear.
+        if now >= self._auto_next_overlay_at and len(self.overlays) > 0:
+            if random.random() < 0.55:
+                self.overlays.pick_random()
+            else:
+                self.overlays.deselect()
+            self._auto_next_overlay_at = now + random.uniform(10, 30)
+
     def toggle_blackout(self):
         self.blackout = not self.blackout
 
@@ -418,12 +501,23 @@ class Engine:
         except (TypeError, pygame.error, ValueError) as exc:
             print(f"[vj] switch_output_display({new_idx}) failed: {exc!r}")
 
-    def update_params_from_keys(self, dt):
-        """Arrow keys nudge param_x / param_y while held.
+    def update_held_hits(self, hit_keys_map):
+        """Sustain a punch-in hit while its key is held down.
 
-        In mapping mode the keys target the selected group's params so each
-        group's controls are independent. Without a selected group, fall
-        back to global params so the keys aren't silently dead.
+        compose_frame() decrements hit_frames_left each frame; we top it up
+        as long as the corresponding key is pressed. Two frames of headroom
+        means an in-flight hit gracefully finishes the frame after release.
+        """
+        keys = pygame.key.get_pressed()
+        for k, hit_name in hit_keys_map.items():
+            if keys[k]:
+                self.hit_type = hit_name
+                if self.hit_frames_left < 2:
+                    self.hit_frames_left = 2
+                return  # one hit at a time
+
+    def update_params_from_keys(self, dt):
+        """Arrows: tune PARAM X/Y in manual mode, tune auto rates in autopilot.
 
         In mapping/edit mode arrows are ignored entirely — the operator's
         laying out spaces, not tweaking visuals.
@@ -431,6 +525,19 @@ class Engine:
         if self.mode == "mapping" and self.mapping.edit_mode:
             return
         keys = pygame.key.get_pressed()
+        if self.auto_mode:
+            # Up = faster clip changes, Down = slower
+            # Right = faster FX changes, Left = slower
+            if keys[pygame.K_UP]:
+                self.auto_clip_interval = max(1.0, self.auto_clip_interval - dt * 4.0)
+            if keys[pygame.K_DOWN]:
+                self.auto_clip_interval = min(60.0, self.auto_clip_interval + dt * 4.0)
+            if keys[pygame.K_RIGHT]:
+                self.auto_fx_interval   = max(0.5, self.auto_fx_interval   - dt * 3.0)
+            if keys[pygame.K_LEFT]:
+                self.auto_fx_interval   = min(30.0, self.auto_fx_interval  + dt * 3.0)
+            return
+
         step = PARAM_RATE * dt
         if self._in_mapping():
             g = self.mapping.selected_group()
@@ -811,8 +918,16 @@ class Engine:
 
     def blit_to_output(self, frame):
         surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
-        if self.screen.get_size() != (self.w, self.h):
-            surface = pygame.transform.scale(surface, self.screen.get_size())
+        target_size = self.screen.get_size()
+        if target_size != (self.w, self.h):
+            # smoothscale (bilinear) instead of scale (nearest-neighbour)
+            # — looks dramatically less pixelated when the render res
+            # doesn't match the display res. smoothscale only supports
+            # 24/32-bit surfaces, hence the fallback.
+            try:
+                surface = pygame.transform.smoothscale(surface, target_size)
+            except (ValueError, pygame.error):
+                surface = pygame.transform.scale(surface, target_size)
         self.screen.blit(surface, (0, 0))
         pygame.display.flip()
 
@@ -823,7 +938,7 @@ class Engine:
         return frame
 
     def run(self, control=None):
-        from keymap import dispatch, NAV_KEYS, FAV_KEYS, fav_tap, fav_long
+        from keymap import dispatch, NAV_KEYS, FAV_KEYS, HIT_KEYS, fav_tap, fav_long
         # Enable system key-repeat. We filter below so only NAV_KEYS
         # auto-fire on hold — toggle/hit keys still need a fresh press.
         pygame.key.set_repeat(350, 80)
@@ -834,6 +949,8 @@ class Engine:
         long_press_fired = set() # keys whose long-press action has fired
         LONG_PRESS_S = 0.5
 
+        arrow_keys = (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN)
+
         last_t = time.time()
         while self.running:
             for event in pygame.event.get():
@@ -843,6 +960,31 @@ class Engine:
                 elif event.type == pygame.KEYDOWN:
                     is_initial = event.key not in held_keys
                     held_keys.add(event.key)
+
+                    # Autopilot Enter handling — engage (double-tap when off)
+                    # or disengage (single tap when on). Enter itself never
+                    # falls through to any further action.
+                    if is_initial and event.key == pygame.K_RETURN:
+                        now_t = time.time()
+                        if self.auto_mode:
+                            self.disengage_auto()
+                            self.last_enter_t = 0.0
+                        elif now_t - self.last_enter_t < 0.6:
+                            self.engage_auto()
+                            self.last_enter_t = 0.0
+                        else:
+                            self.last_enter_t = now_t
+                        continue
+
+                    # Any non-arrow key during autopilot returns control to
+                    # the operator AND still performs its action — perfect
+                    # for "ooh, hit B for an RGB smash right now".
+                    if is_initial and self.auto_mode and event.key not in arrow_keys:
+                        self.disengage_auto()
+
+                    # In mapping/edit mode the operator is laying out spaces,
+                    # not jamming — swallow the favourite long-press timing
+                    # so taps on 1-0 / Q-P don't fire content actions.
                     editing = (self.mode == "mapping"
                                and self.mapping.edit_mode)
                     if event.key in FAV_KEYS and not editing:
@@ -885,7 +1027,9 @@ class Engine:
 
             dt = now - last_t
             last_t = now
+            self.update_auto(now)
             self.update_params_from_keys(dt)
+            self.update_held_hits(HIT_KEYS)
             frame = self.compose_frame()
             self.blit_to_output(frame)
             if control is not None:
