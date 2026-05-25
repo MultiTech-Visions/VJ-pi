@@ -49,15 +49,26 @@ def _set_sdl_hints():
 
 
 def _request_gl_attributes():
-    """Ask SDL for double-buffered OpenGL. We deliberately DON'T pin
-    a specific version, profile, or depth size: on Pi 5's V3D Mesa
-    driver, asking for `CORE` + `DEPTH_SIZE=0` together has been
-    observed to trigger `GLXBadFBConfig` because no matching FBConfig
-    exists. The driver gives us OpenGL 3.3 by default anyway — moderngl
-    reports the actual version it negotiated on startup, and our
-    `#version 330` shaders compile against both core and compatibility
-    contexts.
+    """Ask SDL for an OpenGL ES 3.0 context.
+
+    On Pi 5's V3D Mesa driver, requesting desktop OpenGL silently
+    loads but shader-based draws produce nothing — only ctx.clear-
+    based writes land on the FBO. The driver's mature path is GLES,
+    not desktop GL (see Raspberry Pi forum thread on ModernGL
+    + Pi 5). Asking for a GLES 3.0 context via SDL makes V3D give us
+    its proper renderer, and our shaders (which auto-adapt their
+    #version line in gpu.Renderer based on context type) compile and
+    render correctly.
+
+    GLES 3.0 is the highest version that's both common on V3D and
+    enough for every feature we use (in/out, texture(), mat3,
+    bitwise int ops, gl_PointSize gated by PROGRAM_POINT_SIZE).
     """
+    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
+    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 0)
+    pygame.display.gl_set_attribute(
+        pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_ES,
+    )
     pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
 
 
