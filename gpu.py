@@ -8,7 +8,7 @@ public surface used by `engine.py` is the `Renderer` class — call
 
 Pi 5 design notes:
   * The VideoCore VII GPU does OpenGL 3.3 on the open V3D Mesa driver,
-    so the shaders target `#version 330` (no GL ES profile gymnastics).
+    so the shaders target `#version 140` (no GL ES profile gymnastics).
   * Generatives are pure fragment shaders rasterized over a single
     full-screen triangle pair — zero CPU per-pixel work.
   * The FX chain is a ping-pong between two same-size FBO textures so
@@ -37,7 +37,7 @@ import pygame
 
 # Full-screen triangle-strip quad. The vertex shader passes UV in [0,1].
 VS_FULLSCREEN = """
-#version 330
+#version 140
 in vec2 in_pos;
 out vec2 v_uv;
 void main() {
@@ -49,7 +49,7 @@ void main() {
 # Same as above but flips Y so a texture uploaded top-row-first reads
 # right-side-up. Used by the present pass.
 VS_FULLSCREEN_FLIP = """
-#version 330
+#version 140
 in vec2 in_pos;
 out vec2 v_uv;
 void main() {
@@ -61,7 +61,7 @@ void main() {
 # Point sprite vertex shader for star/warp primitives. Per-vertex
 # size + brightness packed alongside the position.
 VS_POINTS = """
-#version 330
+#version 140
 in vec2 in_pos;
 in float in_size;
 in float in_bright;
@@ -75,7 +75,7 @@ void main() {
 
 # Line vertex shader with per-vertex brightness (used by warp streaks).
 VS_LINES = """
-#version 330
+#version 140
 in vec2 in_pos;
 in float in_bright;
 out float v_bright;
@@ -87,7 +87,7 @@ void main() {
 
 # Solid-color line vertex shader (lissajous + edit overlays).
 VS_LINE_SOLID = """
-#version 330
+#version 140
 in vec2 in_pos;
 void main() {
     gl_Position = vec4(in_pos, 0.0, 1.0);
@@ -113,7 +113,7 @@ const float PI = 3.14159265358979323846;
 # ── Generative fragment shaders ──────────────────────────────────────
 
 FS_PLASMA = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform float u_t;
@@ -131,7 +131,7 @@ void main() {
 """
 
 FS_TUNNEL = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform float u_t;
@@ -150,7 +150,7 @@ void main() {
 """
 
 FS_WAVES = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform float u_t;
@@ -174,7 +174,7 @@ void main() {
 """
 
 FS_CELLS = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform float u_t;
@@ -194,7 +194,7 @@ void main() {
 """
 
 FS_MOIRE = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform float u_t;
@@ -218,7 +218,7 @@ void main() {
 """
 
 FS_METABALLS = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform float u_t;
@@ -248,7 +248,7 @@ void main() {
 # Fragment shader for point-sprite stars + warp lines — both colour to
 # the per-vertex brightness, with stars masked to a disc.
 FS_POINTS_DISC = """
-#version 330
+#version 140
 in float v_bright;
 out vec4 frag;
 void main() {
@@ -259,7 +259,7 @@ void main() {
 """
 
 FS_LINE_BRIGHT = """
-#version 330
+#version 140
 in float v_bright;
 out vec4 frag;
 void main() {
@@ -268,7 +268,7 @@ void main() {
 """
 
 FS_LINE_SOLID = """
-#version 330
+#version 140
 out vec4 frag;
 uniform vec3 u_color;
 void main() {
@@ -281,7 +281,7 @@ void main() {
 
 # Common header for FX shaders that sample a source texture.
 FS_FX_HEADER = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform sampler2D u_src;
@@ -297,7 +297,7 @@ void main() {
 # cvtColor on the CPU). u_swizzle_bgr=1 means swap RB. Used by both
 # the base-clip blit and the overlay blit.
 FS_BLIT_SWIZZLE = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform sampler2D u_src;
@@ -384,7 +384,7 @@ void main() {
 """
 
 FS_FEEDBACK = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform sampler2D u_src;   // current frame
@@ -411,7 +411,7 @@ void main() {
 
 # Screen blend: 1 - (1-a)(1-b). Overlay clip is uploaded as BGR.
 FS_SCREEN_BLEND = """
-#version 330
+#version 140
 in vec2 v_uv;
 out vec4 frag;
 uniform sampler2D u_base;
@@ -436,7 +436,7 @@ void main() {
 
 # Solid colour shader for the strobe/black-flash hits.
 FS_SOLID = """
-#version 330
+#version 140
 out vec4 frag;
 uniform vec3 u_color;
 void main() {
@@ -451,7 +451,7 @@ void main() {
 # clip-space. The fragment computes UV by inverse-homography from
 # screen pixel coords. Vertices are passed in NDC already.
 VS_QUAD_NDC = """
-#version 330
+#version 140
 in vec2 in_pos;        // NDC, the dest quad corners (4 verts as TRIANGLE_FAN)
 out vec2 v_pix;        // pixel coord in output FBO
 uniform vec2 u_res;
@@ -473,7 +473,7 @@ void main() {
 # canvas-top-left (cv2 convention). Without the flip the warped output
 # would render upside-down.
 FS_MAPPING_WARP = """
-#version 330
+#version 140
 in vec2 v_pix;
 out vec4 frag;
 uniform sampler2D u_src;
@@ -493,7 +493,7 @@ void main() {
 # group reveal different parts of ONE underlying video plane — the
 # multi-window mapping behaviour. Same Y-flip as FS_MAPPING_WARP.
 FS_MAPPING_WINDOW = """
-#version 330
+#version 140
 in vec2 v_pix;
 out vec4 frag;
 uniform sampler2D u_src;
@@ -533,7 +533,14 @@ class Renderer:
         self.h = render_h
         # moderngl.create_context() grabs whatever GL context pygame just
         # made current — must be called AFTER pygame.display.set_mode(OPENGL).
-        self.ctx = moderngl.create_context()
+        # Pi 5's V3D Mesa driver reports OpenGL 3.1 by default (GLSL 1.40);
+        # we pass require=310 so moderngl accepts it. The shaders are
+        # written to `#version 140`, which is GLSL 1.40 and is the highest
+        # version supported by a 3.1 context — every feature we use
+        # (in/out qualifiers, texture(), mat3, bitwise &, gl_PointSize
+        # with GL_PROGRAM_POINT_SIZE) exists in 1.40 so this works on
+        # both 3.1 and 3.3+ drivers.
+        self.ctx = moderngl.create_context(require=310)
         try:
             self.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
         except (KeyError, moderngl.Error):
