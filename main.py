@@ -100,7 +100,19 @@ def _open_output_window(cfg):
 
 
 def _open_control_window(size, display_idx):
-    """Create a second SDL2 window + renderer for the control HUD."""
+    """Create a second SDL2 window + renderer for the control HUD.
+
+    The HUD renderer is forced to the SOFTWARE backend (`accelerated=0`).
+    Why: the projector window owns an OpenGL context (via pygame's
+    OPENGL flag + moderngl), and Pi 5's V3D driver has been observed
+    to leak GL state between contexts when an accelerated SDL_Renderer
+    runs alongside it — the moderngl pipeline silently fails to paint
+    its FBOs (clip / generative output never appears on the projector)
+    and after enough passes the HUD itself turns a solid colour.
+    Software rendering keeps the HUD on the CPU, fully isolated from
+    moderngl. ~700×720 of HUD pixels at 30 fps is trivial CPU work
+    on a Pi 5 — it's not a bottleneck.
+    """
     from pygame._sdl2.video import Window, Renderer
     centered_on_display = 0x2FFF0000 | (display_idx & 0xFFFF)
     win = Window(
@@ -110,7 +122,15 @@ def _open_control_window(size, display_idx):
         resizable=True,
     )
     win.show()
-    renderer = Renderer(win)
+    try:
+        renderer = Renderer(win, accelerated=0)
+        print("[vj] control HUD using software renderer (avoids V3D GL state conflict)")
+    except (pygame.error, TypeError) as exc:
+        # Older pygame / SDL builds may reject accelerated=0; let SDL
+        # auto-pick. The conflict may resurface on V3D in that case
+        # but at least the HUD opens.
+        print(f"[vj] software renderer unavailable ({exc!r}); falling back to default")
+        renderer = Renderer(win)
     return win, renderer
 
 
