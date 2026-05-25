@@ -478,8 +478,16 @@ class Engine:
 
     def blit_to_output(self, frame):
         surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
-        if self.screen.get_size() != (self.w, self.h):
-            surface = pygame.transform.scale(surface, self.screen.get_size())
+        target_size = self.screen.get_size()
+        if target_size != (self.w, self.h):
+            # smoothscale (bilinear) instead of scale (nearest-neighbour)
+            # — looks dramatically less pixelated when the render res
+            # doesn't match the display res. smoothscale only supports
+            # 24/32-bit surfaces, hence the fallback.
+            try:
+                surface = pygame.transform.smoothscale(surface, target_size)
+            except (ValueError, pygame.error):
+                surface = pygame.transform.scale(surface, target_size)
         self.screen.blit(surface, (0, 0))
         pygame.display.flip()
 

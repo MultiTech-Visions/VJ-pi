@@ -46,6 +46,10 @@ class ClipPool:
         self.active_idx = None
         self.max_open = max_open
         self._open_order = []  # least-recent first, most-recent last
+        # Track files that need live resizing so we can nudge the
+        # operator to re-run Process Assets.sh once per file (saves the
+        # per-frame cv2.resize cost on every subsequent play).
+        self._warned_about_resize = set()
 
     def __len__(self):
         return len(self.paths)
@@ -141,8 +145,23 @@ class ClipPool:
         frame = clip.read()
         if frame is None:
             return None
-        if frame.shape[1] != self.target_w or frame.shape[0] != self.target_h:
-            frame = cv2.resize(frame, (self.target_w, self.target_h))
+        sh, sw = frame.shape[:2]
+        if sw != self.target_w or sh != self.target_h:
+            # Anti-aliased area filter when shrinking (e.g. 2K → 720p) for
+            # the cleanest possible downsample; bilinear when enlarging.
+            interp = (cv2.INTER_AREA
+                      if sw >= self.target_w and sh >= self.target_h
+                      else cv2.INTER_LINEAR)
+            frame = cv2.resize(frame, (self.target_w, self.target_h),
+                               interpolation=interp)
+            # One-time hint per file. The processor exists exactly so this
+            # resize is a no-op at runtime.
+            idx = self.active_idx
+            if idx is not None and idx not in self._warned_about_resize:
+                self._warned_about_resize.add(idx)
+                print(f"[vj] live-resizing {self.paths[idx].name} "
+                      f"({sw}x{sh} → {self.target_w}x{self.target_h}) "
+                      f"— run assets/Process\\ Assets.sh to bake this out")
         return frame
 
     def release_all(self):
