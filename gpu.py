@@ -38,7 +38,7 @@ import pygame
 # Full-screen triangle-strip quad. The vertex shader passes UV in [0,1].
 VS_FULLSCREEN = """
 #version 140
-in vec2 in_pos;
+layout(location = 0) in vec2 in_pos;
 out vec2 v_uv;
 void main() {
     v_uv = in_pos * 0.5 + 0.5;
@@ -50,7 +50,7 @@ void main() {
 # right-side-up. Used by the present pass.
 VS_FULLSCREEN_FLIP = """
 #version 140
-in vec2 in_pos;
+layout(location = 0) in vec2 in_pos;
 out vec2 v_uv;
 void main() {
     v_uv = vec2(in_pos.x * 0.5 + 0.5, 1.0 - (in_pos.y * 0.5 + 0.5));
@@ -62,9 +62,9 @@ void main() {
 # size + brightness packed alongside the position.
 VS_POINTS = """
 #version 140
-in vec2 in_pos;
-in float in_size;
-in float in_bright;
+layout(location = 0) in vec2 in_pos;
+layout(location = 1) in float in_size;
+layout(location = 2) in float in_bright;
 out float v_bright;
 void main() {
     gl_Position = vec4(in_pos, 0.0, 1.0);
@@ -76,8 +76,8 @@ void main() {
 # Line vertex shader with per-vertex brightness (used by warp streaks).
 VS_LINES = """
 #version 140
-in vec2 in_pos;
-in float in_bright;
+layout(location = 0) in vec2 in_pos;
+layout(location = 1) in float in_bright;
 out float v_bright;
 void main() {
     gl_Position = vec4(in_pos, 0.0, 1.0);
@@ -88,7 +88,7 @@ void main() {
 # Solid-color line vertex shader (lissajous + edit overlays).
 VS_LINE_SOLID = """
 #version 140
-in vec2 in_pos;
+layout(location = 0) in vec2 in_pos;
 void main() {
     gl_Position = vec4(in_pos, 0.0, 1.0);
 }
@@ -452,7 +452,7 @@ void main() {
 # screen pixel coords. Vertices are passed in NDC already.
 VS_QUAD_NDC = """
 #version 140
-in vec2 in_pos;        // NDC, the dest quad corners (4 verts as TRIANGLE_FAN)
+layout(location = 0) in vec2 in_pos;   // NDC, the dest quad corners (4 verts as TRIANGLE_FAN)
 out vec2 v_pix;        // pixel coord in output FBO
 uniform vec2 u_res;
 void main() {
@@ -618,21 +618,30 @@ class Renderer:
     def _shader_for_ctx(self, src, is_fragment):
         """Strip the placeholder `#version 140` line at the top of a
         shader source and prepend whichever version line + precision
-        qualifiers fit the current context. Lets one shader compile on
-        both desktop GL 3.1+ (Mesa LLVMpipe, NVIDIA, AMD) and GLES 3.0
-        (Pi 5 V3D)."""
+        qualifiers fit the current context.
+
+        Desktop GL gets `#version 330` (not 140) because we use
+        `layout(location = N)` on vertex attribute inputs, which is
+        only core in GLSL 3.30+. The Pi 5 V3D GLES driver was binding
+        attributes to wrong locations via post-link introspection,
+        producing degenerate triangles and zero fragments — hence the
+        previous "shader draws never reach the FBO" failure mode.
+        Explicit layout qualifiers bypass that introspection unreliability.
+
+        GLES gets `#version 300 es` + precision qualifiers (ES 3.0
+        fragment shaders MUST declare default precision; vertex
+        defaults to highp).
+        """
         stripped = src.lstrip()
         if stripped.startswith("#version"):
             # Drop the first line.
             stripped = stripped.split("\n", 1)[1] if "\n" in stripped else ""
         if self._is_gles:
-            # GLES 3.0 fragment shaders must declare default precision.
-            # Vertex shaders default to highp; declaring it is harmless.
             prefix = "#version 300 es\nprecision highp float;\n"
             if is_fragment:
                 prefix += "precision highp int;\nprecision highp sampler2D;\n"
         else:
-            prefix = "#version 140\n"
+            prefix = "#version 330\n"
         return prefix + stripped
 
     def _prog(self, name, vs, fs):
