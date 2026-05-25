@@ -533,18 +533,25 @@ class Renderer:
         self.h = render_h
         # moderngl.create_context() grabs whatever GL context pygame just
         # made current — must be called AFTER pygame.display.set_mode(OPENGL).
-        # Pi 5's V3D Mesa driver reports OpenGL 3.1 by default (GLSL 1.40);
-        # we pass require=310 so moderngl accepts it. The shaders are
-        # written to `#version 140`, which is GLSL 1.40 and is the highest
-        # version supported by a 3.1 context — every feature we use
-        # (in/out qualifiers, texture(), mat3, bitwise &, gl_PointSize
-        # with GL_PROGRAM_POINT_SIZE) exists in 1.40 so this works on
-        # both 3.1 and 3.3+ drivers.
-        self.ctx = moderngl.create_context(require=310)
+        # We accept any version ≥ 3.0: Pi 5's V3D Mesa gives us GLES 3.0
+        # when main.py requests the ES profile, while desktop dev
+        # environments (Mesa LLVMpipe, etc.) typically hand us 3.3+
+        # desktop GL.
+        self.ctx = moderngl.create_context(require=300)
         try:
             self.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
         except (KeyError, moderngl.Error):
             pass
+
+        # Detect GLES vs desktop GL so we can prepend the correct
+        # `#version` line to every shader at compile time. Shader
+        # sources below all start with `#version 140` (desktop GL 3.1)
+        # as a placeholder — `_shader_for_ctx()` strips it and inserts
+        # `#version 300 es` + precision qualifiers when we're on a GLES
+        # context (Pi 5 V3D). Desktop GL keeps the 140 line. Lets one
+        # shader source compile on both drivers without forking.
+        gl_version_str = self.ctx.info.get("GL_VERSION", "") or ""
+        self._is_gles = "OpenGL ES" in gl_version_str or "GLES" in gl_version_str
 
         # Fullscreen quad: 2 triangles as a strip → 4 verts in NDC.
         quad_verts = np.array([
@@ -602,13 +609,37 @@ class Renderer:
         # Hooked up by the engine once it knows the actual screen size.
         self._screen_size = (self.w, self.h)
 
+        profile = "GLES" if self._is_gles else "desktop GL"
         print(f"[vj.gpu] moderngl ctx: {self.ctx.info.get('GL_RENDERER', '?')} | "
-              f"{self.ctx.info.get('GL_VERSION', '?')}")
+              f"{self.ctx.info.get('GL_VERSION', '?')} ({profile} shaders)")
 
     # ── Compile ──────────────────────────────────────────────────────
 
+    def _shader_for_ctx(self, src, is_fragment):
+        """Strip the placeholder `#version 140` line at the top of a
+        shader source and prepend whichever version line + precision
+        qualifiers fit the current context. Lets one shader compile on
+        both desktop GL 3.1+ (Mesa LLVMpipe, NVIDIA, AMD) and GLES 3.0
+        (Pi 5 V3D)."""
+        stripped = src.lstrip()
+        if stripped.startswith("#version"):
+            # Drop the first line.
+            stripped = stripped.split("\n", 1)[1] if "\n" in stripped else ""
+        if self._is_gles:
+            # GLES 3.0 fragment shaders must declare default precision.
+            # Vertex shaders default to highp; declaring it is harmless.
+            prefix = "#version 300 es\nprecision highp float;\n"
+            if is_fragment:
+                prefix += "precision highp int;\nprecision highp sampler2D;\n"
+        else:
+            prefix = "#version 140\n"
+        return prefix + stripped
+
     def _prog(self, name, vs, fs):
-        p = self.ctx.program(vertex_shader=vs, fragment_shader=fs)
+        p = self.ctx.program(
+            vertex_shader=self._shader_for_ctx(vs, is_fragment=False),
+            fragment_shader=self._shader_for_ctx(fs, is_fragment=True),
+        )
         self._programs[name] = p
         return p
 
