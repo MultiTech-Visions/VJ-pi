@@ -1,0 +1,3 @@
+# Test artifacts are local to each run; never check them in.
+*.png
+*.log
