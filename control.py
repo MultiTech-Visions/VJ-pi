@@ -25,31 +25,30 @@ KEY_CHEAT = [
     ("Shift+Esc",    "Quit"),
 ]
 
+# Mapping-mode cheat sheet, trimmed once the on-hover toolbar landed:
+#   * Toolbar buttons (× delete / + bind / ⊘ unbind / G· group tag) are
+#     visible the moment the cursor lands on a space, so the per-button
+#     rows that used to spell them out are gone.
+#   * Click-body / drag-body are standard click+drag UX — no need to
+#     spell those out either.
+#   * Keyboard fallbacks for the toolbar buttons (bare B / U / Delete in
+#     EDIT mode) are still wired in keymap.py for power users; they
+#     stay undocumented here so the panel fits on a 720-tall screen.
 MAPPING_KEY_CHEAT = [
-    ("M",            "Leave MAPPING mode"),
-    ("E",            "Toggle EDIT mode (mouse drives the editor)"),
-    ("Tab",          "Next group (Shift+Tab = prev)"),
-    ("EDIT — drag empty",  "rubber-band a new rectangle → new group"),
-    ("EDIT — click body",  "pick that space (handles + toolbar appear)"),
-    ("EDIT — drag body",   "move the whole space"),
-    ("EDIT — drag corner", "reshape the picked space"),
-    ("EDIT — toolbar ×",   "delete this space"),
-    ("EDIT — toolbar +",   "bind this space into the selected space's group"),
-    ("EDIT — toolbar ⊘",   "unbind this space into its own new group"),
-    ("EDIT — toolbar G·",  "tag chip = which group this space belongs to"),
-    ("EDIT — Esc",   "cancel drag / deselect"),
-    ("Ctrl+N",       "New group"),
-    ("Ctrl+Back",    "Delete current group"),
-    ("Ctrl+= / -",   "Add / remove a space in current group"),
-    ("Ctrl+G",       "Cycle grid layout (1·2x1·2x2·3x2·3x3·4x2·4x3)"),
-    ("Ctrl+A",       "Toggle autopilot on current group"),
-    ("Ctrl+K",       "Cycle autopilot kind"),
-    ("Ctrl+, / .",   "Autopilot interval ±1s"),
-    ("Ctrl+B",       "Toggle borders"),
-    ("Ctrl+C",       "Cycle border colour"),
-    ("Ctrl+[ / ]",   "Border intensity ±10%"),
-    ("Ctrl+; / '",   "Border thickness ±1px"),
-    ("PERFORM — content keys", "1-0/Q-P/A-L/F1-F7/←→↑↓ → selected group"),
+    ("M / E / Tab",          "leave MAPPING / toggle EDIT / next group"),
+    ("EDIT — drag empty",    "rubber-band a new rectangle (new group)"),
+    ("EDIT — drag corner",   "reshape the picked space"),
+    ("EDIT — hover toolbar", "× delete · + bind · ⊘ unbind"),
+    ("EDIT — Esc",           "cancel drag / deselect"),
+    ("Ctrl+N / Back",        "new group / delete current group"),
+    ("Ctrl+= / -",           "add / remove a space"),
+    ("Ctrl+G",               "cycle grid layout (1 · 2x1 · … · 4x3)"),
+    ("Ctrl+A / K",           "toggle autopilot / cycle kind"),
+    ("Ctrl+, / .",           "autopilot interval ± 1s"),
+    ("Ctrl+B / C",           "toggle borders / cycle colour"),
+    ("Ctrl+[ / ]",           "border intensity ± 10%"),
+    ("Ctrl+; / '",           "border thickness ± 1px"),
+    ("PERFORM",              "1-0 / Q-P / A-L / F1-F7 / ←→↑↓ → group"),
 ]
 
 
@@ -104,6 +103,15 @@ class ControlWindow:
         self._cheat_panel = self._build_cheat_panel(KEY_CHEAT)
         self._mapping_cheat_panel = self._build_cheat_panel(MAPPING_KEY_CHEAT)
 
+        # Window-to-surface transform, refreshed every render() so that
+        # resizing / fullscreening the HUD window keeps the HUD content
+        # at its native design size in the centre of the window with
+        # black margins around it (much of an OLED stays "off"), and
+        # mouse hit-tests still hit the right rects regardless of the
+        # current window size. See _window_to_surface().
+        self._window_offset = (0, 0)
+        self._window_scale = (1.0, 1.0)
+
     # ── Event handling ───────────────────────────────────────────────
 
     def handle_event(self, event):
@@ -113,8 +121,16 @@ class ControlWindow:
             return
         e = self.engine
 
+        # Translate the event's window-pixel pos into HUD-surface coords
+        # once at entry so every downstream hit-test (preview, display
+        # buttons, apply, …) sees the same coordinate system the rects
+        # were laid out in. When the window is bigger than the HUD,
+        # clicks on the black margin produce surface coords outside the
+        # surface bounds, which the existing collidepoint checks treat
+        # as no-hit — exactly what we want.
+        pos = self._window_to_surface(getattr(event, "pos", None))
+
         if event.type == pygame.MOUSEMOTION:
-            pos = getattr(event, "pos", None)
             if (e.mode == "mapping" and e.mapping.edit_mode
                     and pos is not None
                     and self._preview_rect.collidepoint(pos)):
@@ -138,7 +154,6 @@ class ControlWindow:
 
         if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
             return
-        pos = getattr(event, "pos", None)
         if pos is None:
             return
 
@@ -163,6 +178,16 @@ class ControlWindow:
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
             self.engine.apply_pending_display()
+
+    def _window_to_surface(self, pos):
+        """Map a window-pixel position to HUD-surface coords using the
+        offset+scale most recently set by render(). Returns None if pos
+        is None so callers can short-circuit the same way they used to."""
+        if pos is None:
+            return None
+        ox, oy = self._window_offset
+        sx, sy = self._window_scale
+        return (int((pos[0] - ox) / sx), int((pos[1] - oy) / sy))
 
     def _invoke_frame_action(self, action, args):
         e = self.engine
@@ -265,9 +290,38 @@ class ControlWindow:
             surface.blit(src, (pad, y))
 
         # Upload the composed surface and present it.
+        #
+        # When the operator resizes / fullscreens the HUD window, keep
+        # the HUD content at its native design size centred in the
+        # window and let the surrounding area stay black. On a small
+        # OLED control screen that means most of the panel is "off",
+        # which both saves pixels and avoids the HUD looking absurdly
+        # stretched at e.g. 1080p. When the window is SMALLER than the
+        # native HUD size we fall back to stretching so nothing gets
+        # cropped — and _window_to_surface() inverts whichever path we
+        # took so mouse hit-tests still land on the right rect.
         tex = self._Texture.from_surface(self.renderer, surface)
+        try:
+            win_w, win_h = self.window.size
+        except (AttributeError, pygame.error):
+            win_w, win_h = self.size
+        surf_w, surf_h = self.size
+
+        if win_w >= surf_w and win_h >= surf_h:
+            ox = (win_w - surf_w) // 2
+            oy = (win_h - surf_h) // 2
+            dst = pygame.Rect(ox, oy, surf_w, surf_h)
+            self._window_offset = (ox, oy)
+            self._window_scale = (1.0, 1.0)
+        else:
+            dst = pygame.Rect(0, 0, win_w, win_h)
+            self._window_offset = (0, 0)
+            self._window_scale = (win_w / max(1, surf_w),
+                                  win_h / max(1, surf_h))
+
+        self.renderer.draw_color = (0, 0, 0, 255)
         self.renderer.clear()
-        tex.draw()
+        tex.draw(dstrect=dst)
         self.renderer.present()
 
     # ── Panel parts ──────────────────────────────────────────────────

@@ -17,12 +17,16 @@ class Clip:
         self._last = None
 
     def read(self):
+        """Decode the next frame. Returns a HxWx3 uint8 BGR ndarray (the
+        native OpenCV order). The GPU pipeline samples this as a texture
+        and swizzles BGR→RGB inside the shader, so we deliberately skip
+        the per-frame cv2.cvtColor that used to dominate the decode tail."""
         ret, frame = self.cap.read()
         if not ret:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ret, frame = self.cap.read()
         if ret:
-            self._last = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self._last = frame
         return self._last
 
     def release(self):

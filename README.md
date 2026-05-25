@@ -347,16 +347,24 @@ compositor treats as transparent).
 
 ```
 main.py        argparse + pygame init + main loop wiring; opens the
-               output window via pygame.display + a second SDL2
-               Window+Renderer for the control HUD
-engine.py      Engine class: state, render pipeline, public actions.
-               Splits compose_frame() (numpy) from blit_to_output()
-               (pygame) so the same frame can feed both windows.
+               output window with pygame.OPENGL + DOUBLEBUF + a 3.3
+               core context; a second SDL2 Window+Renderer for the
+               control HUD lives alongside it (CPU-rendered HUD).
+engine.py      Engine class: state, GPU pipeline orchestration,
+               public actions. compose_frame() drives shader passes
+               via gpu.Renderer; readback to numpy only happens when
+               the HUD is open or mapping/edit overlays are needed.
+gpu.py         moderngl-backed Renderer: every shader program, the
+               ping-pong FBO pair, per-group source/trail FBOs,
+               projective-textured mapping warp, present pass.
 control.py     ControlWindow: preview, state badges, cached key
                cheat sheet. Renders to an offscreen Surface and
                uploads as a Texture each frame.
-effects.py     Generative + transformative numpy/OpenCV effects
-clips.py       ClipPool: lazy MP4 loader keyed by slot index
+effects.py     EffectContext struct (per-frame params/time).
+clips.py       ClipPool: lazy MP4 loader keyed by slot index. Returns
+               raw BGR ndarrays — the shader swizzles at sample time.
+mapping.py     MappingManager: groups, spaces, hit-tests, autopilot,
+               persistence. Pure state; no rendering.
 keymap.py      Pygame key → engine action dispatch table
 config.py      Config dataclass
 ```
@@ -379,46 +387,51 @@ blit to pygame screen
 
 ## Performance notes
 
-- Default render resolution is **1280×720** (HD); the output surface
-  scales to the display via `pygame.transform.smoothscale` (bilinear)
-  so it doesn't look pixelated on a 1080p projector. Clip downsampling
-  uses `cv2.INTER_AREA` for clean anti-aliased shrinking and
-  `cv2.INTER_LINEAR` for upscaling.
+The render pipeline runs on the **Raspberry Pi 5's VideoCore VII GPU**
+via OpenGL 3.3 (moderngl + pygame's OPENGL window). Every generative
+and FX is a fragment shader, the FX chain ping-pongs between two
+framebuffer textures, mapping warps are projective-textured quads, and
+the final scale to the display is a GPU sampler. The CPU only touches
+pixels for the HUD preview and for cv2-drawn edit-mode overlays — both
+gated so the live-performance path with the HUD closed stays fully
+GPU-resident.
+
+- Default render resolution is **1280×720** (HD); the GPU samples it
+  bilinearly to whatever resolution the chosen display reports, so it
+  doesn't look pixelated on a 1080p projector.
 - **`assets/Process Assets.sh` bakes every clip to the render
-  resolution** so the per-frame `cv2.resize` is a no-op at playback —
-  the only per-frame cost is the unavoidable H.264 decode and a BGR→RGB
-  shuffle. The processor reads its target size from `config.py`, so
-  the two stay in sync. If you change the render resolution (via
-  `--width / --height` or by editing `config.py`), **re-run the
-  processor** so your library is at the new size; otherwise the engine
-  will live-resize every frame and print a one-time warning per file.
-- If 30 fps starts dropping on slower hardware, fall back to the old
-  defaults: `--width 854 --height 480` (and re-process your clips).
+  resolution** so the per-frame upload is one straight `glTexImage2D`
+  with no resize step. The processor reads its target size from
+  `config.py`, so the two stay in sync. If you change the render
+  resolution (via `--width / --height` or by editing `config.py`),
+  **re-run the processor**; otherwise the engine falls back to a
+  cv2 resize at upload time and prints a one-time warning per file.
+- Clip frames are uploaded as raw BGR — the shader swizzles to RGB at
+  sample time, so the old per-frame `cv2.cvtColor` has been deleted.
 - For Pi 5 + a 1080p projector with detail-heavy 2K source loops, try
-  `--width 1920 --height 1080` (full-quality, ~2× more pixels than 720p
-  — kaleidoscope + feedback at once can get tight). Re-process at the
-  new size.
-- **Generatives render at `--gen-render-scale × canvas` (default 0.5).**
-  They're smooth procedural patterns — pixel-perfect rendering at canvas
-  resolution is wasted CPU. At 0.5, a 4-group mapping setup with mixed
-  FX drops from ~200 ms / frame to ~40 ms / frame at 1280×720 (a 4×
-  speedup), with no visual difference for plasma / waves / cells /
-  moire / metaballs. Try `--gen-render-scale 0.33` if you need more
-  headroom (almost-3× again); back off to 1.0 if you're driving a tunnel-
-  style sharp checker pattern as the base layer and want pixel-perfect
-  edges. Clips and overlays are unaffected — they keep their detail.
-- `kaleidoscope` is the heaviest effect (per-pixel remap). Stack 2-3
-  effects max for headroom.
-- MP4 decode uses OpenCV's `VideoCapture` — relies on libavcodec; on
-  Pi 5 it does software H.264 decode but stays well under a frame budget
-  for 854×480.
-- In **mapping mode** the per-group mask is cached by space-corner
-  signature — a running set pays the `cv2.fillConvexPoly` cost once,
-  not every frame. Edits invalidate the cache automatically. Dead
-  groups get garbage-collected every ~5 s.
+  `--width 1920 --height 1080` (full-quality, ~2× more pixels than
+  720p). With the GPU pipeline this is comfortably in headroom even
+  with kaleidoscope + feedback + an overlay running simultaneously.
+- The FX chain has effectively no per-effect cost — stacking three or
+  four effects is one extra shader pass each, all on-GPU.
+- `--gen-render-scale` is a no-op on the GPU pipeline — generatives
+  are fragment shaders so rendering at canvas resolution is already
+  free. The flag stays accepted for backwards compatibility with
+  launcher scripts but doesn't do anything.
+- MP4 decode is still software H.264 via OpenCV `VideoCapture` — that's
+  the one thing left on the CPU. Stays well under a frame budget at
+  854×480 / 720p; for 1080p heavy clips, pre-process with the bundled
+  script.
+- In **mapping mode**, each group's source is composed into its own
+  GPU framebuffer once per frame, then either projective-warped per
+  space (`fit_mode=stretch`) or stamped down once with each space as
+  a window onto that single plane (`fit_mode=window/fit/fill`) — so
+  multi-space groups stay visually continuous across the projection.
 - Clip frames are read **once per render**, so don't try to play more
   than one clip slot simultaneously — only the most recently selected
   base and overlay are advanced.
+- Switching the output display (F12) rebuilds the GL context, which
+  briefly wipes the feedback-trail buffer. It refills in one frame.
 
 ## Not yet built (Phase 2/3)
 
