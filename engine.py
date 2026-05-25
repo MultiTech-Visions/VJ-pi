@@ -102,7 +102,6 @@ class Engine:
         self._auto_next_clip_at    = 0.0
         self._auto_next_fx_at      = 0.0
         self._auto_next_param_at   = 0.0
-        self._auto_next_hit_at     = 0.0
         self._auto_next_overlay_at = 0.0
         self._auto_target_x = 0.5
         self._auto_target_y = 0.5
@@ -243,7 +242,6 @@ class Engine:
         self._auto_next_clip_at    = now + 1.0
         self._auto_next_fx_at      = now + self.auto_fx_interval
         self._auto_next_param_at   = now
-        self._auto_next_hit_at     = now + random.uniform(8, 20)
         self._auto_next_overlay_at = now + random.uniform(10, 25)
         print(f"[vj] AUTOPILOT engaged — clip every {self.auto_clip_interval:.1f}s, "
               f"fx every {self.auto_fx_interval:.1f}s")
@@ -287,12 +285,10 @@ class Engine:
         self.param_x += (self._auto_target_x - self.param_x) * lerp
         self.param_y += (self._auto_target_y - self.param_y) * lerp
 
-        # Occasional one-shot hit (not too often — they're punchy).
-        if now >= self._auto_next_hit_at:
-            self.fire_hit(random.choice(
-                ["strobe", "invert_flash", "zoom_punch", "rgb_smash"]
-            ), frames=5)
-            self._auto_next_hit_at = now + random.uniform(10, 30)
+        # NOTE: autopilot deliberately does NOT fire punch-in hits
+        # (strobe / black_flash / invert_flash / zoom_punch / rgb_smash).
+        # They're seizure / migraine risks for people on hallucinogens —
+        # only the operator can decide to fire them with Z/X/C/V/B.
 
         # Occasional overlay swap / clear.
         if now >= self._auto_next_overlay_at and len(self.overlays) > 0:

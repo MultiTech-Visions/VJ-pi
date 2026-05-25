@@ -178,7 +178,12 @@ then drives itself:
 - Toggles a random FX every ~`auto_fx_interval` seconds (caps active
   FX at 3).
 - Drifts PARAM X/Y toward fresh random targets every couple of seconds.
-- Occasionally fires a hit / swaps an overlay.
+- Occasionally swaps the overlay (or clears it).
+
+Autopilot **never fires the punch-in hits** (strobe / black flash /
+invert flash / zoom punch / RGB smash). Those are seizure / migraine
+risks and only the operator should trigger them — `Z X C V B` are
+always your call.
 
 While autopilot is engaged, the HUD shows a green **AUTOPILOT** badge
 with the current rates. The arrow keys retune the rates instead of
