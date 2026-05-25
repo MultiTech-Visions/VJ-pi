@@ -42,6 +42,18 @@ def _set_sdl_hints():
     NOFRAME (see _open_output_window), so no SDL_VIDEO_FULLSCREEN_DISPLAY
     or SDL_VIDEO_WINDOW_POS needed any more.
     """
+    # Force the X11 backend (XWayland). Pi OS Bookworm defaults to Wayland
+    # + labwc, and SDL2's Wayland backend has a stack of multi-display /
+    # fractional-scaling bugs (libsdl-org/SDL #5437, #9958, #12079, #12158)
+    # that bite us specifically in dual-display fullscreen mode: the
+    # control HUD's renderer ends up disagreeing with itself about its
+    # output size, `logical_size` then maps the 680×720 canvas into the
+    # wrong physical region, and the top half of the HUD (LIVE OUTPUT +
+    # favourites) gets shoved off-screen leaving only OUTPUT DISPLAY +
+    # KEYS visible. In test mode both windows share display 0 so the
+    # disagreement is smaller and the bug looks milder. X11/XWayland
+    # uses the size we ask for, on the display we ask for, full stop.
+    os.environ.setdefault("SDL_VIDEODRIVER", "x11")
     # Don't grab the keyboard exclusively — the control HUD window needs
     # to receive its own clicks without focus getting yanked away.
     os.environ.setdefault("SDL_HINT_GRAB_KEYBOARD", "0")
