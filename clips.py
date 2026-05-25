@@ -141,8 +141,15 @@ class ClipPool:
         frame = clip.read()
         if frame is None:
             return None
-        if frame.shape[1] != self.target_w or frame.shape[0] != self.target_h:
-            frame = cv2.resize(frame, (self.target_w, self.target_h))
+        sh, sw = frame.shape[:2]
+        if sw != self.target_w or sh != self.target_h:
+            # Anti-aliased area filter when shrinking (e.g. 2K → 720p) for
+            # the cleanest possible downsample; bilinear when enlarging.
+            interp = (cv2.INTER_AREA
+                      if sw >= self.target_w and sh >= self.target_h
+                      else cv2.INTER_LINEAR)
+            frame = cv2.resize(frame, (self.target_w, self.target_h),
+                               interpolation=interp)
         return frame
 
     def release_all(self):

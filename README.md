@@ -263,7 +263,16 @@ blit to pygame screen
 
 ## Performance notes
 
-- Targets 30 fps at 854×480 on Pi 5. Generatives are vectorized numpy.
+- Default render resolution is **1280×720** (HD); the output surface
+  scales to the display via `pygame.transform.smoothscale` (bilinear)
+  so it doesn't look pixelated on a 1080p projector. Clip downsampling
+  uses `cv2.INTER_AREA` for clean anti-aliased shrinking and
+  `cv2.INTER_LINEAR` for upscaling.
+- If 30 fps starts dropping on slower hardware, fall back to the old
+  defaults: `--width 854 --height 480`.
+- For Pi 5 + a 1080p projector with detail-heavy 2K source loops, try
+  `--width 1920 --height 1080` (full-quality, ~2× more pixels than 720p
+  — kaleidoscope + feedback at once can get tight).
 - `kaleidoscope` is the heaviest effect (per-pixel remap). Stack 2-3
   effects max for headroom.
 - MP4 decode uses OpenCV's `VideoCapture` — relies on libavcodec; on
