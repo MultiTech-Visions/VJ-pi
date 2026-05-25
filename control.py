@@ -70,22 +70,6 @@ class ControlWindow:
         self.size = size  # (w, h)
         self.surface = pygame.Surface(size)
 
-        # Let SDL do the window-size → HUD-size scaling for us via
-        # `logical_size`. SDL_RenderSetLogicalSize draws into a virtual
-        # canvas of our HUD's design size (680×720) and stretches that
-        # canvas to fill the window with letterbox/pillarbox bars to
-        # preserve aspect ratio. We don't have to compute offsets, and
-        # the HUD always shows its full content regardless of how the
-        # operator resizes the window.
-        try:
-            self.renderer.logical_size = self.size
-        except (AttributeError, pygame.error) as exc:
-            # Older pygame / SDL builds might not expose logical_size.
-            # Fall back to manual draw with whatever the renderer gives
-            # us — the texture will still draw at native size at (0, 0).
-            print(f"[vj] HUD logical_size unavailable ({exc!r}); HUD may not "
-                  f"scale with window resizes")
-
         # Preview keeps source aspect, fixed target height. Width is then
         # capped so the status panel beside it always has at least 280px.
         target_h = self.PREVIEW_TARGET_H
@@ -310,19 +294,30 @@ class ControlWindow:
             )
             surface.blit(src, (pad, y))
 
-        # Upload the composed surface and present it.
-        #
-        # `logical_size` on the renderer means SDL is already doing the
-        # fit-with-letterbox math: we render into the 680×720 logical
-        # canvas and SDL scales that to the actual window with black
-        # bars to preserve aspect ratio. So we just draw the texture
-        # over the whole logical canvas — no offsets, no manual
-        # scaling, no surprises when the WM gives the window a
-        # different size than we asked for.
+        # Upload the composed surface and present it, fit-with-letterbox
+        # into whatever the window's current size is. We compute the
+        # scale + centred offset explicitly here (rather than relying on
+        # SDL's logical_size feature, which doesn't behave consistently
+        # across pygame / SDL builds on Pi 5). Same math as
+        # _window_to_surface so click-translation stays in sync.
         tex = self._Texture.from_surface(self.renderer, surface)
+        surf_w, surf_h = self.size
+        try:
+            win_w, win_h = self.window.size
+        except (AttributeError, pygame.error):
+            win_w, win_h = self.size
+        if win_w <= 0 or win_h <= 0:
+            win_w, win_h = surf_w, surf_h
+
+        scale = min(win_w / surf_w, win_h / surf_h)
+        dst_w = max(1, int(surf_w * scale))
+        dst_h = max(1, int(surf_h * scale))
+        ox = (win_w - dst_w) // 2
+        oy = (win_h - dst_h) // 2
+
         self.renderer.draw_color = (0, 0, 0, 255)
         self.renderer.clear()
-        tex.draw(dstrect=pygame.Rect(0, 0, self.size[0], self.size[1]))
+        tex.draw(dstrect=pygame.Rect(ox, oy, dst_w, dst_h))
         self.renderer.present()
 
     # ── Panel parts ──────────────────────────────────────────────────
