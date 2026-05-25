@@ -13,9 +13,9 @@ echo "  pi-paint VJ — Setup"
 echo "============================================================"
 echo ""
 echo "This will install:"
-echo "  • SDL2 + OpenGL libraries (for pygame + opencv)"
+echo "  • SDL2 + OpenGL/EGL/GLES libraries (for pygame + moderngl + opencv)"
 echo "  • A Python virtualenv in ./venv/"
-echo "  • pygame, opencv-python, numpy"
+echo "  • pygame, opencv-python, numpy, moderngl"
 echo ""
 echo "You'll be prompted for your password (for 'sudo apt install')."
 echo ""
@@ -28,7 +28,8 @@ sudo apt-get update
 sudo apt-get install -y \
   python3-venv python3-pip python3-full \
   libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0 \
-  libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+  libgl1 libegl1 libgles2 libglib2.0-0 libsm6 libxext6 libxrender1 \
+  mesa-utils libgbm1 \
   libavcodec-extra \
   ffmpeg
 echo "    done."
@@ -45,7 +46,7 @@ fi
 echo ""
 
 # ── 3. Python packages ────────────────────────────────────────────────
-echo "[3/3] Installing pygame, opencv-python, numpy ..."
+echo "[3/3] Installing pygame, opencv-python, numpy, moderngl ..."
 ./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -r requirements.txt
 echo "    done."

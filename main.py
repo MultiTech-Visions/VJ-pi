@@ -43,6 +43,25 @@ def _set_sdl_hints():
     os.environ.setdefault("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0")
 
 
+def _request_gl_attributes():
+    """Ask SDL for a desktop OpenGL 3.3 core context BEFORE set_mode().
+
+    Pi 5's V3D Mesa driver exposes OpenGL 3.3 on the open-source stack,
+    which is what moderngl + our `#version 330 core` shaders target.
+    Must run AFTER pygame.init() and BEFORE pygame.display.set_mode()
+    or the request is silently ignored. If the driver can't satisfy the
+    request we still get a context — just maybe an older one — and
+    moderngl will report mismatch at compile time.
+    """
+    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
+    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
+    pygame.display.gl_set_attribute(
+        pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE
+    )
+    pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
+    pygame.display.gl_set_attribute(pygame.GL_DEPTH_SIZE, 0)
+
+
 def _display_size(display_idx, fallback):
     """Pixel size of display `display_idx`, or `fallback` if unavailable."""
     try:
@@ -68,10 +87,10 @@ def _open_output_window(cfg):
     """
     if cfg.fullscreen:
         dw, dh = _display_size(cfg.display, (cfg.width, cfg.height))
-        flags = pygame.NOFRAME
+        flags = pygame.NOFRAME | pygame.OPENGL | pygame.DOUBLEBUF
         size = (dw, dh)
     else:
-        flags = 0
+        flags = pygame.OPENGL | pygame.DOUBLEBUF
         size = (cfg.width, cfg.height)
     try:
         return pygame.display.set_mode(size, flags, display=cfg.display)
@@ -120,6 +139,7 @@ def main():
 
     pygame.init()
     pygame.font.init()
+    _request_gl_attributes()
 
     # Validate the resolved display against what actually exists right now
     # (e.g. saved=1 but the projector isn't plugged in this time). Fall
