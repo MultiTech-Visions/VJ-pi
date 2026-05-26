@@ -131,10 +131,12 @@ class Group:
     pan_x: float = 0.0             # -1..+1 of bbox half-width
     pan_y: float = 0.0             # -1..+1 of bbox half-height
 
-    # Autopilot
+    # Autopilot — two independent timers (content + FX) per group so an
+    # FX swap doesn't always land on the same beat as a clip change.
     autopilot_enabled: bool = False
     autopilot_kind: str = "cycle_clips"
-    autopilot_interval_s: float = 8.0
+    autopilot_interval_s: float = 8.0     # how often clip/gen rotates
+    autopilot_fx_interval_s: float = 4.0  # how often one FX is nudged
 
     # Index into GRID_PRESETS used the last time Ctrl+G was hit on this
     # group — needed because preset (2,1) and (1,2) share a space count,
@@ -143,6 +145,7 @@ class Group:
 
     # Transient (not persisted)
     _last_change_at: float = 0.0
+    _last_fx_at: float = 0.0
     _time_offset: float = 0.0
 
     def __post_init__(self):
@@ -175,6 +178,7 @@ class Group:
             autopilot_enabled=bool(d.get("autopilot_enabled", False)),
             autopilot_kind=kind,
             autopilot_interval_s=max(1.0, float(d.get("autopilot_interval_s", 8.0))),
+            autopilot_fx_interval_s=max(0.5, float(d.get("autopilot_fx_interval_s", 4.0))),
             grid_idx=int(d.get("grid_idx", 0)) % len(GRID_PRESETS),
             fit_mode=fit_mode,
             zoom=max(0.1, min(10.0, float(d.get("zoom", 1.0)))),
@@ -197,6 +201,7 @@ class Group:
             "autopilot_enabled": self.autopilot_enabled,
             "autopilot_kind": self.autopilot_kind,
             "autopilot_interval_s": self.autopilot_interval_s,
+            "autopilot_fx_interval_s": self.autopilot_fx_interval_s,
             "grid_idx": self.grid_idx,
             "fit_mode": self.fit_mode,
             "zoom": self.zoom,
@@ -385,6 +390,13 @@ class MappingManager:
         g.autopilot_interval_s = max(1.0, min(300.0,
                                               g.autopilot_interval_s + delta))
 
+    def adjust_autopilot_fx_interval(self, delta):
+        g = self.selected_group()
+        if g is None:
+            return
+        g.autopilot_fx_interval_s = max(0.5, min(60.0,
+                                                 g.autopilot_fx_interval_s + delta))
+
     def cycle_autopilot_kind(self):
         g = self.selected_group()
         if g is None:
@@ -413,35 +425,41 @@ class MappingManager:
                   and g.autopilot_kind in ("cycle_generatives",
                                            "random_generatives")):
                 g.autopilot_kind = "cycle_clips"
-            g._last_change_at = time.time()
+            now = time.time()
+            g._last_change_at = now
+            g._last_fx_at = now
             print(f"[vj] autopilot ON for {g.name} — "
-                  f"{g.autopilot_kind} every {g.autopilot_interval_s:.1f}s")
-            # Fire one step right now so the operator gets instant visual
-            # confirmation that autopilot is engaged — otherwise the first
-            # content change is up to interval_s seconds away and it
-            # feels broken.
+                  f"{g.autopilot_kind} every {g.autopilot_interval_s:.1f}s · "
+                  f"fx every {g.autopilot_fx_interval_s:.1f}s")
+            # Fire one content step now so the operator sees instant
+            # feedback. Do NOT fire FX now — let it kick in on its own
+            # schedule so an FX swap is visibly separate from the first
+            # content change.
             if engine is not None:
                 from engine import GENERATIVES
-                self._autopilot_step(g, engine, GENERATIVES)
+                self._autopilot_content_step(g, engine, GENERATIVES)
         else:
             print(f"[vj] autopilot off for {g.name}")
 
     def tick_autopilot(self, engine, now):
-        """Advance each group's content if its autopilot interval elapsed."""
+        """Advance each group's content + FX on their independent timers."""
         from engine import GENERATIVES
         for g in self.groups:
             if not g.autopilot_enabled:
                 continue
             if g._last_change_at <= 0.0:
                 g._last_change_at = now
-                continue
-            if now - g._last_change_at < g.autopilot_interval_s:
-                continue
-            g._last_change_at = now
-            self._autopilot_step(g, engine, GENERATIVES)
+            if g._last_fx_at <= 0.0:
+                g._last_fx_at = now
+            if now - g._last_change_at >= g.autopilot_interval_s:
+                g._last_change_at = now
+                self._autopilot_content_step(g, engine, GENERATIVES)
+            if now - g._last_fx_at >= g.autopilot_fx_interval_s:
+                g._last_fx_at = now
+                self._autopilot_fx_step(g)
 
     @staticmethod
-    def _autopilot_step(g, engine, generatives):
+    def _autopilot_content_step(g, engine, generatives):
         kind = g.autopilot_kind
         if kind in ("cycle_clips", "random_clips"):
             clips = engine.clips
@@ -466,10 +484,12 @@ class MappingManager:
                 g.gen_name = generatives[i]
             else:
                 g.gen_name = random.choice(generatives)
-        # Also nudge one FX on/off each tick — same toggle pattern as
-        # live-mode autopilot. Keeps the per-group look evolving instead
-        # of locked to whatever FX was set when autopilot was engaged.
-        # Cap at 3 simultaneous FX so the picture stays readable.
+
+    @staticmethod
+    def _autopilot_fx_step(g):
+        """Nudge one FX on/off. Cap at 3 simultaneous active FX so the
+        picture stays readable; 45 % chance to turn one off below the cap
+        — same balance pattern as the live-mode autopilot."""
         from engine import FX_TOGGLES
         active_on = [k for k in FX_TOGGLES if g.fx_state.get(k)]
         active_off = [k for k in FX_TOGGLES if not g.fx_state.get(k)]

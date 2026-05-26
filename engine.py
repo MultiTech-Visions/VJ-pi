@@ -546,19 +546,29 @@ class Engine:
         if self._in_mapping():
             g = self.mapping.selected_group()
             # When the selected group's autopilot is running, arrows tune
-            # THAT group's interval (each group keeps its own setting so
-            # multiple groups can run side by side autonomously).
-            # Up/Right = slower (more seconds); Down/Left = faster.
+            # THAT group's intervals (each group keeps its own settings
+            # so multiple groups can run side by side autonomously).
+            # ↑/↓ = clip interval (slower / faster), ←/→ = FX interval
+            # (faster / slower). Mirrors live-mode autopilot.
             if g.autopilot_enabled:
-                ap_rate = dt * 4.0
+                clip_rate = dt * 4.0
+                fx_rate = dt * 3.0
                 ap_changed = False
-                if keys[pygame.K_UP] or keys[pygame.K_RIGHT]:
+                if keys[pygame.K_UP]:
                     g.autopilot_interval_s = min(300.0,
-                                                 g.autopilot_interval_s + ap_rate)
+                                                 g.autopilot_interval_s + clip_rate)
                     ap_changed = True
-                if keys[pygame.K_DOWN] or keys[pygame.K_LEFT]:
+                if keys[pygame.K_DOWN]:
                     g.autopilot_interval_s = max(1.0,
-                                                 g.autopilot_interval_s - ap_rate)
+                                                 g.autopilot_interval_s - clip_rate)
+                    ap_changed = True
+                if keys[pygame.K_RIGHT]:
+                    g.autopilot_fx_interval_s = min(60.0,
+                                                    g.autopilot_fx_interval_s + fx_rate)
+                    ap_changed = True
+                if keys[pygame.K_LEFT]:
+                    g.autopilot_fx_interval_s = max(0.5,
+                                                    g.autopilot_fx_interval_s - fx_rate)
                     ap_changed = True
                 if ap_changed:
                     self._persist_mapping()
