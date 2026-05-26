@@ -28,7 +28,7 @@ sudo apt-get update
 sudo apt-get install -y \
   python3-venv python3-pip python3-full \
   libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0 \
-  libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+  libgl1 libegl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
   libavcodec-extra \
   ffmpeg
 echo "    done."

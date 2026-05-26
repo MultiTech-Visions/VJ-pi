@@ -273,6 +273,22 @@ class ControlWindow:
         label = self.font_s.render(label_text, True, (140, 140, 160))
         surface.blit(label, (x + 6, y + 4))
 
+        # FPS readout, top-right of the preview. Green when at-or-near
+        # target, amber if half-target, red below. Matters more than any
+        # other on-screen number when tuning what to offload next.
+        fps = self.engine.clock.get_fps()
+        target = self.engine.cfg.fps
+        if fps >= target * 0.85:
+            color = (140, 230, 140)
+        elif fps >= target * 0.5:
+            color = (230, 200, 120)
+        else:
+            color = (240, 130, 130)
+        fps_text = self.font_s.render(
+            f"{fps:4.1f} / {target} FPS", True, color)
+        surface.blit(fps_text,
+                     (x + self.preview_w - fps_text.get_width() - 6, y + 4))
+
     def _draw_space_overlay(self, surface):
         """Outline every group's spaces on the preview, highlight the
         picked-for-edit space, draw corner handles on the picked space,
