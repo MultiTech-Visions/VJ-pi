@@ -42,46 +42,10 @@ def _set_sdl_hints():
     NOFRAME (see _open_output_window), so no SDL_VIDEO_FULLSCREEN_DISPLAY
     or SDL_VIDEO_WINDOW_POS needed any more.
     """
-    # Force the X11 backend (XWayland). Pi OS Bookworm defaults to Wayland
-    # + labwc, and SDL2's Wayland backend has a stack of multi-display /
-    # fractional-scaling bugs (libsdl-org/SDL #5437, #9958, #12079, #12158)
-    # that bite us specifically in dual-display fullscreen mode: the
-    # control HUD's renderer ends up disagreeing with itself about its
-    # output size, `logical_size` then maps the 680×720 canvas into the
-    # wrong physical region, and the top half of the HUD (LIVE OUTPUT +
-    # favourites) gets shoved off-screen leaving only OUTPUT DISPLAY +
-    # KEYS visible. In test mode both windows share display 0 so the
-    # disagreement is smaller and the bug looks milder. X11/XWayland
-    # uses the size we ask for, on the display we ask for, full stop.
-    os.environ.setdefault("SDL_VIDEODRIVER", "x11")
     # Don't grab the keyboard exclusively — the control HUD window needs
     # to receive its own clicks without focus getting yanked away.
     os.environ.setdefault("SDL_HINT_GRAB_KEYBOARD", "0")
     os.environ.setdefault("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0")
-
-
-def _request_gl_attributes():
-    """Ask SDL for an OpenGL ES 3.0 context.
-
-    On Pi 5's V3D Mesa driver, requesting desktop OpenGL silently
-    loads but shader-based draws produce nothing — only ctx.clear-
-    based writes land on the FBO. The driver's mature path is GLES,
-    not desktop GL (see Raspberry Pi forum thread on ModernGL
-    + Pi 5). Asking for a GLES 3.0 context via SDL makes V3D give us
-    its proper renderer, and our shaders (which auto-adapt their
-    #version line in gpu.Renderer based on context type) compile and
-    render correctly.
-
-    GLES 3.0 is the highest version that's both common on V3D and
-    enough for every feature we use (in/out, texture(), mat3,
-    bitwise int ops, gl_PointSize gated by PROGRAM_POINT_SIZE).
-    """
-    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
-    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 0)
-    pygame.display.gl_set_attribute(
-        pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_ES,
-    )
-    pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
 
 
 def _display_size(display_idx, fallback):
@@ -109,10 +73,10 @@ def _open_output_window(cfg):
     """
     if cfg.fullscreen:
         dw, dh = _display_size(cfg.display, (cfg.width, cfg.height))
-        flags = pygame.NOFRAME | pygame.OPENGL | pygame.DOUBLEBUF
+        flags = pygame.NOFRAME
         size = (dw, dh)
     else:
-        flags = pygame.OPENGL | pygame.DOUBLEBUF
+        flags = 0
         size = (cfg.width, cfg.height)
     try:
         return pygame.display.set_mode(size, flags, display=cfg.display)
@@ -123,19 +87,7 @@ def _open_output_window(cfg):
 
 
 def _open_control_window(size, display_idx):
-    """Create a second SDL2 window + renderer for the control HUD.
-
-    The HUD renderer is forced to the SOFTWARE backend (`accelerated=0`).
-    Why: the projector window owns an OpenGL context (via pygame's
-    OPENGL flag + moderngl), and Pi 5's V3D driver has been observed
-    to leak GL state between contexts when an accelerated SDL_Renderer
-    runs alongside it — the moderngl pipeline silently fails to paint
-    its FBOs (clip / generative output never appears on the projector)
-    and after enough passes the HUD itself turns a solid colour.
-    Software rendering keeps the HUD on the CPU, fully isolated from
-    moderngl. ~700×720 of HUD pixels at 30 fps is trivial CPU work
-    on a Pi 5 — it's not a bottleneck.
-    """
+    """Create a second SDL2 window + renderer for the control HUD."""
     from pygame._sdl2.video import Window, Renderer
     centered_on_display = 0x2FFF0000 | (display_idx & 0xFFFF)
     win = Window(
@@ -145,15 +97,7 @@ def _open_control_window(size, display_idx):
         resizable=True,
     )
     win.show()
-    try:
-        renderer = Renderer(win, accelerated=0)
-        print("[vj] control HUD using software renderer (avoids V3D GL state conflict)")
-    except (pygame.error, TypeError) as exc:
-        # Older pygame / SDL builds may reject accelerated=0; let SDL
-        # auto-pick. The conflict may resurface on V3D in that case
-        # but at least the HUD opens.
-        print(f"[vj] software renderer unavailable ({exc!r}); falling back to default")
-        renderer = Renderer(win)
+    renderer = Renderer(win)
     return win, renderer
 
 
@@ -181,7 +125,6 @@ def main():
 
     pygame.init()
     pygame.font.init()
-    _request_gl_attributes()
 
     # Validate the resolved display against what actually exists right now
     # (e.g. saved=1 but the projector isn't plugged in this time). Fall
