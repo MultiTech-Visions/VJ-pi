@@ -43,10 +43,11 @@ MAPPING_KEY_CHEAT = [
     ("Ctrl+= / -",   "Add / remove a space in current group"),
     ("Ctrl+G",       "Cycle grid layout (1·2x1·2x2·3x2·3x3·4x2·4x3)"),
     ("Enter Enter",  "Toggle AUTOPILOT on current group (multiple run in parallel)"),
-    ("←→↑↓ (auto)",  "Tune the running group's interval (↑→ slower · ↓← faster)"),
+    ("↑↓ (auto)",    "Tune CLIP interval (↑ slower · ↓ faster)"),
+    ("←→ (auto)",    "Tune FX interval (→ slower · ← faster)"),
     ("Ctrl+A",       "Toggle autopilot on current group (alt to Enter Enter)"),
     ("Ctrl+K",       "Cycle autopilot kind (cycle/random · clips/generatives)"),
-    ("Ctrl+, / .",   "Autopilot interval ±1s (alt to arrows)"),
+    ("Ctrl+, / .",   "Clip interval ±1s (alt to ↑↓)"),
     ("Ctrl+B",       "Toggle borders"),
     ("Ctrl+C",       "Cycle border colour"),
     ("Ctrl+[ / ]",   "Border intensity ±10%"),
@@ -430,7 +431,8 @@ class ControlWindow:
                          border_radius=3)
         surface.blit(chip, chip_rect)
         info = self.font_s.render(
-            f"  {g.autopilot_kind}  ·  every {g.autopilot_interval_s:.1f}s",
+            f"  {g.autopilot_kind}  ·  clip {g.autopilot_interval_s:.1f}s"
+            f"  ·  fx {g.autopilot_fx_interval_s:.1f}s",
             True, (180, 180, 200),
         )
         surface.blit(info, (chip_rect.right + 8,
@@ -556,8 +558,9 @@ class ControlWindow:
                     continue
                 color = (180, 240, 200) if gi == sel else (150, 200, 170)
                 line = self.font_s.render(
-                    f"{g.name}: {g.autopilot_kind} + fx every "
-                    f"{g.autopilot_interval_s:.1f}s",
+                    f"{g.name}: {g.autopilot_kind} every "
+                    f"{g.autopilot_interval_s:.1f}s  ·  fx every "
+                    f"{g.autopilot_fx_interval_s:.1f}s",
                     True, color,
                 )
                 surface.blit(line, (x, end_y))
