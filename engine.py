@@ -9,8 +9,12 @@ import cv2
 from clips import ClipPool
 from mapping import MappingManager
 from state import load_state, save_state
-from effects import EffectContext
-from gpu import Renderer
+from effects import (
+    EffectContext, plasma, tunnel, starfield, warp, waves, cells,
+    lissajous, moire, metaballs,
+    kaleidoscope, mirror_h, feedback_blend, rgb_split,
+    invert, posterize, edges, screen_blend,
+)
 
 
 GENERATIVES = [
@@ -18,6 +22,18 @@ GENERATIVES = [
     "warp", "waves", "cells",
     "lissajous", "moire", "metaballs",
 ]
+
+GENERATIVE_FNS = {
+    "plasma": plasma,
+    "tunnel": tunnel,
+    "starfield": starfield,
+    "warp": warp,
+    "waves": waves,
+    "cells": cells,
+    "lissajous": lissajous,
+    "moire": moire,
+    "metaballs": metaballs,
+}
 
 FX_TOGGLES = [
     "kaleido", "mirror", "feedback",
@@ -54,33 +70,10 @@ class Engine:
         self.fx_state = {fx: False for fx in FX_TOGGLES}
         self.hit_type = None
         self.hit_frames_left = 0
-        # Set of HIT_KEYS we've seen go down without a matching KEYUP.
-        # Sourced from real events (not get_pressed) so a lost KEYUP
-        # never leaves a hit stuck in the on position.
-        self._held_hit_keys = set()
         self.blackout = False
         self.freeze = False
         self.frozen_frame = None
-
-        # GPU pipeline. Created here so its constructor runs AFTER pygame
-        # has made the GL context current (main.py opens the OPENGL
-        # window before constructing Engine).
-        self.gpu = Renderer(self.w, self.h)
-        self.gpu.set_screen_size(self.screen.get_size())
-
-        # Per-group source FBO + previous-source FBO for feedback trails.
-        # Keyed by `id(group)` — wiped if a group is removed in mapping
-        # mode. The trail FBO lets a per-group feedback FX sample its own
-        # previous content (rather than the whole canvas), which is the
-        # correct behaviour for independent group loops.
-        self._group_src_fbos = {}
-        self._group_prev_fbos = {}
-
-        # Tracks whether feedback was active in the LIVE-mode chain this
-        # frame; if so we copy the composited result into the global
-        # trail buffer at end-of-frame so the next frame's feedback shader
-        # has something to sample.
-        self._live_had_feedback = False
+        self.prev_frame = None
 
         # Arrow-key driven FX parameters, 0..1. Replaces mouse XY.
         self.param_x = 0.5
@@ -109,6 +102,11 @@ class Engine:
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
         self._mapping_persist_dirty = False
+        # Per-group mask cache. Key = id(group); value = (signature, mask,
+        # bbox). Invalidated when any of the group's space corners change.
+        # Lets a static layout skip cv2.fillConvexPoly every frame — the
+        # common case during a running set.
+        self._group_mask_cache = {}
 
         # Autopilot — engaged by double-tapping Enter, disengaged by any
         # other key press. While engaged, the engine drives clip changes,
@@ -454,15 +452,7 @@ class Engine:
     def toggle_freeze(self):
         self.freeze = not self.freeze
         if self.freeze:
-            # Snapshot whatever the GPU pipeline last rendered. readback()
-            # returns a buffer the renderer reuses, so we copy() to own it
-            # for the duration of the freeze.
-            try:
-                snap = self.gpu.readback()
-                self.frozen_frame = snap.copy() if snap is not None else None
-            except Exception as exc:  # noqa: BLE001 - any GL error → no freeze frame
-                print(f"[vj] freeze snapshot failed: {exc!r}")
-                self.frozen_frame = None
+            self.frozen_frame = self.prev_frame.copy() if self.prev_frame is not None else None
 
     def quit(self):
         self.running = False
@@ -501,25 +491,16 @@ class Engine:
                 dw, dh = sizes[new_idx]
             except (pygame.error, IndexError, AttributeError):
                 dw, dh = self.w, self.h
-            flags = pygame.NOFRAME | pygame.OPENGL | pygame.DOUBLEBUF
+            flags = pygame.NOFRAME
             size = (dw, dh)
         else:
-            flags = pygame.OPENGL | pygame.DOUBLEBUF
+            flags = 0
             size = (self.w, self.h)
 
         try:
             self.screen = pygame.display.set_mode(size, flags, display=new_idx)
             pygame.display.set_caption("pi-paint VJ — Output")
             pygame.mouse.set_visible(not self.cfg.fullscreen)
-            # SDL2 typically destroys the GL context on set_mode under
-            # OPENGL — every texture / program / FBO our Renderer holds
-            # would be invalid. Safest path is a fresh Renderer keyed to
-            # the same render resolution; we lose the feedback-trail
-            # buffer but that re-fills in one frame.
-            self.gpu = Renderer(self.w, self.h)
-            self.gpu.set_screen_size(size)
-            self._group_src_fbos.clear()
-            self._group_prev_fbos.clear()
             print(f"[vj] output → display {new_idx} ({size[0]}x{size[1]}, "
                   f"borderless={self.cfg.fullscreen})")
         except (TypeError, pygame.error, ValueError) as exc:
@@ -531,21 +512,14 @@ class Engine:
         compose_frame() decrements hit_frames_left each frame; we top it up
         as long as the corresponding key is pressed. Two frames of headroom
         means an in-flight hit gracefully finishes the frame after release.
-
-        We track held state from KEYDOWN / KEYUP / WINDOWFOCUSLOST events
-        rather than polling pygame.key.get_pressed(). Under Wayland (and
-        sometimes X11 after focus changes) get_pressed() has been seen to
-        report a key as held forever when its KEYUP got dropped, which
-        previously caused a permanent strobe / white-screen lockup.
         """
-        for k in self._held_hit_keys:
-            hit_name = hit_keys_map.get(k)
-            if hit_name is None:
-                continue
-            self.hit_type = hit_name
-            if self.hit_frames_left < 2:
-                self.hit_frames_left = 2
-            return  # one hit at a time
+        keys = pygame.key.get_pressed()
+        for k, hit_name in hit_keys_map.items():
+            if keys[k]:
+                self.hit_type = hit_name
+                if self.hit_frames_left < 2:
+                    self.hit_frames_left = 2
+                return  # one hit at a time
 
     def update_params_from_keys(self, dt):
         """Arrows: tune PARAM X/Y in manual mode, tune auto rates in autopilot.
@@ -557,18 +531,16 @@ class Engine:
             return
         keys = pygame.key.get_pressed()
         if self.auto_mode:
-            # Arrows in autopilot tune the INTERVALS directly (longer
-            # interval = slower changes). Pressing up adds time, down
-            # subtracts; right adds, left subtracts — so the direction
-            # matches the value on the bar, not "how fast it feels".
+            # Up = faster clip changes, Down = slower
+            # Right = faster FX changes, Left = slower
             if keys[pygame.K_UP]:
-                self.auto_clip_interval = min(60.0, self.auto_clip_interval + dt * 4.0)
-            if keys[pygame.K_DOWN]:
                 self.auto_clip_interval = max(1.0, self.auto_clip_interval - dt * 4.0)
+            if keys[pygame.K_DOWN]:
+                self.auto_clip_interval = min(60.0, self.auto_clip_interval + dt * 4.0)
             if keys[pygame.K_RIGHT]:
-                self.auto_fx_interval   = min(30.0, self.auto_fx_interval  + dt * 3.0)
-            if keys[pygame.K_LEFT]:
                 self.auto_fx_interval   = max(0.5, self.auto_fx_interval   - dt * 3.0)
+            if keys[pygame.K_LEFT]:
+                self.auto_fx_interval   = min(30.0, self.auto_fx_interval  + dt * 3.0)
             return
 
         step = PARAM_RATE * dt
@@ -817,310 +789,401 @@ class Engine:
         self.mapping.reset_frame()
         self._persist_mapping()
 
-    # ── Render pipeline (GPU) ─────────────────────────────────────────
-    #
-    # The whole compose pipeline is driven by `self.gpu` (moderngl).
-    # Generatives are fragment shaders, FX are shader passes through a
-    # ping-pong FBO pair, clips/overlays are textures, and mapping
-    # warps are projective-textured quads. `compose_frame()` returns a
-    # numpy RGB frame ONLY when the CPU side still needs to look at
-    # pixels (HUD open, mapping/edit-mode overlays, PERFORM borders);
-    # otherwise the pipeline stays fully GPU-resident and we return
-    # None for blit_to_output() to present the GPU FBO directly.
+    # ── Render pipeline ───────────────────────────────────────────────
 
-    def _needs_cpu_frame(self):
-        if self._has_hud:
-            return True
-        if self.mode == "mapping" and self.mapping.edit_mode:
-            return True
-        if (self.mode == "mapping"
-                and self.mapping.show_borders
-                and self.mapping.selected_group() is not None):
-            return True
-        return False
-
-    def _build_base_gpu(self, ctx):
-        """Push the base layer (clip / generative / black) into the
-        current ping-pong FBO."""
+    def _build_base(self, ctx):
+        """Live-mode base layer. Clips read at canvas resolution; generatives
+        render at the reduced internal resolution and get upscaled in
+        compose_frame() before overlay/hits paint on top."""
         clip_frame = self.clips.read()
         if clip_frame is not None:
-            self.gpu.upload_clip(clip_frame)
-            self.gpu.draw_clip_base()
-            return
-        if self.active_generative:
-            self.gpu.draw_generative(self.active_generative, ctx.t,
-                                     (ctx.px, ctx.py))
-            return
-        # Nothing selected — current FBO stays at begin_frame() black.
+            return clip_frame
+        fn = GENERATIVE_FNS.get(self.active_generative)
+        if fn is not None:
+            gw, gh = self._gen_render_size()
+            small_ctx = EffectContext(gw, gh, ctx.t, (ctx.px, ctx.py))
+            return fn(small_ctx)
+        return np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
-    def _apply_fx_gpu(self, fx_state, ctx):
-        """Run each enabled FX as one shader pass through the ping-pong.
-        Returns True if feedback was active (so the caller knows to
-        update the trail buffer at end-of-frame)."""
-        s = fx_state
-        had_feedback = False
-        if s.get("kaleido"):
-            self.gpu.fx_kaleidoscope(int(3 + ctx.px * 9))
-        if s.get("mirror"):
-            self.gpu.fx_mirror_h()
-        if s.get("rgb_split"):
-            self.gpu.fx_rgb_split(int(4 + ctx.px * 20))
-        if s.get("posterize"):
-            self.gpu.fx_posterize(int(2 + ctx.py * 6))
-        if s.get("edges"):
-            self.gpu.fx_edges()
-        if s.get("invert"):
-            self.gpu.fx_invert()
-        if s.get("feedback"):
+    def _apply_fx(self, frame, ctx):
+        s = self.fx_state
+        if s["kaleido"]:
+            segs = int(3 + ctx.px * 9)
+            frame = kaleidoscope(frame, segments=segs)
+        if s["mirror"]:
+            frame = mirror_h(frame)
+        if s["rgb_split"]:
+            frame = rgb_split(frame, offset=int(4 + ctx.px * 20))
+        if s["posterize"]:
+            frame = posterize(frame, levels=int(2 + ctx.py * 6))
+        if s["edges"]:
+            frame = edges(frame)
+        if s["invert"]:
+            frame = invert(frame)
+        if s["feedback"]:
             zoom = 1.0 + ctx.px * 0.08
             rot = (ctx.py - 0.5) * 4.0
-            self.gpu.fx_feedback(zoom, rot)
-            had_feedback = True
-        return had_feedback
+            frame = feedback_blend(self.prev_frame, frame, zoom=zoom, rotate=rot)
+        return frame
 
-    def _apply_overlay_gpu(self, pool, stem=None):
-        """Screen-blend the active overlay onto the current FBO."""
-        if stem is None:
-            ov = pool.read()
-        else:
-            idx = pool.find_by_stem(stem)
-            if idx is None:
-                return
-            pool.ensure_open(idx)
-            ov = pool.read_at(idx)
-        if ov is None:
-            return
-        self.gpu.upload_overlay(ov)
-        self.gpu.apply_overlay_screen_blend()
+    def _apply_overlay(self, frame):
+        ov = self.overlays.read()
+        if ov is not None:
+            frame = screen_blend(frame, ov)
+        return frame
 
-    def _apply_hits_gpu(self):
+    def _apply_hits(self, frame):
         if self.hit_frames_left <= 0:
-            return
+            return frame
         n = self.hit_frames_left
         self.hit_frames_left -= 1
         if self.hit_type == "strobe":
-            self.gpu.hit_strobe()
-        elif self.hit_type == "black_flash":
-            self.gpu.hit_black()
-        elif self.hit_type == "invert_flash":
-            self.gpu.hit_invert()
-        elif self.hit_type == "zoom_punch":
+            return np.full_like(frame, 255)
+        if self.hit_type == "black_flash":
+            return np.zeros_like(frame)
+        if self.hit_type == "invert_flash":
+            return invert(frame)
+        if self.hit_type == "zoom_punch":
             scale = 1.0 + 0.25 * (n / 5.0)
-            self.gpu.hit_zoom_punch(scale)
-        elif self.hit_type == "rgb_smash":
-            self.gpu.hit_rgb_smash()
+            M = cv2.getRotationMatrix2D((self.w * 0.5, self.h * 0.5), 0, scale)
+            return cv2.warpAffine(frame, M, (self.w, self.h))
+        if self.hit_type == "rgb_smash":
+            return rgb_split(frame, offset=28)
+        return frame
 
     def compose_frame(self):
-        """Build the next output frame on the GPU. Returns a CPU numpy
-        RGB frame iff `_needs_cpu_frame()` is True, else None."""
-        had_feedback = False
-        self.gpu.begin_frame()
-
+        """Build the next output frame without blitting."""
         if self.blackout:
-            # begin_frame() already cleared to black; nothing else needed.
-            pass
+            frame = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         elif self.freeze and self.frozen_frame is not None:
-            self.gpu.upload_frozen(self.frozen_frame)
-            self.gpu.draw_frozen_base()
+            frame = self.frozen_frame
         elif self.mode == "mapping":
-            self._compose_mapping_frame_gpu()
+            frame = self._compose_mapping_frame()
         else:
             ctx = EffectContext(
                 self.w, self.h, time.time() - self.start_time,
                 (self.param_x, self.param_y),
             )
-            self._build_base_gpu(ctx)
-            had_feedback = self._apply_fx_gpu(self.fx_state, ctx)
-            self._apply_overlay_gpu(self.overlays)
-            self._apply_hits_gpu()
+            frame = self._build_base(ctx)
+            frame = self._apply_fx(frame, ctx)
+            # _build_base may return a sub-canvas frame (generatives render
+            # at cfg.gen_render_scale). Upscale to canvas before overlay
+            # and hits — those expect canvas-sized buffers.
+            if frame.shape[:2] != (self.h, self.w):
+                frame = cv2.resize(frame, (self.w, self.h),
+                                   interpolation=cv2.INTER_LINEAR)
+            frame = self._apply_overlay(frame)
+            frame = self._apply_hits(frame)
 
-        cpu_frame = None
-        if self._needs_cpu_frame():
-            cpu_frame = self.gpu.readback().copy()
-            if self.mode == "mapping" and self.mapping.edit_mode:
-                # Borders + edit overlays still use cv2 (they include
-                # small icons + text that aren't worth a glyph atlas
-                # right now). Drawing on the readback means they appear
-                # on both the HUD preview AND, after present_cpu_frame,
-                # on the projector.
-                if self.mapping.show_borders:
-                    self._draw_selection_border(cpu_frame)
-                self._draw_edit_overlay(cpu_frame)
-            elif self.mapping.show_borders and self.mode == "mapping":
-                self._draw_selection_border(cpu_frame)
+        if not self.freeze:
+            self.prev_frame = frame
+        return frame
 
-        # Feedback trail: copy this frame's composited GPU output into
-        # the trail FBO so next frame's feedback shader has something to
-        # sample. Skipped when feedback wasn't active to save the copy
-        # pass — first feedback frame samples whatever was last in the
-        # buffer, which fades naturally over a few frames.
-        if had_feedback:
-            self.gpu.update_feedback_trail()
+    # ── Mapping render pipeline ───────────────────────────────────────
 
-        self._diag_log(cpu_frame)
+    def _compose_mapping_frame(self):
+        """Render projection-mapping: one source per group, painted onto
+        the canvas under a mask built from the UNION of the group's
+        spaces. Multiple spaces in one group act as multiple windows
+        into the same video — they reveal different parts of one
+        playing video, not separate copies of it.
 
-        return cpu_frame
-
-    @property
-    def _has_hud(self):
-        # control window plumbing happens via Engine.run(control=...);
-        # we lazily mark availability when a HUD is attached.
-        return getattr(self, "_control_attached", False)
-
-    def _diag_log(self, cpu_frame):
-        """One-line state dump every ~2s so the launcher log shows what
-        the GPU pipeline thinks it's doing. The `readback_mean` value is
-        the most useful clue: 0.0 means the FBO is fully black after
-        compose, so shader draws aren't landing on the target — most
-        likely a V3D-specific GL issue. Non-zero means content IS on the
-        FBO; if the projector still shows black, the present pass is
-        the culprit. Does a one-shot small readback when no HUD is open
-        so the diagnostic still works headlessly."""
-        n = getattr(self, "_diag_frame", 0) + 1
-        self._diag_frame = n
-        # Frames 30, 60, 120, 300 cover the first 10s; every 600 (~20s)
-        # after that. Tunable.
-        if n not in (30, 60, 120, 300) and n % 600 != 0:
-            return
-        try:
-            sample = cpu_frame if cpu_frame is not None else self.gpu.readback()
-            mean = float(sample.mean()) if sample is not None else None
-            nonzero = int((sample != 0).sum()) if sample is not None else None
-        except Exception as exc:  # noqa: BLE001
-            mean = None
-            nonzero = None
-            print(f"[vj.diag] readback failed: {exc!r}")
-        fx_on = [k for k, v in self.fx_state.items() if v]
-        print(f"[vj.diag] frame={n} mode={self.mode} "
-              f"clip={self.clips.name(self.clips.active_idx)} "
-              f"gen={self.active_generative} fx={fx_on} "
-              f"blackout={self.blackout} freeze={self.freeze} "
-              f"readback_mean={mean} readback_nonzero={nonzero}")
-
-    # ── Mapping render pipeline (GPU) ─────────────────────────────────
-
-    def _compose_mapping_frame_gpu(self):
-        """For each group: compose its source into a persistent FBO,
-        then either project that source per-space (fit_mode=stretch) or
-        treat each space as a window onto a single canvas-wide video
-        plane (fit_mode in {window, fit, fill}). Hits applied at the
-        end; borders + edit overlays are drawn on the CPU readback
-        further down in compose_frame()."""
+        In edit mode also draw outlines of every group + a highlight on
+        the picked-for-edit space + the create-drag rubber-band, so the
+        projector itself helps the operator align spaces to physical
+        surfaces while editing.
+        """
+        w, h = self.w, self.h
+        canvas = np.zeros((h, w, 3), dtype=np.uint8)
         now = time.time()
         self.mapping.tick_autopilot(self, now)
-
-        # Garbage-collect FBOs for groups that no longer exist.
-        live_ids = {id(g) for g in self.mapping.groups}
-        for stale in [k for k in self._group_src_fbos if k not in live_ids]:
-            del self._group_src_fbos[stale]
-            self._group_prev_fbos.pop(stale, None)
-
+        # Sweep stale mask cache entries every ~5 s. Cheap, and keeps
+        # the cache tidy across hours of editing.
+        if now - getattr(self, "_mask_cache_gc_at", 0.0) > 5.0:
+            self._invalidate_mask_cache()
+            self._mask_cache_gc_at = now
         for group in self.mapping.groups:
             # Skip groups with no spaces (no mask) AND skip groups
             # whose content is blackout (nothing to compose). Saves a
             # full-resolution generative call per blackout group.
             if not group.spaces:
                 continue
-            # Skip groups with no real content to compose. Matches the
-            # CPU pipeline's optimisation — saves a generative-shader
-            # pass per blackout group.
             if (group.content_kind == "blackout"
                     or (group.content_kind == "clip" and not group.clip_stem)
                     or (group.content_kind == "generative" and not group.gen_name)):
                 continue
-            gid = id(group)
-            src_fbo = self._group_src_fbos.get(gid)
-            if src_fbo is None:
-                src_fbo = self.gpu.make_group_fbo()
-                self._group_src_fbos[gid] = src_fbo
-            prev_fbo = self._group_prev_fbos.get(gid)
-            if prev_fbo is None:
-                prev_fbo = self.gpu.make_group_fbo()
-                self._group_prev_fbos[gid] = prev_fbo
+            source = self._compose_group_source(group, now)
+            self._place_group_into_canvas(canvas, source, group)
+        canvas = self._apply_hits(canvas)
+        if self.mapping.show_borders:
+            self._draw_selection_border(canvas)
+        if self.mapping.edit_mode:
+            self._draw_edit_overlay(canvas)
+        return canvas
 
-            self._compose_group_source_gpu(group, now, src_fbo, prev_fbo)
-            source_tex = src_fbo.color_attachments[0]
+    def _compose_group_source(self, group, now):
+        """Build the unwarped source frame for one group (clip / gen / FX).
 
-            # fit_mode dispatch:
-            #   * stretch → each space gets its own perspective-warped
-            #     copy of the source (legacy billboard).
-            #   * window / fit / fill → the source is laid down ONCE
-            #     across the canvas (with zoom + pan in window mode),
-            #     and each space is a window onto that single plane,
-            #     so multi-space groups stay visually continuous.
-            if group.fit_mode == "stretch":
-                for space in group.spaces:
-                    corners = np.array(space.corners, dtype=np.float64)
-                    self.gpu.warp_source_into_quad(source_tex, corners)
-            else:
-                dst_xy, dst_size = self._mapping_window_rect(group)
-                for space in group.spaces:
-                    corners = np.array(space.corners, dtype=np.float64)
-                    self.gpu.warp_source_into_window(
-                        source_tex, corners, dst_xy, dst_size,
-                    )
-
-        self._apply_hits_gpu()
-
-    def _mapping_window_rect(self, group):
-        """Pixel-space (top-left xy, width-height) for the video plane
-        a group's content gets stamped onto when fit_mode is window /
-        fit / fill. Mirrors the CPU `_window_group_into_canvas` math;
-        on the GPU side the source FBO is always canvas-sized so the
-        base-scale math collapses to 1.0, and zoom/pan only kick in for
-        window mode (fit and fill are equivalent and pass through 1:1)."""
+        Generative sources render at cfg.gen_render_scale × canvas (default
+        0.5) — they're smooth procedural patterns, no detail lost from
+        upscaling, but 4× fewer pixels under the per-frame sin/sqrt/etc.
+        Clips stay at canvas resolution since they carry real detail.
+        FX runs at whatever size the base was rendered at (kaleido / mirror
+        / etc. adapt via frame.shape internally).
+        """
         w, h = self.w, self.h
+        is_clip = (group.content_kind == "clip" and group.clip_stem)
+        if is_clip:
+            idx = self.clips.find_by_stem(group.clip_stem)
+            if idx is not None:
+                self.clips.ensure_open(idx)
+                frame = self.clips.read_at(idx)
+                if frame is None:
+                    frame = np.zeros((h, w, 3), dtype=np.uint8)
+            else:
+                frame = np.zeros((h, w, 3), dtype=np.uint8)
+        elif group.content_kind == "generative" and group.gen_name:
+            fn = GENERATIVE_FNS.get(group.gen_name)
+            if fn is None:
+                frame = np.zeros((h, w, 3), dtype=np.uint8)
+            else:
+                # Render at the reduced internal resolution.
+                gw, gh = self._gen_render_size()
+                ctx = EffectContext(
+                    gw, gh,
+                    now - self.start_time + group._time_offset,
+                    (group.param_x, group.param_y),
+                )
+                frame = fn(ctx)
+        else:
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+        fh, fw = frame.shape[:2]
+
+        # Per-group FX chain. Runs at whatever size the base is — kaleido
+        # uses frame.shape; mirror, posterize, rgb_split, edges, invert
+        # all are shape-agnostic.
+        if any(group.fx_state.values()):
+            ctx = EffectContext(fw, fh,
+                                now - self.start_time + group._time_offset,
+                                (group.param_x, group.param_y))
+            s = group.fx_state
+            if s.get("kaleido"):
+                frame = kaleidoscope(frame, segments=int(3 + ctx.px * 9))
+            if s.get("mirror"):
+                frame = mirror_h(frame)
+            if s.get("rgb_split"):
+                frame = rgb_split(frame, offset=int(4 + ctx.px * 20))
+            if s.get("posterize"):
+                frame = posterize(frame, levels=int(2 + ctx.py * 6))
+            if s.get("edges"):
+                frame = edges(frame)
+            if s.get("invert"):
+                frame = invert(frame)
+            if s.get("feedback"):
+                # Mapping-mode feedback uses the previous full canvas as
+                # the trail buffer. Skip if we don't have one yet OR if
+                # dimensions don't match (avoids a feedback artefact on
+                # a low-res generative pulling from the canvas-sized
+                # prev_frame; the warp would inflate a thumbnail).
+                if (self.prev_frame is not None
+                        and self.prev_frame.shape[:2] == frame.shape[:2]):
+                    zoom = 1.0 + ctx.px * 0.08
+                    rot = (ctx.py - 0.5) * 4.0
+                    frame = feedback_blend(self.prev_frame, frame,
+                                           zoom=zoom, rotate=rot)
+
+        # Per-group overlay screen-blend. Overlay pool reads at canvas
+        # size; resize to match the source if the source was rendered
+        # smaller (cheap — one resize at fw×fh).
+        if group.overlay_stem:
+            ov_idx = self.overlays.find_by_stem(group.overlay_stem)
+            if ov_idx is not None:
+                self.overlays.ensure_open(ov_idx)
+                ov = self.overlays.read_at(ov_idx)
+                if ov is not None:
+                    if ov.shape[:2] != (fh, fw):
+                        ov = cv2.resize(ov, (fw, fh),
+                                        interpolation=cv2.INTER_AREA)
+                    frame = screen_blend(frame, ov)
+
+        return frame
+
+    def _gen_render_size(self):
+        """Internal generative resolution = cfg.width/height × scale,
+        floored at 64×36 so we never burn cycles below the cv2 minimum
+        practical block size."""
+        scale = max(0.1, min(1.0, getattr(self.cfg, "gen_render_scale", 1.0)))
+        gw = max(64, int(self.w * scale))
+        gh = max(36, int(self.h * scale))
+        return gw, gh
+
+    def _place_group_into_canvas(self, canvas, source, group):
+        """Dispatch into the right placement strategy based on the group's
+        fit_mode. "stretch" is per-space (each quad warps its own copy of
+        the video — legacy billboard look). The other three modes are
+        per-GROUP: the video plays once across the whole canvas at the
+        chosen zoom / pan, and the union of the group's space polygons
+        is the mask through which it shows. Multiple spaces in one
+        group → multiple windows onto one playing video."""
+        w, h = self.w, self.h
+        if group.fit_mode == "stretch":
+            for space in group.spaces:
+                self._warp_into_canvas(canvas, source,
+                                       space.corners_px(w, h))
+            return
+        self._window_group_into_canvas(canvas, source, group)
+
+    def _warp_into_canvas(self, canvas, source, dst_corners):
+        """Warp `source` into the quad `dst_corners` on `canvas` — the
+        old "stretch to fit the quad" behaviour, kept as an opt-in
+        fit_mode so the operator can deliberately get the perspective-
+        billboard look (good for projecting onto an angled flat surface).
+
+        Pitfall: cv2.warpPerspective on the full canvas is expensive. We
+        crop output to the quad's bounding box and apply a convex-poly mask
+        so pixels outside the quad on the canvas stay black (no leak onto
+        the wall) and other groups' pixels aren't trampled.
+        """
+        h, w = canvas.shape[:2]
+        sh, sw = source.shape[:2]
+        src_corners = np.array(
+            [[0, 0], [sw, 0], [sw, sh], [0, sh]], dtype=np.float32
+        )
+        M = cv2.getPerspectiveTransform(src_corners, dst_corners.astype(np.float32))
+
+        x_min = max(0, int(np.floor(dst_corners[:, 0].min())))
+        x_max = min(w, int(np.ceil(dst_corners[:, 0].max())))
+        y_min = max(0, int(np.floor(dst_corners[:, 1].min())))
+        y_max = min(h, int(np.ceil(dst_corners[:, 1].max())))
+        if x_max - x_min < 2 or y_max - y_min < 2:
+            return  # Degenerate quad, skip silently.
+
+        warped = cv2.warpPerspective(
+            source, M, (w, h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
+        mask = np.zeros((h, w), dtype=np.uint8)
+        poly = dst_corners.astype(np.int32)
+        cv2.fillConvexPoly(mask, poly, 255)
+        sub_mask = mask[y_min:y_max, x_min:x_max]
+        sub_warp = warped[y_min:y_max, x_min:x_max]
+        sub_canvas = canvas[y_min:y_max, x_min:x_max]
+        idx = sub_mask > 0
+        sub_canvas[idx] = sub_warp[idx]
+        canvas[y_min:y_max, x_min:x_max] = sub_canvas
+
+    def _window_group_into_canvas(self, canvas, source, group):
+        """Place `source` ONCE across the canvas at the group's chosen
+        zoom / pan, then reveal it only through the union of the group's
+        space polygons. The video keeps its natural aspect (no warp);
+        each space is a hole onto a single underlying video plane, so
+        two spaces side-by-side in one group show the video continuously
+        across both — different parts of the same video, in sync.
+
+        fit_mode = "fit"   : uniform scale so the source fits the
+                             canvas (letterboxed). Zoom / pan ignored.
+        fit_mode = "fill"  : uniform scale so the source covers the
+                             canvas (cropped). Zoom / pan ignored.
+        fit_mode = "window": "fit" base scale times group.zoom, plus
+                             pan offset (-1..+1 of half-canvas).
+        """
+        h, w = canvas.shape[:2]
+        sh, sw = source.shape[:2]
+        if sw < 2 or sh < 2:
+            return
+
         mode = group.fit_mode
-        if mode == "window":
-            zoom = max(0.05, float(group.zoom))
-            pan_x, pan_y = float(group.pan_x), float(group.pan_y)
-        else:  # "fit" / "fill"
+        if mode == "fill":
+            scale = max(w / sw, h / sh)
             zoom, pan_x, pan_y = 1.0, 0.0, 0.0
-        dw = max(2, int(round(w * zoom)))
-        dh = max(2, int(round(h * zoom)))
+        else:  # "window" or "fit"
+            scale = min(w / sw, h / sh)
+            if mode == "window":
+                zoom, pan_x, pan_y = group.zoom, group.pan_x, group.pan_y
+            else:
+                zoom, pan_x, pan_y = 1.0, 0.0, 0.0
+        scale *= max(0.05, zoom)
+
+        dw = max(2, int(round(sw * scale)))
+        dh = max(2, int(round(sh * scale)))
         cx = w * 0.5 + pan_x * w * 0.5
         cy = h * 0.5 + pan_y * h * 0.5
         dx = int(round(cx - dw * 0.5))
         dy = int(round(cy - dh * 0.5))
-        return (dx, dy), (dw, dh)
 
-    def _compose_group_source_gpu(self, group, now, src_fbo, prev_fbo):
-        """Render one group's source content into `src_fbo`. `prev_fbo`
-        is the previous-frame source for this group (used by feedback)."""
-        ctx = EffectContext(
-            self.w, self.h,
-            now - self.start_time + group._time_offset,
-            (group.param_x, group.param_y),
+        # Clip the video's destination rect to the canvas.
+        vx0, vy0 = max(0, dx), max(0, dy)
+        vx1, vy1 = min(w, dx + dw), min(h, dy + dh)
+        if vx1 <= vx0 or vy1 <= vy0:
+            return  # Video positioned entirely off-canvas.
+
+        # Resolve the group mask + its bounding rect (cached per-group;
+        # only rebuilt when corners change, so a static layout pays the
+        # cv2.fillConvexPoly cost ONCE, not every frame).
+        mask, mbox = self._group_mask(group)
+        mx0, my0, mx1, my1 = mbox
+
+        # Intersection of "where the video lands" and "where the mask
+        # has any pixels" — that's the only region we need to touch.
+        x0, y0 = max(vx0, mx0), max(vy0, my0)
+        x1, y1 = min(vx1, mx1), min(vy1, my1)
+        if x1 <= x0 or y1 <= y0:
+            return  # Mask and video don't overlap.
+
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        resized = cv2.resize(source, (dw, dh), interpolation=interp)
+
+        sx0, sy0 = x0 - dx, y0 - dy
+        sx1, sy1 = sx0 + (x1 - x0), sy0 + (y1 - y0)
+        # cv2.copyTo writes `src` into `dst` where `mask` != 0 in pure
+        # C, GIL released — significantly faster than the previous
+        # `dst[mask>0] = src[mask>0]` boolean-fancy-index path which
+        # builds a full-canvas-sized intermediate every call.
+        cv2.copyTo(resized[sy0:sy1, sx0:sx1],
+                   mask[y0:y1, x0:x1],
+                   canvas[y0:y1, x0:x1])
+
+    def _group_mask(self, group):
+        """Return (mask, (x0, y0, x1, y1)) for `group`. Cached by space
+        corners — only rebuilt when the operator edits the layout, so a
+        static set pays the cv2.fillConvexPoly cost ONCE."""
+        signature = tuple(
+            (round(c[0], 6), round(c[1], 6))
+            for space in group.spaces for c in space.corners
         )
-        # Redirect the renderer's ping-pong to this group's FBO pair.
-        self.gpu.begin_into_aux(prev_source_fbo=prev_fbo)
-        try:
-            if group.content_kind == "clip" and group.clip_stem:
-                idx = self.clips.find_by_stem(group.clip_stem)
-                if idx is not None:
-                    self.clips.ensure_open(idx)
-                    frame = self.clips.read_at(idx)
-                    if frame is not None:
-                        self.gpu.upload_clip(frame)
-                        self.gpu.draw_clip_base()
-            elif group.content_kind == "generative" and group.gen_name:
-                self.gpu.draw_generative(group.gen_name, ctx.t,
-                                         (ctx.px, ctx.py))
-            # else: blackout — aux FBO already cleared.
+        key = id(group)
+        cached = self._group_mask_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1], cached[2]
+        h, w = self.h, self.w
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mx0, my0 = w, h
+        mx1, my1 = 0, 0
+        for space in group.spaces:
+            poly = space.corners_px(w, h).astype(np.int32)
+            cv2.fillConvexPoly(mask, poly, 255)
+            mx0 = min(mx0, int(poly[:, 0].min()))
+            my0 = min(my0, int(poly[:, 1].min()))
+            mx1 = max(mx1, int(poly[:, 0].max()) + 1)
+            my1 = max(my1, int(poly[:, 1].max()) + 1)
+        mx0 = max(0, mx0); my0 = max(0, my0)
+        mx1 = min(w, mx1); my1 = min(h, my1)
+        bbox = (mx0, my0, mx1, my1)
+        self._group_mask_cache[key] = (signature, mask, bbox)
+        return mask, bbox
 
-            had_feedback = self._apply_fx_gpu(group.fx_state, ctx)
-            if group.overlay_stem:
-                self._apply_overlay_gpu(self.overlays, stem=group.overlay_stem)
-
-            # Persist the composited result into src_fbo (the texture the
-            # caller will warp from), and into prev_fbo for next frame's
-            # feedback sampling (only when feedback is active, to save a
-            # pass when it's not needed).
-            self.gpu.copy_current_to(src_fbo)
-            if had_feedback:
-                self.gpu.copy_current_to(prev_fbo)
-        finally:
-            self.gpu.finish_aux()
+    def _invalidate_mask_cache(self):
+        """Drop cached masks for groups that no longer exist (so the
+        cache doesn't grow unboundedly through a session of editing).
+        Called sporadically — leaks of a few hundred bytes per deleted
+        group are not worth chasing every frame."""
+        live = {id(g) for g in self.mapping.groups}
+        for k in list(self._group_mask_cache):
+            if k not in live:
+                del self._group_mask_cache[k]
 
     def _draw_selection_border(self, canvas):
         """Outline only the currently-selected group's spaces — keeps the
@@ -1206,21 +1269,18 @@ class Engine:
                             (220, 230, 250), 1, cv2.LINE_AA)
 
     def blit_to_output(self, frame):
-        """Present the latest composited frame to the output window.
-
-        `frame` is None when the GPU pipeline finished cleanly with no
-        CPU side-trip (the live performance path with the HUD closed).
-        It's a numpy RGB ndarray when the HUD is open or mapping/edit
-        mode added cv2-drawn overlays — in that case we re-upload the
-        modified frame and let the GPU sample it to the display res.
-        Either way the final scale to the display window happens on the
-        GPU now (bilinear sampling, no `pygame.transform.smoothscale`).
-        """
-        self.gpu.set_screen_size(self.screen.get_size())
-        if frame is None:
-            self.gpu.present()
-        else:
-            self.gpu.present_cpu_frame(frame)
+        surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
+        target_size = self.screen.get_size()
+        if target_size != (self.w, self.h):
+            # smoothscale (bilinear) instead of scale (nearest-neighbour)
+            # — looks dramatically less pixelated when the render res
+            # doesn't match the display res. smoothscale only supports
+            # 24/32-bit surfaces, hence the fallback.
+            try:
+                surface = pygame.transform.smoothscale(surface, target_size)
+            except (ValueError, pygame.error):
+                surface = pygame.transform.scale(surface, target_size)
+        self.screen.blit(surface, (0, 0))
         pygame.display.flip()
 
     def render(self):
@@ -1231,10 +1291,6 @@ class Engine:
 
     def run(self, control=None):
         from keymap import dispatch, NAV_KEYS, FAV_KEYS, HIT_KEYS, fav_tap, fav_long
-        # The HUD's existence is what tells compose_frame to do a GPU
-        # readback every frame (so the preview surface has pixels to
-        # show); without a HUD we keep the pipeline GPU-resident.
-        self._control_attached = control is not None
         # Enable system key-repeat. We filter below so only NAV_KEYS
         # auto-fire on hold — toggle/hit keys still need a fresh press.
         pygame.key.set_repeat(350, 80)
@@ -1299,12 +1355,6 @@ class Engine:
                     elif is_initial or event.key in NAV_KEYS:
                         dispatch(self, event.key, event.mod)
 
-                    # Mark hit keys as held off REAL events so a missed
-                    # KEYUP can't leave us stuck on (which previously
-                    # made the strobe shader run forever → white-screen).
-                    if event.key in HIT_KEYS:
-                        self._held_hit_keys.add(event.key)
-
                 elif event.type == pygame.KEYUP:
                     if event.key in fav_pressed_at:
                         elapsed = time.time() - fav_pressed_at.pop(event.key)
@@ -1315,12 +1365,10 @@ class Engine:
                             fav_tap(self, event.key)
                         long_press_fired.discard(event.key)
                     held_keys.discard(event.key)
-                    self._held_hit_keys.discard(event.key)
 
                 elif event.type == pygame.WINDOWFOCUSLOST:
                     held_keys.clear()
                     fav_pressed_at.clear()
-                    self._held_hit_keys.clear()
                     long_press_fired.clear()
 
                 elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,

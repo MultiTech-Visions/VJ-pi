@@ -13,33 +13,16 @@ class Clip:
     def __init__(self, path):
         self.path = Path(path)
         self.cap = cv2.VideoCapture(str(self.path))
-        if not self.cap.isOpened():
-            # The Pi's libavcodec may not have decoders for some codecs
-            # (HEVC alpha, ProRes, etc.). Log loudly so the launcher's
-            # vj_last_run.log surfaces the cause when a "favourite" never
-            # plays. The clip stays in the pool but produces None on read.
-            print(f"[vj.clips] WARNING: VideoCapture could not open {self.path}")
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
         self._last = None
-        self._warned_decode = False
 
     def read(self):
-        """Decode the next frame. Returns a HxWx3 uint8 BGR ndarray (the
-        native OpenCV order). The GPU pipeline samples this as a texture
-        and swizzles BGR→RGB inside the shader, so we deliberately skip
-        the per-frame cv2.cvtColor that used to dominate the decode tail."""
         ret, frame = self.cap.read()
         if not ret:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ret, frame = self.cap.read()
         if ret:
-            self._last = frame
-        elif self._last is None and not self._warned_decode:
-            # Capture opened but the first frame never decoded — usually
-            # a codec issue (libavcodec on Pi doesn't have the right
-            # parser). One-shot log so we don't spam.
-            self._warned_decode = True
-            print(f"[vj.clips] WARNING: could not decode first frame of {self.path}")
+            self._last = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return self._last
 
     def release(self):
