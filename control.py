@@ -388,6 +388,37 @@ class ControlWindow:
                 surface.blit(label,
                              (cx - label.get_width() // 2,
                               cy - label.get_height() // 2))
+            elif kind == "fit":
+                group = m.groups[gi]
+                label = self.font_s.render(group.fit_mode, True,
+                                           (180, 200, 240))
+                surface.blit(label,
+                             (cx - label.get_width() // 2,
+                              cy - label.get_height() // 2))
+            elif kind == "zoom_in":
+                pygame.draw.line(surface, (200, 220, 255),
+                                 (cx - r, cy), (cx + r, cy), 2)
+                pygame.draw.line(surface, (200, 220, 255),
+                                 (cx, cy - r), (cx, cy + r), 2)
+            elif kind == "zoom_out":
+                pygame.draw.line(surface, (200, 220, 255),
+                                 (cx - r, cy), (cx + r, cy), 2)
+            elif kind == "reset":
+                label = self.font_s.render("R", True, (220, 220, 240))
+                surface.blit(label,
+                             (cx - label.get_width() // 2,
+                              cy - label.get_height() // 2))
+            elif kind in ("pan_left", "pan_right", "pan_up", "pan_down"):
+                col = (180, 220, 180)
+                if kind == "pan_left":
+                    pts = [(cx + r, cy - r), (cx - r, cy), (cx + r, cy + r)]
+                elif kind == "pan_right":
+                    pts = [(cx - r, cy - r), (cx + r, cy), (cx - r, cy + r)]
+                elif kind == "pan_up":
+                    pts = [(cx - r, cy + r), (cx, cy - r), (cx + r, cy + r)]
+                else:  # pan_down
+                    pts = [(cx - r, cy - r), (cx + r, cy - r), (cx, cy + r)]
+                pygame.draw.polygon(surface, col, pts)
 
     def _draw_mapping_status(self, surface, x, y, width):
         e = self.engine

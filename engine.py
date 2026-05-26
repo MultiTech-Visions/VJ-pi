@@ -709,6 +709,38 @@ class Engine:
                 # Tap the group chip to make this space the picked one.
                 m.select_space(gi, si)
                 self._persist_mapping()
+            elif kind == "fit":
+                m.select_space(gi, si)
+                m.cycle_fit_mode(1)
+                self._persist_mapping()
+            elif kind == "zoom_in":
+                m.select_space(gi, si)
+                m.adjust_zoom(1.15)
+                self._persist_mapping()
+            elif kind == "zoom_out":
+                m.select_space(gi, si)
+                m.adjust_zoom(1 / 1.15)
+                self._persist_mapping()
+            elif kind == "reset":
+                m.select_space(gi, si)
+                m.reset_frame()
+                self._persist_mapping()
+            elif kind == "pan_left":
+                m.select_space(gi, si)
+                m.adjust_pan(-0.1, 0.0)
+                self._persist_mapping()
+            elif kind == "pan_right":
+                m.select_space(gi, si)
+                m.adjust_pan(0.1, 0.0)
+                self._persist_mapping()
+            elif kind == "pan_up":
+                m.select_space(gi, si)
+                m.adjust_pan(0.0, -0.1)
+                self._persist_mapping()
+            elif kind == "pan_down":
+                m.select_space(gi, si)
+                m.adjust_pan(0.0, 0.1)
+                self._persist_mapping()
             return
 
         # 2. Keyboard-fallback Shift+click bind / bind-armed.
@@ -1289,6 +1321,45 @@ class Engine:
                 ty = cy + th // 2
                 cv2.putText(canvas, label, (tx, ty), font, scale,
                             (220, 230, 250), 1, cv2.LINE_AA)
+            elif kind == "fit":
+                label = self.mapping.groups[gi].fit_mode
+                scale = max(0.3, (y1 - y0) / 50.0)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
+                tx = cx - tw // 2
+                ty = cy + th // 2
+                cv2.putText(canvas, label, (tx, ty), font, scale,
+                            (180, 200, 240), 1, cv2.LINE_AA)
+            elif kind == "zoom_in":
+                col = (200, 220, 255)
+                cv2.line(canvas, (cx - r, cy), (cx + r, cy), col, 2, cv2.LINE_AA)
+                cv2.line(canvas, (cx, cy - r), (cx, cy + r), col, 2, cv2.LINE_AA)
+            elif kind == "zoom_out":
+                col = (200, 220, 255)
+                cv2.line(canvas, (cx - r, cy), (cx + r, cy), col, 2, cv2.LINE_AA)
+            elif kind == "reset":
+                col = (220, 220, 240)
+                scale = max(0.3, (y1 - y0) / 40.0)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                label = "R"
+                (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
+                cv2.putText(canvas, label, (cx - tw // 2, cy + th // 2),
+                            font, scale, col, 1, cv2.LINE_AA)
+            elif kind in ("pan_left", "pan_right", "pan_up", "pan_down"):
+                col = (180, 220, 180)
+                if kind == "pan_left":
+                    pts = np.array([[cx + r, cy - r], [cx - r, cy],
+                                    [cx + r, cy + r]], dtype=np.int32)
+                elif kind == "pan_right":
+                    pts = np.array([[cx - r, cy - r], [cx + r, cy],
+                                    [cx - r, cy + r]], dtype=np.int32)
+                elif kind == "pan_up":
+                    pts = np.array([[cx - r, cy + r], [cx, cy - r],
+                                    [cx + r, cy + r]], dtype=np.int32)
+                else:  # pan_down
+                    pts = np.array([[cx - r, cy - r], [cx + r, cy - r],
+                                    [cx, cy + r]], dtype=np.int32)
+                cv2.fillPoly(canvas, [pts], col, cv2.LINE_AA)
 
     def blit_to_output(self, frame):
         surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")

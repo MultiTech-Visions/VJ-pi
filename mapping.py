@@ -769,6 +769,14 @@ class MappingManager:
             kinds.append("delete")
             if len(self.groups[gi].spaces) > 1:
                 kinds.append("unbind")
+            # Per-group video-framing controls (fit / zoom / pan / reset).
+            # Only on the selected space so the strip stays compact when
+            # the operator is just mousing around.
+            kinds.extend([
+                "fit", "zoom_out", "zoom_in",
+                "pan_left", "pan_up", "pan_down", "pan_right",
+                "reset",
+            ])
         else:
             kinds.append("delete")
             # Show "bind into selected" only when a different group's
@@ -778,6 +786,15 @@ class MappingManager:
                 kinds.append("bind")
         kinds.append("group")  # always show the group tag last
         return kinds
+
+    def _toolbar_kind_width(self, kind):
+        """Per-kind width multiplier. Text-bearing buttons get extra room
+        so the label stays legible at the projector's render resolution."""
+        if kind == "group":
+            return self.TOOLBAR_BTN * 1.4
+        if kind == "fit":
+            return self.TOOLBAR_BTN * 1.8
+        return self.TOOLBAR_BTN
 
     def hover_toolbar_buttons(self, gi, si):
         """Returns [(kind, (nx, ny, nw, nh)), ...] for the hover toolbar of
@@ -797,8 +814,7 @@ class MappingManager:
         kinds = self._toolbar_kinds(gi, si)
         btn = self.TOOLBAR_BTN
         gap = self.TOOLBAR_GAP
-        # Group label chip is a bit wider so a 2-digit "G12" fits.
-        widths = [btn * 1.4 if k == "group" else btn for k in kinds]
+        widths = [self._toolbar_kind_width(k) for k in kinds]
         total = sum(widths) + gap * (len(widths) - 1)
 
         # Prefer above the bbox; fall back to below if no room.
