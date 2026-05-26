@@ -485,14 +485,23 @@ class MappingManager:
             else:
                 g.gen_name = random.choice(generatives)
 
-    @staticmethod
-    def _autopilot_fx_step(g):
+    # FX the per-group autopilot is allowed to toggle. `feedback` is
+    # deliberately excluded: in mapping mode it reads from the previous
+    # full canvas (which includes every other group's output), so when
+    # autopilot rolls it on, that group starts ghosting bits of the
+    # other groups — looks like the control HUD bleeding through. The
+    # operator can still toggle feedback manually with F3.
+    _AUTOPILOT_FX_POOL = ("kaleido", "mirror", "rgb_split",
+                          "posterize", "edges", "invert")
+
+    @classmethod
+    def _autopilot_fx_step(cls, g):
         """Nudge one FX on/off. Cap at 3 simultaneous active FX so the
         picture stays readable; 45 % chance to turn one off below the cap
         — same balance pattern as the live-mode autopilot."""
-        from engine import FX_TOGGLES
-        active_on = [k for k in FX_TOGGLES if g.fx_state.get(k)]
-        active_off = [k for k in FX_TOGGLES if not g.fx_state.get(k)]
+        pool = cls._AUTOPILOT_FX_POOL
+        active_on = [k for k in pool if g.fx_state.get(k)]
+        active_off = [k for k in pool if not g.fx_state.get(k)]
         if active_on and (len(active_on) >= 3 or random.random() < 0.45):
             g.fx_state[random.choice(active_on)] = False
         elif active_off:
