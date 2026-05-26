@@ -415,7 +415,7 @@ class MappingManager:
                 g.autopilot_kind = "cycle_clips"
             g._last_change_at = time.time()
             print(f"[vj] autopilot ON for {g.name} — "
-                  f"{g.autopilot_kind} every {g.autopilot_interval_s:.0f}s")
+                  f"{g.autopilot_kind} every {g.autopilot_interval_s:.1f}s")
             # Fire one step right now so the operator gets instant visual
             # confirmation that autopilot is engaged — otherwise the first
             # content change is up to interval_s seconds away and it
@@ -466,6 +466,17 @@ class MappingManager:
                 g.gen_name = generatives[i]
             else:
                 g.gen_name = random.choice(generatives)
+        # Also nudge one FX on/off each tick — same toggle pattern as
+        # live-mode autopilot. Keeps the per-group look evolving instead
+        # of locked to whatever FX was set when autopilot was engaged.
+        # Cap at 3 simultaneous FX so the picture stays readable.
+        from engine import FX_TOGGLES
+        active_on = [k for k in FX_TOGGLES if g.fx_state.get(k)]
+        active_off = [k for k in FX_TOGGLES if not g.fx_state.get(k)]
+        if active_on and (len(active_on) >= 3 or random.random() < 0.45):
+            g.fx_state[random.choice(active_on)] = False
+        elif active_off:
+            g.fx_state[random.choice(active_off)] = True
 
     # ── Edit mode ────────────────────────────────────────────────────
 
