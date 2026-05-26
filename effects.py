@@ -1,6 +1,15 @@
 import numpy as np
 import cv2
 
+# Optional GPU offload for individual generators. Import is best-effort —
+# moderngl may not be installed, EGL may not be available, or shader
+# compilation may fail; each call returns None in those cases and we
+# silently fall back to the CPU code path below.
+try:
+    import gpu as _gpu
+except ImportError:
+    _gpu = None
+
 
 class EffectContext:
     """Per-frame state passed to effects.
@@ -60,6 +69,14 @@ def plasma(ctx):
 
 
 def tunnel(ctx):
+    # GPU path: one fragment shader pass, no per-pixel numpy. Returns
+    # None on any GPU failure (no moderngl, no EGL, V3D shader compile
+    # error, transient render error) and we drop through to the CPU
+    # implementation below.
+    if _gpu is not None:
+        out = _gpu.render("tunnel", ctx.w, ctx.h, ctx.t, ctx.px, ctx.py)
+        if out is not None:
+            return out
     w, h, t = ctx.w, ctx.h, ctx.t
     cx, cy = w * 0.5, h * 0.5
     y0, x0 = _grid(w, h)
