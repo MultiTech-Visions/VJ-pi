@@ -56,10 +56,12 @@ def _coerce_favs(value):
 
 
 class Engine:
-    def __init__(self, cfg, screen):
+    def __init__(self, cfg, window, renderer):
         self.cfg = cfg
-        self.screen = screen
+        self.window = window
+        self.renderer = renderer
         self.w, self.h = cfg.width, cfg.height
+        self._output_tex = self._make_output_texture()
         self.clock = pygame.time.Clock()
         self.start_time = time.time()
 
@@ -469,12 +471,16 @@ class Engine:
     def switch_output_display(self, new_idx):
         """Move the output window to a different display, live.
 
-        Uses the borderless-windowed approach (NOFRAME + display=N + size
-        matching the target display) because SDL2's fullscreen flags are
-        broken for multi-monitor switching — see
-        https://github.com/libsdl-org/SDL/issues/3192. A regular borderless
-        window targeted at `display=N` works on every SDL build and can
-        be re-issued any number of times.
+        Destroys and recreates the SDL2 Window + Renderer + streaming
+        Texture at the new display. The renderer owns the texture, so
+        when the renderer goes away we have to rebuild the texture too.
+
+        Uses a borderless window sized to the target display rather than
+        SDL_WINDOW_FULLSCREEN — SDL2's fullscreen flags don't honour a
+        specific display reliably across monitor switches
+        (https://github.com/libsdl-org/SDL/issues/3192). Centered-on-
+        display N positioning lands the window on the right physical
+        screen without a post-create move.
         """
         if new_idx < 0 or new_idx >= self.num_displays:
             return
@@ -491,16 +497,27 @@ class Engine:
                 dw, dh = sizes[new_idx]
             except (pygame.error, IndexError, AttributeError):
                 dw, dh = self.w, self.h
-            flags = pygame.NOFRAME
             size = (dw, dh)
+            borderless = True
         else:
-            flags = 0
             size = (self.w, self.h)
+            borderless = False
 
+        from pygame._sdl2.video import Window, Renderer
+        pos_val = 0x2FFF0000 | (new_idx & 0xFFFF)
         try:
-            self.screen = pygame.display.set_mode(size, flags, display=new_idx)
-            pygame.display.set_caption("pi-paint VJ — Output")
+            old_window = self.window
+            self.window = Window(
+                "pi-paint VJ — Output",
+                size=size,
+                position=(pos_val, pos_val),
+                borderless=borderless,
+            )
+            self.window.show()
+            self.renderer = Renderer(self.window)
+            self._output_tex = self._make_output_texture()
             self._apply_cursor_visibility()
+            old_window.destroy()
             print(f"[vj] output → display {new_idx} ({size[0]}x{size[1]}, "
                   f"borderless={self.cfg.fullscreen})")
         except (TypeError, pygame.error, ValueError) as exc:
@@ -672,7 +689,7 @@ class Engine:
         cfg.width/height."""
         if not (self.mode == "mapping" and self.mapping.edit_mode):
             return
-        sw, sh = self.screen.get_size()
+        sw, sh = self.window.size
         m = self.mapping
 
         if event.type == pygame.MOUSEMOTION:
@@ -1376,20 +1393,43 @@ class Engine:
                                     [cx, cy + r]], dtype=np.int32)
                 cv2.fillPoly(canvas, [pts], col, cv2.LINE_AA)
 
+    def _make_output_texture(self):
+        """Build the persistent streaming texture for the output window.
+
+        Sized to the canvas (cfg.width × cfg.height) — the renderer's
+        Texture.draw() with no destination rect stretches it to fill
+        the entire window on the GPU, so the previous per-frame
+        pygame.transform.smoothscale is gone. Streaming access lets us
+        rewrite the contents every frame without reallocating GPU
+        memory.
+        """
+        from pygame._sdl2.video import Texture
+        try:
+            return Texture(self.renderer, (self.w, self.h), streaming=True)
+        except (TypeError, pygame.error):
+            # Older pygame builds without the streaming kwarg — fall
+            # back to a static texture that we recreate per frame via
+            # from_surface in blit_to_output.
+            return None
+
     def blit_to_output(self, frame):
+        """Upload `frame` to the output renderer and present.
+
+        Canvas → display scaling happens on the GPU as part of
+        Texture.draw — we no longer pay for pygame.transform.smoothscale
+        every frame, which was the dominant cost at 1080p+ projector
+        resolutions.
+        """
         surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
-        target_size = self.screen.get_size()
-        if target_size != (self.w, self.h):
-            # smoothscale (bilinear) instead of scale (nearest-neighbour)
-            # — looks dramatically less pixelated when the render res
-            # doesn't match the display res. smoothscale only supports
-            # 24/32-bit surfaces, hence the fallback.
-            try:
-                surface = pygame.transform.smoothscale(surface, target_size)
-            except (ValueError, pygame.error):
-                surface = pygame.transform.scale(surface, target_size)
-        self.screen.blit(surface, (0, 0))
-        pygame.display.flip()
+        if self._output_tex is not None:
+            self._output_tex.update(surface)
+            tex = self._output_tex
+        else:
+            from pygame._sdl2.video import Texture
+            tex = Texture.from_surface(self.renderer, surface)
+        self.renderer.clear()
+        tex.draw()
+        self.renderer.present()
 
     def render(self):
         """Convenience: compose + blit (used when there is no control window)."""
