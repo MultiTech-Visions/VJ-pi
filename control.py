@@ -451,7 +451,7 @@ class ControlWindow:
                          border_radius=3)
         surface.blit(chip, chip_rect)
         info = self.font_s.render(
-            f"  {g.autopilot_kind}  ·  every {g.autopilot_interval_s:.0f}s",
+            f"  {g.autopilot_kind}  ·  every {g.autopilot_interval_s:.1f}s",
             True, (180, 180, 200),
         )
         surface.blit(info, (chip_rect.right + 8,
@@ -635,7 +635,7 @@ class ControlWindow:
             if g is not None and g.autopilot_enabled:
                 info = self.font_s.render(
                     f"{g.name}: {g.autopilot_kind} every "
-                    f"{g.autopilot_interval_s:.0f}s   ·   "
+                    f"{g.autopilot_interval_s:.1f}s   ·   "
                     f"←→↑↓ tune this group · Enter Enter on others to add",
                     True, (150, 220, 170),
                 )
