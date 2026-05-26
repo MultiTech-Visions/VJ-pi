@@ -395,15 +395,34 @@ class MappingManager:
         except ValueError:
             g.autopilot_kind = AUTOPILOT_KINDS[0]
 
-    def toggle_autopilot_selected(self):
+    def toggle_autopilot_selected(self, engine=None):
         g = self.selected_group()
         if g is None:
             return
         g.autopilot_enabled = not g.autopilot_enabled
         if g.autopilot_enabled:
+            # Adapt the kind to match the group's current content so
+            # toggling on actually does something visible. If the group's
+            # showing a generative but autopilot_kind is still the
+            # cycle_clips default, swap to cycle_generatives (and vice
+            # versa). The user can override later with Ctrl+K.
+            if (g.content_kind == "generative"
+                    and g.autopilot_kind in ("cycle_clips", "random_clips")):
+                g.autopilot_kind = "cycle_generatives"
+            elif (g.content_kind == "clip"
+                  and g.autopilot_kind in ("cycle_generatives",
+                                           "random_generatives")):
+                g.autopilot_kind = "cycle_clips"
             g._last_change_at = time.time()
             print(f"[vj] autopilot ON for {g.name} — "
                   f"{g.autopilot_kind} every {g.autopilot_interval_s:.0f}s")
+            # Fire one step right now so the operator gets instant visual
+            # confirmation that autopilot is engaged — otherwise the first
+            # content change is up to interval_s seconds away and it
+            # feels broken.
+            if engine is not None:
+                from engine import GENERATIVES
+                self._autopilot_step(g, engine, GENERATIVES)
         else:
             print(f"[vj] autopilot off for {g.name}")
 

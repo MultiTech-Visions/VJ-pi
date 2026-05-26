@@ -766,7 +766,7 @@ class Engine:
         self._persist_mapping()
 
     def mapping_toggle_autopilot(self):
-        self.mapping.toggle_autopilot_selected()
+        self.mapping.toggle_autopilot_selected(engine=self)
         self._persist_mapping()
 
     def mapping_cycle_autopilot_kind(self):
