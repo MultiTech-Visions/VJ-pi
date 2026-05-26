@@ -500,7 +500,7 @@ class Engine:
         try:
             self.screen = pygame.display.set_mode(size, flags, display=new_idx)
             pygame.display.set_caption("pi-paint VJ — Output")
-            pygame.mouse.set_visible(not self.cfg.fullscreen)
+            self._apply_cursor_visibility()
             print(f"[vj] output → display {new_idx} ({size[0]}x{size[1]}, "
                   f"borderless={self.cfg.fullscreen})")
         except (TypeError, pygame.error, ValueError) as exc:
@@ -623,6 +623,11 @@ class Engine:
                 # the operator can immediately start drawing.
                 self.mapping.edit_mode = True
         self._persist_mapping()
+        self._apply_cursor_visibility()
+
+    def _apply_cursor_visibility(self):
+        """Always show the cursor — operator parks it off-screen when
+        they don't want it in the projection."""
         pygame.mouse.set_visible(True)
 
     def toggle_edit_mode(self):

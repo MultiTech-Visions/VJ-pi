@@ -146,7 +146,6 @@ def main():
 
     output_screen = _open_output_window(cfg)
     pygame.display.set_caption("pi-paint VJ — Output")
-    pygame.mouse.set_visible(not cfg.fullscreen)
 
     # NOTE: we *don't* try to move the window to the target display at
     # launch any more — the SDL pump loop took long enough that X11
@@ -155,6 +154,10 @@ def main():
     # the operator can press F12 to move it after launch.
 
     engine = Engine(cfg, output_screen)
+    # Cursor visibility is mode-aware (hidden only in clean live fullscreen);
+    # let the engine decide so a session that boots straight into mapping
+    # mode from persisted state still shows the pointer over the projector.
+    engine._apply_cursor_visibility()
 
     control = None
     if args.control:
