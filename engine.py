@@ -1457,6 +1457,14 @@ class Engine:
                 if event.type == pygame.QUIT:
                     self.running = False
 
+                # Either window's close button shuts the app down. With
+                # both windows being SDL2 Windows, X11 fires per-window
+                # WINDOWCLOSE — pygame.QUIT only ever came from the
+                # legacy display.set_mode window so the X used to do
+                # nothing on the HUD and now nothing on either.
+                elif event.type == pygame.WINDOWCLOSE:
+                    self.running = False
+
                 elif event.type == pygame.KEYDOWN:
                     is_initial = event.key not in held_keys
                     held_keys.add(event.key)
