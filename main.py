@@ -38,9 +38,10 @@ def parse_args():
 def _set_sdl_hints():
     """SDL behaviour hints — must be set BEFORE pygame.init().
 
-    Output window position / display is handled via set_mode(display=N) and
-    NOFRAME (see _open_output_window), so no SDL_VIDEO_FULLSCREEN_DISPLAY
-    or SDL_VIDEO_WINDOW_POS needed any more.
+    Output window position / display is handled by constructing the SDL2
+    Window with `position=WINDOWPOS_CENTERED_DISPLAY(N)` (see
+    _open_output_window), so no SDL_VIDEO_FULLSCREEN_DISPLAY or
+    SDL_VIDEO_WINDOW_POS env vars needed any more.
     """
     # Don't grab the keyboard exclusively — the control HUD window needs
     # to receive its own clicks without focus getting yanked away.
@@ -58,32 +59,50 @@ def _display_size(display_idx, fallback):
 
 
 def _open_output_window(cfg):
-    """Open the output window.
+    """Open the output window as an SDL2 Window + Renderer pair.
+
+    Returns (window, renderer). The renderer is hardware-accelerated by
+    default on V3D, so the per-frame canvas → display upscale happens on
+    the GPU instead of `pygame.transform.smoothscale` on the CPU.
 
     For "fullscreen" we open a *borderless window sized to the target
     display* rather than using SDL_WINDOW_FULLSCREEN. SDL2 has a long-
     standing bug (https://github.com/libsdl-org/SDL/issues/3192) where
     its fullscreen flags don't honour a specific display reliably and
-    can't be moved between monitors at runtime. A NOFRAME window with
-    `display=N` and size = display N's resolution works on every SDL
-    build and can be re-opened on any monitor by calling set_mode again.
-
-    Manual frame scaling already happens in Engine.blit_to_output, so
-    rendering at 854x480 onto a display-sized surface is fine.
+    can't be moved between monitors at runtime. A borderless window
+    centered on display N works on every SDL build and can be re-created
+    on any monitor at runtime (see Engine.switch_output_display).
     """
+    from pygame._sdl2.video import Window, Renderer
     if cfg.fullscreen:
         dw, dh = _display_size(cfg.display, (cfg.width, cfg.height))
-        flags = pygame.NOFRAME
         size = (dw, dh)
+        borderless = True
     else:
-        flags = 0
         size = (cfg.width, cfg.height)
+        borderless = False
+    # SDL_WINDOWPOS_CENTERED_DISPLAY(N) = 0x2FFF0000 | N — places the new
+    # window on a specific physical display without needing a separate
+    # post-create move (which X11 occasionally drops on the floor).
+    pos_val = 0x2FFF0000 | (cfg.display & 0xFFFF)
     try:
-        return pygame.display.set_mode(size, flags, display=cfg.display)
+        win = Window(
+            "pi-paint VJ — Output",
+            size=size,
+            position=(pos_val, pos_val),
+            borderless=borderless,
+        )
     except (TypeError, pygame.error, ValueError) as exc:
-        print(f"[vj] set_mode(display={cfg.display}) failed: {exc!r}; "
+        print(f"[vj] Window(display={cfg.display}) failed: {exc!r}; "
               f"falling back to default display")
-        return pygame.display.set_mode(size, flags)
+        win = Window(
+            "pi-paint VJ — Output",
+            size=size,
+            borderless=borderless,
+        )
+    win.show()
+    renderer = Renderer(win)
+    return win, renderer
 
 
 def _open_control_window(size, display_idx):
@@ -144,16 +163,15 @@ def main():
         gen_render_scale=max(0.1, min(1.0, args.gen_render_scale)),
     )
 
-    output_screen = _open_output_window(cfg)
-    pygame.display.set_caption("pi-paint VJ — Output")
+    output_window, output_renderer = _open_output_window(cfg)
 
     # NOTE: we *don't* try to move the window to the target display at
     # launch any more — the SDL pump loop took long enough that X11
     # marked the window as unresponsive and the WM force-closed it on
-    # first click. If pygame opened the window on the wrong monitor,
-    # the operator can press F12 to move it after launch.
+    # first click. If the window opened on the wrong monitor, the
+    # operator can press F12 to move it after launch.
 
-    engine = Engine(cfg, output_screen)
+    engine = Engine(cfg, output_window, output_renderer)
     # Cursor visibility is mode-aware (hidden only in clean live fullscreen);
     # let the engine decide so a session that boots straight into mapping
     # mode from persisted state still shows the pointer over the projector.
