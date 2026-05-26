@@ -402,6 +402,10 @@ class MappingManager:
         g.autopilot_enabled = not g.autopilot_enabled
         if g.autopilot_enabled:
             g._last_change_at = time.time()
+            print(f"[vj] autopilot ON for {g.name} — "
+                  f"{g.autopilot_kind} every {g.autopilot_interval_s:.0f}s")
+        else:
+            print(f"[vj] autopilot off for {g.name}")
 
     def tick_autopilot(self, engine, now):
         """Advance each group's content if its autopilot interval elapsed."""

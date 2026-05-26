@@ -42,9 +42,11 @@ MAPPING_KEY_CHEAT = [
     ("Ctrl+Back",    "Delete current group"),
     ("Ctrl+= / -",   "Add / remove a space in current group"),
     ("Ctrl+G",       "Cycle grid layout (1·2x1·2x2·3x2·3x3·4x2·4x3)"),
-    ("Ctrl+A",       "Toggle autopilot on current group"),
-    ("Ctrl+K",       "Cycle autopilot kind"),
-    ("Ctrl+, / .",   "Autopilot interval ±1s"),
+    ("Enter Enter",  "Toggle AUTOPILOT on current group (multiple run in parallel)"),
+    ("←→↑↓ (auto)",  "Tune the running group's interval (↑→ slower · ↓← faster)"),
+    ("Ctrl+A",       "Toggle autopilot on current group (alt to Enter Enter)"),
+    ("Ctrl+K",       "Cycle autopilot kind (cycle/random · clips/generatives)"),
+    ("Ctrl+, / .",   "Autopilot interval ±1s (alt to arrows)"),
     ("Ctrl+B",       "Toggle borders"),
     ("Ctrl+C",       "Cycle border colour"),
     ("Ctrl+[ / ]",   "Border intensity ±10%"),
@@ -557,6 +559,7 @@ class ControlWindow:
     def _draw_badges(self, surface, x, y):
         e = self.engine
         badges = []
+        n_group_ap = 0
         if e.mode == "mapping":
             if e.mapping.edit_mode:
                 badges.append(("MAPPING · EDIT", (255, 240, 120)))
@@ -564,6 +567,11 @@ class ControlWindow:
                 badges.append(("MAPPING · PERFORM", (160, 220, 255)))
             if e.mapping.bind_armed:
                 badges.append(("BIND: next click", (200, 255, 200)))
+            n_group_ap = sum(1 for g in e.mapping.groups if g.autopilot_enabled)
+            if n_group_ap > 0:
+                label = ("AUTOPILOT" if n_group_ap == 1
+                         else f"AUTOPILOT × {n_group_ap}")
+                badges.append((label, (120, 220, 140)))
         if getattr(e, "auto_mode", False):
             badges.append(("AUTOPILOT", (120, 220, 140)))
         if e.blackout:
@@ -589,6 +597,23 @@ class ControlWindow:
                 f"↑↓ tune clip · ←→ tune fx",
                 True, (150, 220, 170),
             )
+            surface.blit(info, (x, end_y))
+            end_y += 18
+        elif n_group_ap > 0:
+            g = e.mapping.selected_group()
+            if g is not None and g.autopilot_enabled:
+                info = self.font_s.render(
+                    f"{g.name}: {g.autopilot_kind} every "
+                    f"{g.autopilot_interval_s:.0f}s   ·   "
+                    f"←→↑↓ tune this group · Enter Enter on others to add",
+                    True, (150, 220, 170),
+                )
+            else:
+                info = self.font_s.render(
+                    f"{n_group_ap} group(s) on autopilot   ·   "
+                    f"Tab to a group · Enter Enter to toggle",
+                    True, (150, 220, 170),
+                )
             surface.blit(info, (x, end_y))
             end_y += 18
         return end_y

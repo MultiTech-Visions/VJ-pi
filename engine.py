@@ -531,21 +531,38 @@ class Engine:
             return
         keys = pygame.key.get_pressed()
         if self.auto_mode:
-            # Up = faster clip changes, Down = slower
-            # Right = faster FX changes, Left = slower
+            # Up/Right = slower (more seconds); Down/Left = faster.
             if keys[pygame.K_UP]:
-                self.auto_clip_interval = max(1.0, self.auto_clip_interval - dt * 4.0)
-            if keys[pygame.K_DOWN]:
                 self.auto_clip_interval = min(60.0, self.auto_clip_interval + dt * 4.0)
+            if keys[pygame.K_DOWN]:
+                self.auto_clip_interval = max(1.0, self.auto_clip_interval - dt * 4.0)
             if keys[pygame.K_RIGHT]:
-                self.auto_fx_interval   = max(0.5, self.auto_fx_interval   - dt * 3.0)
-            if keys[pygame.K_LEFT]:
                 self.auto_fx_interval   = min(30.0, self.auto_fx_interval  + dt * 3.0)
+            if keys[pygame.K_LEFT]:
+                self.auto_fx_interval   = max(0.5, self.auto_fx_interval   - dt * 3.0)
             return
 
         step = PARAM_RATE * dt
         if self._in_mapping():
             g = self.mapping.selected_group()
+            # When the selected group's autopilot is running, arrows tune
+            # THAT group's interval (each group keeps its own setting so
+            # multiple groups can run side by side autonomously).
+            # Up/Right = slower (more seconds); Down/Left = faster.
+            if g.autopilot_enabled:
+                ap_rate = dt * 4.0
+                ap_changed = False
+                if keys[pygame.K_UP] or keys[pygame.K_RIGHT]:
+                    g.autopilot_interval_s = min(300.0,
+                                                 g.autopilot_interval_s + ap_rate)
+                    ap_changed = True
+                if keys[pygame.K_DOWN] or keys[pygame.K_LEFT]:
+                    g.autopilot_interval_s = max(1.0,
+                                                 g.autopilot_interval_s - ap_rate)
+                    ap_changed = True
+                if ap_changed:
+                    self._persist_mapping()
+                return
             if keys[pygame.K_LEFT]:
                 g.param_x = max(0.0, g.param_x - step)
             if keys[pygame.K_RIGHT]:
@@ -579,6 +596,11 @@ class Engine:
         else:
             self.mode = "mapping"
             self.mapping.enabled = True
+            # Mapping mode uses per-group autopilots; clear any global
+            # autopilot left over from live mode so the badges and arrow
+            # keys aren't ambiguous.
+            if self.auto_mode:
+                self.disengage_auto()
             # Detect a "pristine" mapping config (the default single
             # fullscreen blackout group with no real content) and start in
             # EDIT mode with an empty canvas so the operator can immediately
@@ -1316,8 +1338,20 @@ class Engine:
                     # Autopilot Enter handling — engage (double-tap when off)
                     # or disengage (single tap when on). Enter itself never
                     # falls through to any further action.
+                    # In MAPPING perform mode it toggles the selected group's
+                    # per-group autopilot instead — each group keeps its own
+                    # state so several can run in parallel.
                     if is_initial and event.key == pygame.K_RETURN:
                         now_t = time.time()
+                        in_mapping_perform = (self.mode == "mapping"
+                                              and not self.mapping.edit_mode)
+                        if in_mapping_perform:
+                            if now_t - self.last_enter_t < 0.6:
+                                self.mapping_toggle_autopilot()
+                                self.last_enter_t = 0.0
+                            else:
+                                self.last_enter_t = now_t
+                            continue
                         if self.auto_mode:
                             self.disengage_auto()
                             self.last_enter_t = 0.0
@@ -1328,10 +1362,15 @@ class Engine:
                             self.last_enter_t = now_t
                         continue
 
-                    # Any non-arrow key during autopilot returns control to
-                    # the operator AND still performs its action — perfect
-                    # for "ooh, hit B for an RGB smash right now".
-                    if is_initial and self.auto_mode and event.key not in arrow_keys:
+                    # Any non-arrow key during LIVE autopilot returns control
+                    # to the operator AND still performs its action — perfect
+                    # for "ooh, hit B for an RGB smash right now". Mapping
+                    # mode's per-group autopilots stay engaged across other
+                    # keypresses (Tab to another group, etc.) so the show
+                    # keeps running.
+                    if (is_initial and self.auto_mode
+                            and event.key not in arrow_keys
+                            and self.mode != "mapping"):
                         self.disengage_auto()
 
                     # In mapping/edit mode the operator is laying out spaces,
