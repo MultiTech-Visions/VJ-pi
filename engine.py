@@ -626,11 +626,9 @@ class Engine:
         self._apply_cursor_visibility()
 
     def _apply_cursor_visibility(self):
-        """Cursor stays hidden only in clean live fullscreen — mapping mode
-        always needs it for clicking boxes, toolbar buttons, and corners on
-        the projector output."""
-        visible = (not self.cfg.fullscreen) or (self.mode == "mapping")
-        pygame.mouse.set_visible(visible)
+        """Always show the cursor — operator parks it off-screen when
+        they don't want it in the projection."""
+        pygame.mouse.set_visible(True)
 
     def toggle_edit_mode(self):
         if self.mode != "mapping":
