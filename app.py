@@ -1148,13 +1148,28 @@ class VJApp(Gtk.Application):
         # closure doesn't reach into self.
         norm_sink = norm.get_static_pad("sink")
         def on_pad_added(_decoder, new_pad):
-            caps = new_pad.get_current_caps()
-            if caps is None:
-                return
-            if not caps.get_structure(0).get_name().startswith("video/"):
-                return  # ignore audio
             if norm_sink.is_linked():
                 return
+            # decodebin3 emits pad-added BEFORE caps are negotiated
+            # — current caps are None at this point, which made the
+            # old caps-based video/audio filter bail and leave
+            # qtdemux unable to push (results in "not-linked"
+            # crash). Use the GstStream API instead: decodebin3
+            # attaches a GstStream to each pad with its type
+            # already known, so we can filter to video pads
+            # before caps come in.
+            stream = new_pad.get_stream() if hasattr(new_pad, "get_stream") else None
+            if stream is not None:
+                if not (stream.get_stream_type() & Gst.StreamType.VIDEO):
+                    return  # ignore audio / text / unknown
+            else:
+                # Fallback (older decodebin): caps should be set
+                # when pad-added fires.
+                caps = new_pad.get_current_caps()
+                if caps is None:
+                    return
+                if not caps.get_structure(0).get_name().startswith("video/"):
+                    return
             new_pad.link(norm_sink)
         decoder.connect("pad-added", on_pad_added)
 
