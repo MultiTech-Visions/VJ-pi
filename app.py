@@ -1,37 +1,35 @@
 """GTK3 application + GStreamer pipeline.
 
-Architecture (single GL/EGL context, V3D-native on Pi 5):
+Architecture (phase 4a — swappable source, stable downstream):
 
-  CLIP source:
-    filesrc ─ decodebin ─[dynamic pad]─▶ downstream
-                                          │
-        videoconvert ─ videoscale ─ glupload ─ tee ─┬─▶ gldownload ─ videoconvert ─ gtksink (output)
-                                                    └─▶ gldownload ─ videoconvert ─ gtksink (HUD)
+  source_bin (rebuilt per source change):
+    CLIP:       filesrc ─ decodebin ─ videoconvert ─ videoscale ─ glupload ─[ghost src]
+    GENERATOR:  videotestsrc-black ─ glupload ─ glshader[GLSL]   ─────────────[ghost src]
+                                                  GL texture, 1280×720
+                                                       │
+                                                       ▼
+  downstream_bin (lives for the whole session):
+                tee ─┬─▶ queue ─ gldownload ─ videoconvert ─ gtksink (output)
+                     └─▶ queue ─ gldownload ─ videoconvert ─ gtksink (HUD)
 
-  GENERATOR source (phase 3 — tunnel, plasma, …):
-    videotestsrc ─ glupload ─ glshader[GLSL] ─ tee ─┬─▶ gldownload ─ videoconvert ─ gtksink (output)
-                                                    └─▶ gldownload ─ videoconvert ─ gtksink (HUD)
+Both source-bin variants output the same caps (GL texture at canvas
+resolution), so we can tear down and rebuild the source side without
+disturbing the GL context that the downstream owns. That avoids both
+the glshader recompile cost on each source change AND the
+gtkglsink-style dual-context bug we already know about on V3D.
 
-The tee forks GL textures by refcount (zero-copy). Each branch then
-downloads back to CPU memory because `gtksink` is a CPU sink — it
-accepts `video/x-raw` (system memory), not `video/x-raw(memory:GLMemory)`.
+This is the layer the rest of phases 4–6 will build on:
+  4a — source switching (clips + generators) via keyboard  ← here
+  4b — overlay layer via compositor
+  4c — favourites grid (tap/hold on 1-0 and Q-P)
+  5  — mapping mode (groups, spaces, fit modes)
+  6  — FX chain, hits, autopilot, polish
 
-This intentionally avoids `gtkglsink` (the GL-aware variant): each
-gtkglsink widget creates its own GL context, and Pi 5's V3D driver
-leaks state between contexts in the same process — the bug that
-killed the previous architecture. One pipeline-internal GL context
-+ CPU presentation = the safe combination.
-
-Phase 3 lands generators as GLSL fragment shaders running through
-`glshader` in the same pipeline. CPU stays out of the per-pixel math
-entirely; the shader writes the framebuffer on V3D and the tee
-forks the GL texture into both sinks. No numpy, no cv2 — just GLSL
-and the same dual-sink downstream that already works for clips.
-
-The shader uniforms `time` (float, seconds since start) and
-`v_texcoord` (vec2, 0..1) are provided by gstreamer's glshader
-plugin. The GLSL targets GLES 2.0 (`#version 100`) for max
-compatibility with V3D's exposed profile.
+GTK3 + gtksink because Pi OS Bookworm's apt doesn't carry
+gst-plugins-rs (where gtk4paintablesink lives). Single GL context
+through gstreamer's gl* family. CPU presentation via gldownload
+before the gtksinks — see CLAUDE.md for the V3D-dual-context
+post-mortem that justifies all of this.
 """
 import sys
 from pathlib import Path
@@ -46,21 +44,18 @@ from gi.repository import Gtk, Gst, Gdk, Gio, GLib  # noqa: E402
 HERE = Path(__file__).resolve().parent
 CLIPS_DIR = HERE / "assets" / "clips"
 
-# Canvas resolution. Sources get scaled to this before glupload so the
-# downstream chain operates on a fixed-size buffer regardless of clip
-# resolution. 1280x720 keeps the per-frame cost modest on Pi 5 while
-# looking sharp on a 1080p projector after the final upscale.
+# Canvas resolution. Source bins normalise to this before the
+# downstream tee, so the GL texture flowing through is always
+# 1280×720 regardless of clip resolution.
 CANVAS_W = 1280
 CANVAS_H = 720
 
-# Downstream chain for the CLIP source — normalises to canvas size,
-# uploads to GL, forks via tee, downloads back to CPU for each
-# gtksink. Built once via parse_bin_from_description so decodebin's
-# dynamic pad can be linked to its single ghost sink.
-DOWNSTREAM_CLIP_DESC = (
-    "videoconvert ! videoscale ! "
-    f"video/x-raw,width={CANVAS_W},height={CANVAS_H} ! "
-    "glupload ! "
+# Downstream bin — stable for the lifetime of the app. tee forks
+# the GL texture by refcount; each branch downloads to CPU just
+# before its gtksink (gtksink doesn't accept GLMemory). The
+# downstream's ghost sink pad accepts GL textures, so source-bin
+# replacement is a clean unlink/link without touching GL state.
+DOWNSTREAM_DESC = (
     "tee name=t allow-not-linked=true "
     "t. ! queue max-size-buffers=2 leaky=downstream ! "
     "  gldownload ! videoconvert ! "
@@ -69,26 +64,6 @@ DOWNSTREAM_CLIP_DESC = (
     "  gldownload ! videoconvert ! "
     "  gtksink name=hud_sink sync=false"
 )
-
-# Full pipeline string for GENERATOR sources — videotestsrc gives us a
-# dummy framebuffer at canvas size; glshader ignores it and writes its
-# own procedural content; tee + two sinks identical to the clip path.
-# We use parse_launch here (not parse_bin_from_description) because
-# there's no dynamic pad to wrangle.
-def _generator_pipeline(shader_name):
-    return (
-        f"videotestsrc is-live=true pattern=black ! "
-        f"video/x-raw,width={CANVAS_W},height={CANVAS_H},framerate=30/1 ! "
-        f"glupload ! "
-        f"glshader name={shader_name} ! "
-        f"tee name=t allow-not-linked=true "
-        f"t. ! queue max-size-buffers=2 leaky=downstream ! "
-        f"  gldownload ! videoconvert ! "
-        f"  gtksink name=output_sink sync=false "
-        f"t. ! queue max-size-buffers=2 leaky=downstream ! "
-        f"  gldownload ! videoconvert ! "
-        f"  gtksink name=hud_sink sync=false"
-    )
 
 
 # ── GLSL fragment shaders ─────────────────────────────────────────
@@ -99,9 +74,6 @@ def _generator_pipeline(shader_name):
 #   uniform float time        — running time in seconds
 #   uniform sampler2D tex     — input texture (we ignore it; the
 #                                shader is fully generative)
-# We hardcode canvas dimensions (1280×720) in the shader rather
-# than uniforming them — they're stable for a session, and avoiding
-# the uniform lookup is a wash either way.
 
 PLASMA_SHADER = """\
 #version 100
@@ -129,10 +101,6 @@ void main() {
 }
 """
 
-# Direct port of the original effects.tunnel() — a radial
-# checkerboard tunnel with hue cycling. `chk` (0 or 1) modulates the
-# brightness channel of HSV so the checker squares alternate
-# colour/black; hue varies along the angle plus a time drift.
 TUNNEL_SHADER = """\
 #version 100
 #ifdef GL_ES
@@ -150,8 +118,6 @@ vec3 hsv2rgb(vec3 c) {
 const float PI = 3.14159265358979;
 
 void main() {
-    // v_texcoord is 0..1; centre on origin and scale to pixel-ish
-    // coords so the 200.0 / r factor matches the CPU original.
     vec2 pix = (v_texcoord - 0.5) * vec2(1280.0, 720.0);
     float r = length(pix) + 1.0;
     float a = atan(pix.y, pix.x);
@@ -169,30 +135,27 @@ GENERATORS = {
 }
 
 
-def _pick_first_clip():
-    """Return the first .mp4 / .mov clip in assets/clips/, or None.
+def _list_clips():
+    """Sorted list of .mp4 / .mov / .MP4 / .MOV files in assets/clips/.
 
-    Phase 2 plays a single hardcoded clip — whichever sorts first.
-    Phase 4 swaps this for the full clip pool + favourites + keyboard
-    selection.
+    Empty list if the folder doesn't exist or is empty. Phase 4
+    cycles through this list with -/= keys.
     """
     if not CLIPS_DIR.exists():
-        return None
-    candidates = (sorted(CLIPS_DIR.glob("*.mp4"))
-                  + sorted(CLIPS_DIR.glob("*.mov"))
-                  + sorted(CLIPS_DIR.glob("*.MP4"))
-                  + sorted(CLIPS_DIR.glob("*.MOV")))
-    return candidates[0] if candidates else None
+        return []
+    return (sorted(CLIPS_DIR.glob("*.mp4"))
+            + sorted(CLIPS_DIR.glob("*.mov"))
+            + sorted(CLIPS_DIR.glob("*.MP4"))
+            + sorted(CLIPS_DIR.glob("*.MOV")))
 
 
 class VJApp(Gtk.Application):
-    """GTK3 + GStreamer application skeleton for the VJ rewrite.
+    """GTK3 + GStreamer application owning the pipeline and the two
+    top-level windows.
 
-    Owns the GStreamer pipeline and the two top-level windows
-    (projector output + control HUD). source_kind selects which
-    Gst pipeline gets built — currently `clip` (the default, plays
-    the first .mp4 in assets/clips/) or `plasma` / `tunnel` (GPU
-    generators via glshader).
+    Pipeline structure: one stable downstream bin (tee + 2 sinks) +
+    one swappable source bin (clip OR generator). Source switches
+    happen via keyboard; the downstream stays alive.
     """
 
     def __init__(self, source_kind="clip", single_screen=False):
@@ -200,13 +163,28 @@ class VJApp(Gtk.Application):
             application_id="com.multitech.vjpi",
             flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
         )
-        self.source_kind = source_kind
+        # Initial source from CLI flag — phase 4 keys flip it at
+        # runtime; the flag is just the starting state.
+        self.initial_source_kind = source_kind
         self.single_screen = single_screen
+
         self.pipeline = None
         self.output_window = None
         self.hud_window = None
         self._downstream_bin = None
-        self._status_text = ""
+        self._source_bin = None
+        self._status_label = None
+
+        # Clip pool state — list of paths + index of the last clip
+        # that was active. We remember the index even when the
+        # current source is a generator so `-/=` can return to the
+        # previous-or-next clip naturally.
+        self._clips = _list_clips()
+        self._current_clip_idx = 0
+        # Tracks what the current source bin is rendering, for
+        # status display and key routing. ("clip", path) or
+        # ("generator", name).
+        self._current_source = None
 
     # ── GTK Application lifecycle ──────────────────────────────────
 
@@ -216,14 +194,35 @@ class VJApp(Gtk.Application):
 
     def do_activate(self):
         Gst.init(None)
-        print(f"[vj] source: {self.source_kind}")
+        print(f"[vj] initial source: {self.initial_source_kind}")
 
-        if self.source_kind in GENERATORS:
-            ok = self._build_generator_pipeline(self.source_kind)
-        else:
-            ok = self._build_clip_pipeline()
-        if not ok:
+        # Build the stable downstream bin once. The source bin gets
+        # constructed below and added to the same pipeline.
+        self.pipeline = Gst.Pipeline.new("vj-pipeline")
+        try:
+            self._downstream_bin = Gst.parse_bin_from_description(
+                DOWNSTREAM_DESC, True
+            )
+        except GLib.Error as exc:
+            self._fail(
+                "Could not build the downstream GStreamer chain.\n"
+                f"  Error: {exc.message}\n\n"
+                "Hint: is `gstreamer1.0-gtk3` installed? Re-run setup.sh."
+            )
             return
+        self._downstream_bin.set_name("downstream")
+        self.pipeline.add(self._downstream_bin)
+
+        # Pick the initial source. If the user asked for clip mode
+        # but there are no clips, fall back to plasma so they get
+        # something on-screen rather than a silent failure.
+        if self.initial_source_kind in GENERATORS:
+            self._install_generator(self.initial_source_kind, start_state=Gst.State.NULL)
+        elif self._clips:
+            self._install_clip(0, start_state=Gst.State.NULL)
+        else:
+            print("[vj] no clips found; falling back to plasma generator")
+            self._install_generator("plasma", start_state=Gst.State.NULL)
 
         if not self._bind_sinks_to_windows():
             return
@@ -235,7 +234,6 @@ class VJApp(Gtk.Application):
         self.output_window.show_all()
         self.hud_window.show_all()
         if self.single_screen:
-            # Both on display 0, neither fullscreen — test mode.
             self._move_window_to_monitor(self.output_window, 0, fullscreen=False)
             self._move_window_to_monitor(self.hud_window, 0, fullscreen=False)
         else:
@@ -250,136 +248,165 @@ class VJApp(Gtk.Application):
             self.pipeline.set_state(Gst.State.NULL)
         Gtk.Application.do_shutdown(self)
 
-    # ── Pipeline construction ─────────────────────────────────────
+    # ── Source-bin builders ────────────────────────────────────────
 
-    def _build_clip_pipeline(self):
-        """Phase 2 clip path: filesrc + decodebin → downstream bin.
+    def _build_clip_source_bin(self, clip_path):
+        """Build a Gst.Bin: filesrc → decodebin → videoconvert →
+        videoscale → capsfilter → glupload. The bin has a ghost src
+        pad outputting GL textures at CANVAS_W × CANVAS_H.
 
-        Returns True on success, False on fatal setup error (in
-        which case _fail has already been called).
+        decodebin's pad-added is hooked up to link into the post-
+        decoder normalisation chain at runtime — same pattern as
+        phase 2, just localised to this bin.
         """
-        clip = _pick_first_clip()
-        if clip is None:
-            self._fail(
-                f"No clips found in {CLIPS_DIR}\n\n"
-                "Drop an .mp4 or .mov file in there and re-launch.\n"
-                "Or try Test Tunnel.sh / Test Plasma.sh for a GPU\n"
-                "generator that doesn't need a clip."
-            )
-            return False
-        print(f"[vj] playing clip: {clip.name}")
-        self._status_text = f"phase 2 — playing: {clip.name}"
+        bin_name = f"clip-source-{id(clip_path) & 0xffff:04x}"
+        outer = Gst.Bin.new(bin_name)
 
-        # Build manually so we can attach decodebin's dynamic video
-        # pad to the downstream chain at runtime. parse_launch can
-        # theoretically handle this for video-only files but races
-        # on audio+video mp4 (the deferred link goes to whichever
-        # pad emerges first). Doing it explicitly removes the race.
-        self.pipeline = Gst.Pipeline.new("vj-pipeline")
+        filesrc = Gst.ElementFactory.make("filesrc", None)
+        filesrc.set_property("location", str(clip_path))
 
-        source = Gst.ElementFactory.make("filesrc", "source")
-        source.set_property("location", str(clip))
+        decoder = Gst.ElementFactory.make("decodebin", None)
 
-        decoder = Gst.ElementFactory.make("decodebin", "decoder")
-        decoder.connect("pad-added", self._on_decoder_pad_added)
+        # Post-decoder normalisation: bring whatever decodebin
+        # produces up/down to canvas resolution + raw video, then
+        # upload to GL. parse_bin_from_description gives us ghost
+        # pads on the unconnected ends (videoconvert sink + glupload
+        # src), which we use below.
+        norm = Gst.parse_bin_from_description(
+            f"videoconvert ! videoscale ! "
+            f"video/x-raw,width={CANVAS_W},height={CANVAS_H} ! "
+            f"glupload",
+            True,
+        )
 
-        try:
-            self._downstream_bin = Gst.parse_bin_from_description(
-                DOWNSTREAM_CLIP_DESC, True
-            )
-        except GLib.Error as exc:
-            self._fail(
-                "Could not build the downstream GStreamer chain.\n"
-                f"  Error: {exc.message}\n\n"
-                "Hint: is `gstreamer1.0-gtk3` installed? Re-run setup.sh."
-            )
-            return False
-        self._downstream_bin.set_name("downstream")
+        outer.add(filesrc)
+        outer.add(decoder)
+        outer.add(norm)
+        if not filesrc.link(decoder):
+            raise RuntimeError("failed to link filesrc → decodebin")
 
-        for el in (source, decoder, self._downstream_bin):
-            self.pipeline.add(el)
-        if not source.link(decoder):
-            self._fail("Could not link filesrc → decodebin")
-            return False
-        # decodebin → downstream is linked in _on_decoder_pad_added
-        # once decodebin figures out the stream type.
-        return True
+        # decodebin → norm gets linked once decodebin figures out the
+        # stream type. Bind the handler to this bin's `norm` so the
+        # closure doesn't reach into self.
+        norm_sink = norm.get_static_pad("sink")
+        def on_pad_added(_decoder, new_pad):
+            caps = new_pad.get_current_caps()
+            if caps is None:
+                return
+            if not caps.get_structure(0).get_name().startswith("video/"):
+                return  # ignore audio
+            if norm_sink.is_linked():
+                return
+            new_pad.link(norm_sink)
+        decoder.connect("pad-added", on_pad_added)
 
-    def _build_generator_pipeline(self, name):
-        """Phase 3 generator path: videotestsrc → glupload → glshader
-        → tee → 2× sinks. The whole pipeline is a single parse_launch
-        string — no dynamic pads to handle.
+        # Ghost the GL texture out of the bin so the outer pipeline
+        # can link directly to downstream.
+        norm_src = norm.get_static_pad("src")
+        outer.add_pad(Gst.GhostPad.new("src", norm_src))
+        return outer
+
+    def _build_generator_source_bin(self, name):
+        """Build a Gst.Bin: videotestsrc-black → glupload → glshader.
+        Output: GL textures at canvas resolution. parse_bin_from_
+        description ghosts the unconnected glshader src pad as the
+        bin's "src" pad — perfect for linking to downstream.
         """
         if name not in GENERATORS:
-            self._fail(f"Unknown generator: {name!r}")
-            return False
-        print(f"[vj] running generator: {name}")
-        self._status_text = f"phase 3 — generator: {name}"
-
-        try:
-            self.pipeline = Gst.parse_launch(_generator_pipeline(name))
-        except GLib.Error as exc:
-            self._fail(
-                "Could not build the generator pipeline.\n"
-                f"  Error: {exc.message}\n\n"
-                "Hint: is `gstreamer1.0-gl` installed? Re-run setup.sh."
-            )
-            return False
-
-        # glshader's `fragment` property takes the GLSL source as a
-        # string. Set it via property rather than inline in the
-        # parse_launch caps to keep the shader text out of the
-        # parse_launch grammar (which would need escaping).
-        shader = self.pipeline.get_by_name(name)
-        if shader is None:
-            self._fail("glshader element not found in parsed pipeline")
-            return False
+            raise ValueError(f"unknown generator {name!r}")
+        outer = Gst.parse_bin_from_description(
+            f"videotestsrc is-live=true pattern=black ! "
+            f"video/x-raw,width={CANVAS_W},height={CANVAS_H},framerate=30/1 ! "
+            f"glupload ! "
+            f"glshader name=shader",
+            True,
+        )
+        outer.set_name(f"generator-source-{name}")
+        shader = outer.get_by_name("shader")
         shader.set_property("fragment", GENERATORS[name])
-        return True
+        return outer
+
+    # ── Source-bin install / replace ───────────────────────────────
+
+    def _install_clip(self, idx, start_state=Gst.State.PLAYING):
+        """Make assets/clips/<sorted>[idx] the active source.
+
+        Used by both first-launch (start_state=NULL — caller will
+        promote the pipeline to PLAYING after) and runtime swaps
+        (start_state=PLAYING — we restart the source side).
+        """
+        if not self._clips:
+            print("[vj] no clips loaded — ignoring clip switch")
+            return
+        idx = idx % len(self._clips)
+        clip = self._clips[idx]
+        try:
+            new_bin = self._build_clip_source_bin(clip)
+        except Exception as exc:
+            print(f"[vj] failed to build clip source ({clip.name}): {exc!r}")
+            return
+        self._current_clip_idx = idx
+        self._current_source = ("clip", clip)
+        self._swap_source_bin(new_bin, start_state)
+        print(f"[vj] → clip {idx + 1}/{len(self._clips)}: {clip.name}")
+        self._refresh_status()
+
+    def _install_generator(self, name, start_state=Gst.State.PLAYING):
+        """Make a glshader-driven generator the active source."""
+        try:
+            new_bin = self._build_generator_source_bin(name)
+        except Exception as exc:
+            print(f"[vj] failed to build generator source ({name}): {exc!r}")
+            return
+        self._current_source = ("generator", name)
+        self._swap_source_bin(new_bin, start_state)
+        print(f"[vj] → generator: {name}")
+        self._refresh_status()
+
+    def _swap_source_bin(self, new_bin, start_state):
+        """Tear down the existing source bin (if any), add the new
+        one, link to downstream. Returns the pipeline to PLAYING if
+        start_state == PLAYING; on the initial install the caller
+        promotes state once everything is wired up.
+        """
+        if self._source_bin is not None:
+            # PAUSED first so the GL elements don't hold buffers
+            # across the unlink; then NULL to release resources.
+            old = self._source_bin
+            self._source_bin = None
+            self.pipeline.set_state(Gst.State.READY)
+            old.unlink(self._downstream_bin)
+            old.set_state(Gst.State.NULL)
+            self.pipeline.remove(old)
+
+        self.pipeline.add(new_bin)
+        if not new_bin.link(self._downstream_bin):
+            print("[vj] source → downstream link failed")
+        self._source_bin = new_bin
+
+        if start_state == Gst.State.PLAYING:
+            self.pipeline.set_state(Gst.State.PLAYING)
+
+    # ── Sinks → windows binding ────────────────────────────────────
 
     def _bind_sinks_to_windows(self):
-        """Pull gtksink widgets out of the pipeline and pack them
-        into the two top-level windows. Common to both clip and
-        generator paths."""
+        """Pull gtksink widgets out of the downstream bin and pack
+        them into the two top-level windows."""
         output_sink = self.pipeline.get_by_name("output_sink")
         hud_sink = self.pipeline.get_by_name("hud_sink")
         if output_sink is None or hud_sink is None:
             self._fail("gtksink elements missing from the pipeline")
             return False
-
         output_widget = output_sink.get_property("widget")
         hud_widget = hud_sink.get_property("widget")
-        # GTK3 quirk: gtksink's widget defaults to hidden; needs an
-        # explicit show() before the window draws.
+        # GTK3 quirk: gtksink's widget defaults to hidden.
         output_widget.show()
         hud_widget.show()
-
         self.output_window = self._build_output_window(output_widget)
         self.hud_window = self._build_hud_window(hud_widget)
         self.add_window(self.output_window)
         self.add_window(self.hud_window)
         return True
-
-    # ── decodebin dynamic pad ──────────────────────────────────────
-
-    def _on_decoder_pad_added(self, _decoder, new_pad):
-        """decodebin emits a pad per detected stream. We only want
-        video — ignore audio (most mp4s have both). The downstream
-        bin has a single ghost sink (the videoconvert input)."""
-        caps = new_pad.get_current_caps()
-        if caps is None:
-            return
-        struct_name = caps.get_structure(0).get_name()
-        if not struct_name.startswith("video/"):
-            return
-        sink_pad = self._downstream_bin.get_static_pad("sink")
-        if sink_pad is None or sink_pad.is_linked():
-            return
-        result = new_pad.link(sink_pad)
-        if result == Gst.PadLinkReturn.OK:
-            print(f"[vj] decoder → downstream linked ({struct_name})")
-        else:
-            print(f"[vj] decoder link failed: {result}")
 
     # ── Window construction ────────────────────────────────────────
 
@@ -396,9 +423,6 @@ class VJApp(Gtk.Application):
         win = Gtk.ApplicationWindow(application=self)
         win.set_title("VJ Control")
         win.set_default_size(680, 720)
-        # Vertical box: preview on top, placeholder status below.
-        # Later phases add favourites grid, FPS readout, status
-        # panel, key cheat sheet etc.
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         box.set_margin_top(6)
         box.set_margin_bottom(6)
@@ -406,17 +430,48 @@ class VJApp(Gtk.Application):
         box.set_margin_end(6)
         video_widget.set_size_request(-1, 380)
         box.pack_start(video_widget, False, False, 0)
-        status = Gtk.Label()
-        status.set_markup(
-            "<b>VJ Control HUD</b>\n"
-            f"<small>{GLib.markup_escape_text(self._status_text)}</small>"
+
+        self._status_label = Gtk.Label()
+        self._status_label.set_xalign(0.0)
+        self._status_label.set_line_wrap(True)
+        box.pack_start(self._status_label, False, False, 0)
+        self._refresh_status()
+
+        # Brief key cheat sheet for phase 4a. Phase 6 will replace
+        # this with a richer panel + favourites grid.
+        keymap = Gtk.Label()
+        keymap.set_markup(
+            "<small>"
+            "<b>Keys</b> — phase 4a:\n"
+            "  <tt>- / =</tt>  prev / next clip\n"
+            "  <tt>A</tt>      plasma generator\n"
+            "  <tt>S</tt>      tunnel generator\n"
+            "  <tt>Esc</tt>    quit"
+            "</small>"
         )
-        status.set_xalign(0.0)
-        box.pack_start(status, False, False, 0)
+        keymap.set_xalign(0.0)
+        box.pack_start(keymap, False, False, 0)
+
         win.add(box)
         win.connect("destroy", lambda *_: self.quit())
         win.connect("key-press-event", self._on_key_press)
         return win
+
+    def _refresh_status(self):
+        if self._status_label is None:
+            return
+        kind, what = self._current_source if self._current_source else (None, None)
+        if kind == "clip":
+            text = (f"phase 4a — clip {self._current_clip_idx + 1}"
+                    f"/{len(self._clips)}: {what.name}")
+        elif kind == "generator":
+            text = f"phase 4a — generator: {what}"
+        else:
+            text = "phase 4a — no source"
+        self._status_label.set_markup(
+            f"<b>VJ Control HUD</b>\n"
+            f"<small>{GLib.markup_escape_text(text)}</small>"
+        )
 
     # ── Monitor placement ──────────────────────────────────────────
 
@@ -424,9 +479,7 @@ class VJApp(Gtk.Application):
         """Pin a Gtk.Window to a specific physical monitor.
 
         Pi setups typically have the projector on monitor 1 and the
-        small operator screen on monitor 0. We position via the
-        monitor's geometry (absolute screen coords on multi-head X)
-        then optionally fullscreen.
+        small operator screen on monitor 0.
         """
         display = Gdk.Display.get_default()
         if display is None:
@@ -446,12 +499,37 @@ class VJApp(Gtk.Application):
     def _on_key_press(self, _widget, event):
         key = event.keyval
         mod = event.state
-        if key == Gdk.KEY_Escape and (mod & Gdk.ModifierType.SHIFT_MASK):
-            self.quit()
-            return True
+
+        # Quit
         if key == Gdk.KEY_Escape:
             self.quit()
             return True
+
+        # Clip cycling — `-` and `=` (plus their shifted twins for
+        # operators who Shift-mash). Always step ±1 from the
+        # remembered clip index, regardless of whether the current
+        # source is a clip or a generator. Generators are "off to
+        # the side" — they don't move the cycle pointer, so
+        # generator → `=` lands on clip[idx+1], where idx is
+        # whichever clip was active before the operator picked the
+        # generator. Index wraps via modulo in _install_clip.
+        if key in (Gdk.KEY_minus, Gdk.KEY_underscore):
+            self._install_clip(self._current_clip_idx - 1)
+            return True
+        if key in (Gdk.KEY_equal, Gdk.KEY_plus):
+            self._install_clip(self._current_clip_idx + 1)
+            return True
+
+        # Generator hotkeys — match the old keymap subset that's
+        # ported so far. A / S correspond to the first two
+        # generators in the old layout (plasma / tunnel).
+        if key == Gdk.KEY_a and not (mod & Gdk.ModifierType.CONTROL_MASK):
+            self._install_generator("plasma")
+            return True
+        if key == Gdk.KEY_s and not (mod & Gdk.ModifierType.CONTROL_MASK):
+            self._install_generator("tunnel")
+            return True
+
         return False
 
     # ── GStreamer bus ──────────────────────────────────────────────
@@ -468,12 +546,12 @@ class VJApp(Gtk.Application):
             err, _ = msg.parse_warning()
             print(f"[vj.gst] warn: {err.message}")
         elif t == Gst.MessageType.EOS:
-            # Clip mode: loop by seeking to 0. seek_simple with FLUSH
-            # causes a small frame stutter at the loop point; phase 4
-            # (clip pool + crossfades) is the right time to refine.
-            # Generator mode never EOSes (videotestsrc is is-live).
-            if self.source_kind == "clip":
-                print("[vj.gst] EOS — looping")
+            # Only clip mode produces EOS — videotestsrc is is-live
+            # so generators never end. seek_simple with FLUSH causes
+            # a small frame stutter at the loop point; phase 4c/4d
+            # is where we refine to a segment-seek loop.
+            if self._current_source and self._current_source[0] == "clip":
+                print("[vj.gst] EOS — looping current clip")
                 self.pipeline.seek_simple(
                     Gst.Format.TIME,
                     Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
@@ -484,10 +562,6 @@ class VJApp(Gtk.Application):
 
     def _fail(self, message):
         print(f"[vj] FATAL: {message}", file=sys.stderr)
-        # Best-effort dialog so a double-clicked launch surfaces the
-        # error instead of vanishing. The launcher already pops a
-        # zenity dialog on non-zero exit; this just gets the same
-        # info to the operator one frame sooner.
         try:
             dlg = Gtk.MessageDialog(
                 transient_for=None,

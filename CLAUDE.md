@@ -89,7 +89,9 @@ widget.
 | 2     | DONE     | Real clip decode (`filesrc + decodebin → glupload`)         |
 | 2.5   | DONE     | Asset processor (`Process Assets.sh`): bulk HEVC 720p       |
 | 3     | DONE     | Generators (tunnel, plasma) as GLSL shaders via `glshader`  |
-| 4     | NEXT     | Compositor + clip selection + keymap + favourites           |
+| 4a    | DONE     | Swappable source-bin + keyboard source switching (-/=/A/S)  |
+| 4b    | NEXT     | Overlay layer via `compositor` (Q-P-style screen blend)     |
+| 4c    | TODO     | Favourites grid (1-0 / Q-P: tap to play, hold to assign)    |
 | 5     | TODO     | Mapping mode (groups, spaces, fit modes, edit-mode mouse)   |
 | 6     | TODO     | FX chain, hits, autopilot, HUD status + FPS + polish        |
 
