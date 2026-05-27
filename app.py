@@ -270,14 +270,475 @@ void main() {
 }
 """
 
-GENERATORS = {
-    "plasma": PLASMA_SHADER,
-    "tunnel": TUNNEL_SHADER,
-    "waves": WAVES_SHADER,
-    "cells": CELLS_SHADER,
-    "moire": MOIRE_SHADER,
-    "metaballs": METABALLS_SHADER,
+# ── Gritty / hard-edged / tactile ones (the operator asked for) ──
+
+# Quarter-arc tiles randomly rotated on a grid. Classic Truchet
+# pattern — sharp edges, organic curves emerging from rigid grid
+# cells, slow rotation reshuffles the flow.
+TRUCHET_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
+
+float rand(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void main() {
+    float scale = 50.0;
+    vec2 pix = v_texcoord * vec2(1280.0, 720.0) / scale;
+    vec2 gid = floor(pix);
+    vec2 gp = fract(pix);
+    float r = rand(gid + floor(time * 0.5));
+    if (r > 0.5) gp.x = 1.0 - gp.x;
+    float d1 = distance(gp, vec2(0.0));
+    float d2 = distance(gp, vec2(1.0));
+    float ring = max(smoothstep(0.06, 0.0, abs(d1 - 0.5)),
+                     smoothstep(0.06, 0.0, abs(d2 - 0.5)));
+    float hue = fract(rand(gid) * 0.7 + time * 0.1);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.85, ring)), 1.0);
+}
+"""
+
+# True voronoi with hard cell boundaries — different from `cells`
+# which is the soft sin·sin product. This one looks like cracked
+# glass or stained-glass tessellation. F1+F2 trick gives sharp
+# edges between cells.
+VORONOI_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+vec2 hash2(vec2 p) {
+    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)),
+                          dot(p, vec2(269.5, 183.3)))) * 43758.5453);
+}
+
+void main() {
+    float scale = 80.0;
+    vec2 pix = v_texcoord * vec2(1280.0, 720.0) / scale;
+    vec2 gid = floor(pix);
+    vec2 gp = fract(pix);
+    float md1 = 999.0;
+    float md2 = 999.0;
+    vec2 mcell;
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            vec2 n = vec2(float(i), float(j));
+            vec2 r = hash2(gid + n);
+            r = 0.5 + 0.5 * sin(time * 0.3 + 6.283 * r);
+            float d = distance(n + r, gp);
+            if (d < md1) { md2 = md1; md1 = d; mcell = gid + n; }
+            else if (d < md2) { md2 = d; }
+        }
+    }
+    float edge = smoothstep(0.02, 0.08, md2 - md1);
+    float hue = fract(hash2(mcell).x + time * 0.05);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.78, edge)), 1.0);
+}
+"""
+
+# Tessellating hexagons. Each cell pulses on its own clock —
+# tactile honeycomb / Tron look.
+HEXGRID_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+    float scale = 50.0;
+    vec2 pix = v_texcoord * vec2(1280.0, 720.0) / scale;
+    vec2 s = vec2(1.0, 1.7320508);
+    vec2 a = mod(pix, s) - s * 0.5;
+    vec2 b = mod(pix + s * 0.5, s) - s * 0.5;
+    vec2 g = dot(a, a) < dot(b, b) ? a : b;
+    float d = length(g);
+    vec2 cell = pix - g;
+    float pulse = 0.5 + 0.5 * sin(time * 1.5 + cell.x * 0.5 + cell.y * 0.3);
+    float ring = smoothstep(0.5, 0.4, d) * pulse;
+    float hue = fract(cell.x * 0.1 + cell.y * 0.07 + time * 0.05);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.8, ring)), 1.0);
+}
+"""
+
+# Demoscene classic: B&W (well, colour-cycled) checker rotating
+# and zooming around the centre. Hard edges, kinetic.
+ROTOZOOM_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0, 720.0);
+    float zoom = 0.5 + sin(time * 0.3) * 0.3;
+    float a = time * 0.2;
+    float ca = cos(a), sa = sin(a);
+    vec2 q = vec2(p.x * ca - p.y * sa, p.x * sa + p.y * ca) * zoom;
+    float chk = mod(floor(q.x / 40.0) + floor(q.y / 40.0), 2.0);
+    float hue = fract(time * 0.1 + chk * 0.5);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.9, chk)), 1.0);
+}
+"""
+
+# Digital static / RGB-shift glitch. Pure grit, very high
+# frequency content, randomly displaced scanlines. Looks like
+# bad VHS / corrupted signal.
+GLITCH_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+float rand(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void main() {
+    vec2 pix = v_texcoord * vec2(1280.0, 720.0);
+    float band = floor(pix.y / 6.0);
+    float t = floor(time * 12.0);
+    float bandOff = (rand(vec2(band, t)) - 0.5) * 80.0;
+    pix.x += bandOff * step(0.95, rand(vec2(band, t * 0.1)));
+    float r = step(0.5, rand(pix + vec2(t)));
+    float g = step(0.5, rand(pix + vec2(t * 0.7)));
+    float b = step(0.5, rand(pix + vec2(t * 1.3)));
+    gl_FragColor = vec4(r, g, b, 1.0);
+}
+"""
+
+# Straight grid lines warped through sin/cos — the geometry
+# "breathes". Sharp line edges, organic motion.
+WARPGRID_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+    vec2 pix = v_texcoord * vec2(1280.0, 720.0);
+    float t = time;
+    pix.x += sin(pix.y * 0.02 + t) * 30.0;
+    pix.y += cos(pix.x * 0.02 + t * 1.3) * 30.0;
+    vec2 g = fract(pix / 60.0);
+    float line = min(min(g.x, g.y), min(1.0 - g.x, 1.0 - g.y));
+    float bright = smoothstep(0.04, 0.0, line);
+    float hue = fract(pix.x * 0.001 + pix.y * 0.001 + t * 0.1);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.7, bright)), 1.0);
+}
+"""
+
+# Fractal Brownian Motion noise tuned for marble / polished
+# stone — multi-octave noise + ridge warping gives sharp veins
+# through cloudy interior.
+MARBLE_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+    float v = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 5; i++) {
+        v += amp * noise(p);
+        p *= 2.0;
+        amp *= 0.5;
+    }
+    return v;
+}
+
+void main() {
+    vec2 p = v_texcoord * 4.0;
+    p.x += time * 0.1;
+    float n = fbm(p);
+    n = fbm(p + vec2(n * 2.0));
+    float v = pow(abs(sin(n * 8.0 + time * 0.2)), 0.5);
+    vec3 c = mix(vec3(0.08, 0.10, 0.18), vec3(0.95, 0.97, 1.0), v);
+    gl_FragColor = vec4(c, 1.0);
+}
+"""
+
+# ── "Really cool" extras inspired by shader culture (Shadertoy) ──
+
+# Underwater caustics — light through rippling water makes
+# wandering bright tendrils across a dark blue background.
+CAUSTICS_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+void main() {
+    vec2 p = v_texcoord * 6.0;
+    float t = time * 0.5;
+    float c = 0.0;
+    for (int i = 0; i < 4; i++) {
+        float fi = float(i);
+        float a = (fi + 1.0) * 0.7;
+        vec2 dir = vec2(cos(fi * 1.7), sin(fi * 2.3));
+        c += sin(dot(p, dir) * a + t * (fi + 1.0));
+    }
+    c = abs(c) * 0.25;
+    c = pow(c, 4.0);
+    vec3 col = vec3(c * 0.6, c * 0.85, c) + vec3(0.0, 0.02, 0.05);
+    gl_FragColor = vec4(col, 1.0);
+}
+"""
+
+# Apollonian-style fractal-packed circles. Iterating an
+# inversion-and-fold gives self-similar circle nesting forever.
+# Hypnotic depth — feels like falling into the pattern.
+APOLLONIAN_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * 4.0;
+    p += vec2(sin(time * 0.3), cos(time * 0.4)) * 0.2;
+    float scale = 1.0;
+    for (int i = 0; i < 8; i++) {
+        p = -1.0 + 2.0 * fract(p * 0.5 + 0.5);
+        float r2 = dot(p, p);
+        float k = 1.0 / r2;
+        p *= k;
+        scale *= k;
+    }
+    float v = 0.25 * abs(p.y) / scale;
+    float hue = fract(scale * 0.01 + time * 0.05);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.7, clamp(v * 8.0, 0.0, 1.0))), 1.0);
+}
+"""
+
+# Galactic spiral arms. Polar log-spiral pattern with hue
+# cycling along the radial angle. Slow, deep, hypnotic.
+SPIRAL_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+const float PI = 3.14159265358979;
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0, 720.0);
+    float r = length(p);
+    float a = atan(p.y, p.x);
+    float arms = 5.0;
+    float v = sin(a * arms + log(r + 1.0) * 2.0 - time * 1.5);
+    v = pow(abs(v), 1.5);
+    v *= smoothstep(0.0, 100.0, r) * smoothstep(800.0, 400.0, r);
+    float hue = fract(a / (2.0 * PI) + time * 0.05);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.85, v)), 1.0);
+}
+"""
+
+# Six-fold kaleidoscope folding a flowing sin-product over
+# itself. Mandala vibe — symmetric, ornate, hypnotic.
+KALEIDO_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+const float PI = 3.14159265358979;
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * 2.0;
+    float r = length(p);
+    float a = atan(p.y, p.x);
+    float seg = PI / 3.0;
+    a = mod(a, seg);
+    a = abs(a - seg * 0.5);
+    vec2 q = vec2(cos(a), sin(a)) * r * 4.0;
+    q.x += time * 0.3;
+    q.y += sin(time) * 0.5;
+    float v = sin(q.x) * sin(q.y) + sin((q.x + q.y) * 0.7) * 0.5;
+    v = v * 0.5 + 0.5;
+    float hue = fract(v + time * 0.1);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.85, v)), 1.0);
+}
+"""
+
+# Actual 3D ray-marched rotating torus. Volumetric feel because
+# the renderer is computing per-pixel distance to a 3D surface.
+# Heaviest shader on the list but still well within Pi 5 budget.
+RAYMARCHED_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+float sdTorus(vec3 p, vec2 t) {
+    vec2 q = vec2(length(p.xz) - t.x, p.y);
+    return length(q) - t.y;
+}
+
+vec3 rotateY(vec3 p, float a) {
+    float c = cos(a), s = sin(a);
+    return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+}
+
+vec3 rotateX(vec3 p, float a) {
+    float c = cos(a), s = sin(a);
+    return vec3(p.x, c * p.y - s * p.z, s * p.y + c * p.z);
+}
+
+float map(vec3 p) {
+    p = rotateY(p, time * 0.5);
+    p = rotateX(p, time * 0.3);
+    return sdTorus(p, vec2(1.0, 0.4));
+}
+
+void main() {
+    vec2 uv = (v_texcoord - 0.5);
+    uv.x *= 1280.0 / 720.0;
+    vec3 ro = vec3(0.0, 0.0, -3.0);
+    vec3 rd = normalize(vec3(uv, 1.0));
+    float t = 0.0;
+    bool hit = false;
+    for (int i = 0; i < 64; i++) {
+        vec3 pos = ro + rd * t;
+        float d = map(pos);
+        if (d < 0.001) { hit = true; break; }
+        t += d;
+        if (t > 10.0) break;
+    }
+    if (!hit) {
+        gl_FragColor = vec4(0.0, 0.0, 0.05, 1.0);
+        return;
+    }
+    float depth = t / 10.0;
+    float hue = fract(0.6 - depth * 0.3 + time * 0.05);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.7, 1.0 - depth * 0.5)), 1.0);
+}
+"""
+
+# The full catalogue. Order here is also the cycle order for
+# `[` / `]`. New ones go at the end so muscle memory holds.
+GENERATORS = {
+    "plasma":     PLASMA_SHADER,
+    "tunnel":     TUNNEL_SHADER,
+    "waves":      WAVES_SHADER,
+    "cells":      CELLS_SHADER,
+    "moire":      MOIRE_SHADER,
+    "metaballs":  METABALLS_SHADER,
+    "truchet":    TRUCHET_SHADER,
+    "voronoi":    VORONOI_SHADER,
+    "hexgrid":    HEXGRID_SHADER,
+    "rotozoom":   ROTOZOOM_SHADER,
+    "glitch":     GLITCH_SHADER,
+    "warpgrid":   WARPGRID_SHADER,
+    "marble":     MARBLE_SHADER,
+    "caustics":   CAUSTICS_SHADER,
+    "apollonian": APOLLONIAN_SHADER,
+    "spiral":     SPIRAL_SHADER,
+    "kaleido":    KALEIDO_SHADER,
+    "raymarched": RAYMARCHED_SHADER,
+}
+
+# Cycle order for `[` / `]`. Same as dict order but explicit
+# (dict iteration order is technically insertion-order in
+# Python 3.7+; this list makes the contract obvious).
+GENERATOR_ORDER = list(GENERATORS.keys())
 
 
 def _list_clips():
@@ -330,6 +791,12 @@ class VJApp(Gtk.Application):
         # status display and key routing. ("clip", path) or
         # ("generator", name).
         self._current_source = None
+        # Generator-cycle pointer. `[` / `]` walks this through
+        # GENERATOR_ORDER. Survives clip mode too, so going clip
+        # → [ goes back to whichever generator was last active.
+        self._current_generator_idx = 0
+        # Big "what's playing" label, set from _refresh_status.
+        self._big_status_label = None
 
     # ── GTK Application lifecycle ──────────────────────────────────
 
@@ -497,12 +964,16 @@ class VJApp(Gtk.Application):
         self._refresh_status()
 
     def _install_generator(self, name, start_state=Gst.State.PLAYING):
-        """Make a glshader-driven generator the active source."""
+        """Make a glshader-driven generator the active source.
+        Also pins the cycle pointer (_current_generator_idx) on this
+        name so the `[` / `]` cycle picks up from here."""
         try:
             new_bin = self._build_generator_source_bin(name)
         except Exception as exc:
             print(f"[vj] failed to build generator source ({name}): {exc!r}")
             return
+        if name in GENERATOR_ORDER:
+            self._current_generator_idx = GENERATOR_ORDER.index(name)
         self._current_source = ("generator", name)
         self._swap_source_bin(new_bin, start_state)
         print(f"[vj] → generator: {name}")
@@ -576,6 +1047,14 @@ class VJApp(Gtk.Application):
         video_widget.set_size_request(-1, 380)
         box.pack_start(video_widget, False, False, 0)
 
+        # Big, unmissable "what's playing" label. The operator
+        # uses this to identify which generator they're currently
+        # cycling on. Bigger than the small status line below so
+        # they can glance at it from across the room.
+        self._big_status_label = Gtk.Label()
+        self._big_status_label.set_xalign(0.0)
+        box.pack_start(self._big_status_label, False, False, 0)
+
         self._status_label = Gtk.Label()
         self._status_label.set_xalign(0.0)
         self._status_label.set_line_wrap(True)
@@ -590,6 +1069,7 @@ class VJApp(Gtk.Application):
             "<small>"
             "<b>Keys</b>:\n"
             "  <tt>- / =</tt>  prev / next clip\n"
+            "  <tt>[ / ]</tt>  prev / next generator (cycle all)\n"
             "  <tt>A</tt>      plasma\n"
             "  <tt>S</tt>      tunnel\n"
             "  <tt>G</tt>      waves\n"
@@ -612,13 +1092,30 @@ class VJApp(Gtk.Application):
         if self._status_label is None:
             return
         kind, what = self._current_source if self._current_source else (None, None)
+
+        # Big "what's playing" line — name only, large + bold so
+        # the operator can identify it at a glance while cycling.
+        big = ""
         if kind == "clip":
-            text = (f"phase 4a — clip {self._current_clip_idx + 1}"
+            big = "▶ clip"
+        elif kind == "generator":
+            idx = self._current_generator_idx
+            big = (f"⚡ {what}  "
+                   f"<span size='small' fgcolor='#888'>"
+                   f"({idx + 1}/{len(GENERATOR_ORDER)})</span>")
+        if self._big_status_label is not None:
+            self._big_status_label.set_markup(
+                f"<span size='xx-large' weight='bold'>{big}</span>"
+            )
+
+        # Small status line — file name / phase tag.
+        if kind == "clip":
+            text = (f"clip {self._current_clip_idx + 1}"
                     f"/{len(self._clips)}: {what.name}")
         elif kind == "generator":
-            text = f"phase 4a — generator: {what}"
+            text = f"generator: {what}"
         else:
-            text = "phase 4a — no source"
+            text = "no source"
         self._status_label.set_markup(
             f"<b>VJ Control HUD</b>\n"
             f"<small>{GLib.markup_escape_text(text)}</small>"
@@ -669,6 +1166,20 @@ class VJApp(Gtk.Application):
             return True
         if key in (Gdk.KEY_equal, Gdk.KEY_plus):
             self._install_clip(self._current_clip_idx + 1)
+            return True
+
+        # Generator cycle — `[` / `]` walks GENERATOR_ORDER. Lets
+        # the operator audition the whole catalogue without
+        # remembering every individual hotkey, then pick the keepers.
+        if key in (Gdk.KEY_bracketleft, Gdk.KEY_braceleft):
+            n = len(GENERATOR_ORDER)
+            self._current_generator_idx = (self._current_generator_idx - 1) % n
+            self._install_generator(GENERATOR_ORDER[self._current_generator_idx])
+            return True
+        if key in (Gdk.KEY_bracketright, Gdk.KEY_braceright):
+            n = len(GENERATOR_ORDER)
+            self._current_generator_idx = (self._current_generator_idx + 1) % n
+            self._install_generator(GENERATOR_ORDER[self._current_generator_idx])
             return True
 
         # Generator hotkeys — preserve the old pygame app's layout
