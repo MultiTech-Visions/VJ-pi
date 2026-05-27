@@ -87,6 +87,17 @@ class ControlWindow:
         self.preview_w, self.preview_h = pw, ph
 
         self._Texture = Texture
+        # Persistent streaming texture for the composed HUD surface.
+        # Created once at init time so it's bound to *this* renderer's
+        # GL context — Texture.from_surface() each frame allocated a
+        # fresh texture in whichever GL context happened to be current,
+        # which silently broke once gpu.py's standalone EGL context
+        # started getting made-current between frames (the HUD turned
+        # solid black while the projector kept rendering correctly).
+        try:
+            self._hud_tex = Texture(self.renderer, size, streaming=True)
+        except (TypeError, pygame.error):
+            self._hud_tex = None
         self.font_h = pygame.font.SysFont("Sans,Arial,DejaVuSans", 18, bold=True)
         self.font_m = pygame.font.SysFont("Sans,Arial,DejaVuSans", 14)
         self.font_s = pygame.font.SysFont("Sans,Arial,DejaVuSans", 12)
@@ -246,8 +257,14 @@ class ControlWindow:
             )
             surface.blit(src, (pad, y))
 
-        # Upload the composed surface and present it.
-        tex = self._Texture.from_surface(self.renderer, surface)
+        # Upload the composed surface and present it. Use the persistent
+        # streaming texture so the GL allocation isn't redone every frame
+        # in whatever context happens to be current (see __init__).
+        if self._hud_tex is not None:
+            self._hud_tex.update(surface)
+            tex = self._hud_tex
+        else:
+            tex = self._Texture.from_surface(self.renderer, surface)
         self.renderer.clear()
         tex.draw()
         self.renderer.present()
