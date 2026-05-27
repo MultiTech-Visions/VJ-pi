@@ -202,9 +202,27 @@ void main() {
 
 # ── Gritty / hard-edged / tactile ones (the operator asked for) ──
 
-# Quarter-arc tiles randomly rotated on a grid. Classic Truchet
-# pattern — sharp edges, organic curves emerging from rigid grid
-# cells, slow rotation reshuffles the flow.
+# Quarter-arc tiles on a grid (classic Truchet) + a "snake" that
+# wanders through the field and brightens the arcs near its
+# passage. Operator's idea: the snaps that re-shuffle the tile
+# rotations happen MUCH less often (every ~20s instead of ~2s),
+# so the maze is stable long enough that the snake's exploration
+# of it is legible.
+#
+# The snake's path is a smooth Lissajous-style wander with two
+# incommensurate frequencies per axis — never repeats exactly,
+# always exploring new territory. A trail of 24 past positions
+# (sampled at decreasing time offsets) gives the snake a body
+# that fades from head (bright, current position) to tail (dim,
+# ~2s back). The truchet arcs only show where the snake's glow
+# reaches them — base brightness is low so the pattern is "dim
+# pencil sketch" until the snake passes by, at which point the
+# arcs nearby flare up.
+#
+# What it ISN'T: the snake doesn't literally walk the arc-graph
+# (which would need recursive cell-walking, not fragment-shader-
+# friendly). It wanders through the same screen the arcs live on
+# and reveals them by proximity. The visual feel is similar.
 TRUCHET_SHADER = """\
 #version 100
 #ifdef GL_ES
@@ -223,19 +241,54 @@ float rand(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
+// Snake position at time t in normalized (0..1) v_texcoord space.
+// Two slow incommensurate sin/cos terms per axis so the path
+// fills the screen without ever exactly repeating.
+vec2 snake_at(float t) {
+    return vec2(
+        0.5 + 0.40 * sin(t * 0.13) + 0.10 * sin(t * 0.41),
+        0.5 + 0.40 * cos(t * 0.11) + 0.10 * cos(t * 0.37)
+    );
+}
+
 void main() {
     float scale = 50.0;
     vec2 pix = v_texcoord * vec2(1280.0, 720.0) / scale;
     vec2 gid = floor(pix);
     vec2 gp = fract(pix);
-    float r = rand(gid + floor(time * 0.5));
+
+    // Slow snaps — tile rotations only re-shuffle once every
+    // ~20 seconds. The maze is stable in between, so the snake
+    // gets time to actually explore it.
+    float r = rand(gid + floor(time / 20.0));
     if (r > 0.5) gp.x = 1.0 - gp.x;
+
     float d1 = distance(gp, vec2(0.0));
     float d2 = distance(gp, vec2(1.0));
     float ring = max(smoothstep(0.06, 0.0, abs(d1 - 0.5)),
                      smoothstep(0.06, 0.0, abs(d2 - 0.5)));
-    float hue = fract(rand(gid) * 0.7 + time * 0.1);
-    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.85, ring)), 1.0);
+
+    // Snake trail: sample the snake's position at 24 points in
+    // the recent past (0 → ~2s back). Each sample contributes a
+    // tight exponential glow centred on that historical position;
+    // weighted to fade with age. The accumulated glow is the
+    // visible snake body.
+    float glow = 0.0;
+    for (int i = 0; i < 24; i++) {
+        float dt = float(i) * 0.08;
+        vec2 sp = snake_at(time - dt);
+        float d = distance(v_texcoord, sp);
+        float head = exp(-d * 80.0);
+        float age_fade = 1.0 - float(i) / 24.0;
+        glow += head * age_fade;
+    }
+
+    float hue = fract(rand(gid) * 0.7 + time * 0.05);
+    // Base truchet visible dimly + bright arc segments where the
+    // snake passes. clamp(...,0,1) prevents over-saturation when
+    // the snake head sits right on top of an arc.
+    float intensity = clamp(ring * (0.25 + glow * 1.5), 0.0, 1.0);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.85, intensity)), 1.0);
 }
 """
 
