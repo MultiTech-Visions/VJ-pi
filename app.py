@@ -129,40 +129,8 @@ void main() {
 }
 """
 
-# Two-source rippling interference pattern — two moving centres,
-# each emanating sinusoidal rings, summed and hue-cycled.
-WAVES_SHADER = """\
-#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
-
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
-const float PI = 3.14159265358979;
-
-void main() {
-    vec2 pix = v_texcoord * vec2(1280.0, 720.0);
-    float t = time;
-    vec2 c1 = vec2(1280.0 * 0.3 + sin(t * 0.5) * 1280.0 * 0.15,
-                    720.0 * 0.5 + cos(t * 0.4) *  720.0 * 0.2);
-    vec2 c2 = vec2(1280.0 * 0.7 + cos(t * 0.6) * 1280.0 * 0.15,
-                    720.0 * 0.5 + sin(t * 0.45) * 720.0 * 0.2);
-    float period = 52.0;
-    float r1 = distance(pix, c1) / period;
-    float r2 = distance(pix, c2) / period;
-    float v = (sin(r1 * PI * 2.0 - t * 2.0)
-             + sin(r2 * PI * 2.0 + t * 1.5)) * 0.25 + 0.5;
-    float hue = fract(v + t * 0.1);
-    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.86, v)), 1.0);
-}
-"""
+# (waves shader removed — operator audition: visually
+# indistinguishable from `moire`; moire kept, waves dropped.)
 
 # Animated quasi-voronoi cellular pattern. The sin*sin product
 # creates a grid of "cells" that wobble as the input coordinates
@@ -230,45 +198,7 @@ void main() {
 }
 """
 
-# Classic sum-of-fields metaballs — six orbiting points each
-# contribute an inverse-square "blob" field; threshold (via
-# brightness) gives the merging-blob look that's been in every
-# VJ tool since the demoscene days.
-METABALLS_SHADER = """\
-#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
-
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
-const float PI = 3.14159265358979;
-
-void main() {
-    vec2 pix = v_texcoord * vec2(1280.0, 720.0);
-    float t = time;
-    float influence = 1280.0 * 26.0 * 1.4;
-    float field = 0.0;
-    for (int i = 0; i < 6; i++) {
-        float phase = float(i) * 2.0 * PI / 6.0;
-        float bx = 640.0 + cos(t * 0.5 + phase * 1.3) * 1280.0 * 0.35;
-        float by = 360.0 + sin(t * 0.7 + phase * 1.7) *  720.0 * 0.35;
-        float dx = pix.x - bx;
-        float dy = pix.y - by;
-        float r2 = dx * dx + dy * dy + 1.0;
-        field += influence / r2;
-    }
-    float intensity = clamp(field / 2.5, 0.0, 1.0);
-    float hue = fract((intensity * 80.0 + t * 20.0) / 180.0);
-    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.9, intensity)), 1.0);
-}
-"""
+# (metaballs shader removed — operator audition: "meh".)
 
 # ── Gritty / hard-edged / tactile ones (the operator asked for) ──
 
@@ -416,33 +346,7 @@ void main() {
 }
 """
 
-# Digital static / RGB-shift glitch. Pure grit, very high
-# frequency content, randomly displaced scanlines. Looks like
-# bad VHS / corrupted signal.
-GLITCH_SHADER = """\
-#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
-
-float rand(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
-void main() {
-    vec2 pix = v_texcoord * vec2(1280.0, 720.0);
-    float band = floor(pix.y / 6.0);
-    float t = floor(time * 12.0);
-    float bandOff = (rand(vec2(band, t)) - 0.5) * 80.0;
-    pix.x += bandOff * step(0.95, rand(vec2(band, t * 0.1)));
-    float r = step(0.5, rand(pix + vec2(t)));
-    float g = step(0.5, rand(pix + vec2(t * 0.7)));
-    float b = step(0.5, rand(pix + vec2(t * 1.3)));
-    gl_FragColor = vec4(r, g, b, 1.0);
-}
-"""
+# (glitch shader removed — operator audition: "no".)
 
 # Straight grid lines warped through sin/cos — the geometry
 # "breathes". Sharp line edges, organic motion.
@@ -523,8 +427,12 @@ void main() {
 
 # ── "Really cool" extras inspired by shader culture (Shadertoy) ──
 
-# Underwater caustics — light through rippling water makes
-# wandering bright tendrils across a dark blue background.
+# Real underwater pool-floor caustics — bright animated tendrils
+# of light focused through rippling water onto the floor below.
+# Classic Shadertoy-style fold-iteration formula (Dave Hoskins,
+# "Water Caustic"). Each iteration distorts the uv with a
+# trigonometric kick; reciprocal-length accumulation gives the
+# bright filament look at light-focus points.
 CAUSTICS_SHADER = """\
 #version 100
 #ifdef GL_ES
@@ -533,27 +441,42 @@ precision highp float;
 varying vec2 v_texcoord;
 uniform float time;
 
+#define TAU 6.28318530718
+
 void main() {
-    vec2 p = v_texcoord * 6.0;
-    float t = time * 0.5;
-    float c = 0.0;
-    for (int i = 0; i < 4; i++) {
-        float fi = float(i);
-        float a = (fi + 1.0) * 0.7;
-        vec2 dir = vec2(cos(fi * 1.7), sin(fi * 2.3));
-        c += sin(dot(p, dir) * a + t * (fi + 1.0));
+    float t = time * 0.5 + 23.0;
+    vec2 uv = v_texcoord;
+    vec2 p = mod(uv * TAU * 2.0, TAU) - 250.0;
+    vec2 i = p;
+    float c = 1.0;
+    float inten = 0.005;
+    for (int n = 0; n < 5; n++) {
+        float tt = t * (1.0 - (3.5 / float(n + 1)));
+        i = p + vec2(cos(tt - i.x) + sin(tt + i.y),
+                     sin(tt - i.y) + cos(tt + i.x));
+        c += 1.0 / length(vec2(p.x / (sin(i.x + tt) / inten),
+                                p.y / (cos(i.y + tt) / inten)));
     }
-    c = abs(c) * 0.25;
-    c = pow(c, 4.0);
-    vec3 col = vec3(c * 0.6, c * 0.85, c) + vec3(0.0, 0.02, 0.05);
+    c /= 5.0;
+    c = 1.17 - pow(c, 1.4);
+    vec3 col = vec3(pow(abs(c), 8.0));
+    // Tint toward pool-blue rather than pure white — the floor
+    // we're seeing the caustics ON has its own colour.
+    col = clamp(col + vec3(0.0, 0.35, 0.5), 0.0, 1.0);
     gl_FragColor = vec4(col, 1.0);
 }
 """
 
-# Apollonian-style fractal-packed circles. Iterating an
-# inversion-and-fold gives self-similar circle nesting forever.
-# Hypnotic depth — feels like falling into the pattern.
-APOLLONIAN_SHADER = """\
+# Mandelbrot fractal zoom with directional drift — actual zoom
+# into the fractal, but the target point drifts over time so the
+# camera doesn't endlessly approach the same well-known landmark
+# (operator's note: "everything like this I've seen before is
+# zooming into the same place infinitely... I want that, but then
+# at some point we should take a left or right turn"). The target
+# is a slow Lissajous-style walk through the Mandelbrot's
+# interesting interior region; zoom cycles on a 30s saw, so every
+# cycle starts fresh from a slightly different bearing.
+FRACTAL_SHADER = """\
 #version 100
 #ifdef GL_ES
 precision highp float;
@@ -568,19 +491,48 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 void main() {
-    vec2 p = (v_texcoord - 0.5) * 4.0;
-    p += vec2(sin(time * 0.3), cos(time * 0.4)) * 0.2;
-    float scale = 1.0;
-    for (int i = 0; i < 8; i++) {
-        p = -1.0 + 2.0 * fract(p * 0.5 + 0.5);
-        float r2 = dot(p, p);
-        float k = 1.0 / r2;
-        p *= k;
-        scale *= k;
+    // Two slow drifters at incommensurate frequencies — the
+    // combined center never repeats exactly. Stays within the
+    // -1.5..0.5, -1..1 fractal-interesting window.
+    float t = time * 0.07;
+    vec2 center = vec2(
+        -0.55 + 0.45 * sin(t * 1.0) + 0.15 * sin(t * 2.7),
+         0.00 + 0.45 * cos(t * 0.83) + 0.15 * cos(t * 2.3)
+    );
+
+    // Saw-tooth zoom. Each cycle: zoom from 1× to ~e^6 = 400×
+    // over ~30 seconds, then snap back to 1×. The drifting
+    // centre means the "snap" lands in a different region each
+    // time, so the operator sees a constantly-changing zoom
+    // through the fractal.
+    float cycle = mod(time * 0.2, 6.0);
+    float zoom = exp(cycle);
+
+    vec2 uv = (v_texcoord - 0.5) * 4.0 / zoom;
+    uv.x *= 1280.0 / 720.0;
+    vec2 z = vec2(0.0);
+    vec2 c = uv + center;
+    float fi = 0.0;
+    bool escaped = false;
+    for (int i = 0; i < 128; i++) {
+        if (dot(z, z) > 256.0) { escaped = true; break; }
+        z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+        fi += 1.0;
     }
-    float v = 0.25 * abs(p.y) / scale;
-    float hue = fract(scale * 0.01 + time * 0.05);
-    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.7, clamp(v * 8.0, 0.0, 1.0))), 1.0);
+
+    if (!escaped) {
+        // Interior of the set — dark, lightly tinted by drift.
+        gl_FragColor = vec4(0.0, 0.0, 0.04, 1.0);
+        return;
+    }
+
+    // Smooth coloring: continuous iteration count via log-log
+    // re-mapping of the escape radius. Hue cycles slowly + by
+    // depth so distinct rings of colour develop as we zoom.
+    float smooth_i = fi - log2(log2(dot(z, z))) + 4.0;
+    float hue = fract(smooth_i * 0.025 + time * 0.04);
+    float val = pow(smooth_i / 128.0, 0.5);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.75, val)), 1.0);
 }
 """
 
@@ -615,40 +567,9 @@ void main() {
 }
 """
 
-# Six-fold kaleidoscope folding a flowing sin-product over
-# itself. Mandala vibe — symmetric, ornate, hypnotic.
-KALEIDO_SHADER = """\
-#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
-
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
-const float PI = 3.14159265358979;
-
-void main() {
-    vec2 p = (v_texcoord - 0.5) * 2.0;
-    float r = length(p);
-    float a = atan(p.y, p.x);
-    float seg = PI / 3.0;
-    a = mod(a, seg);
-    a = abs(a - seg * 0.5);
-    vec2 q = vec2(cos(a), sin(a)) * r * 4.0;
-    q.x += time * 0.3;
-    q.y += sin(time) * 0.5;
-    float v = sin(q.x) * sin(q.y) + sin((q.x + q.y) * 0.7) * 0.5;
-    v = v * 0.5 + 0.5;
-    float hue = fract(v + time * 0.1);
-    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.85, v)), 1.0);
-}
-"""
+# (kaleido shader removed — operator audition: deferred to the
+# FX-chain phase as a frame transform rather than a standalone
+# generator. Kaleido is more useful applied to other generators.)
 
 # Actual 3D ray-marched rotating torus. Volumetric feel because
 # the renderer is computing per-pixel distance to a 3D surface.
@@ -717,21 +638,17 @@ void main() {
 GENERATORS = {
     "plasma":     PLASMA_SHADER,
     "tunnel":     TUNNEL_SHADER,
-    "waves":      WAVES_SHADER,
     "cells":      CELLS_SHADER,
     "moire":      MOIRE_SHADER,
-    "metaballs":  METABALLS_SHADER,
     "truchet":    TRUCHET_SHADER,
     "voronoi":    VORONOI_SHADER,
     "hexgrid":    HEXGRID_SHADER,
     "rotozoom":   ROTOZOOM_SHADER,
-    "glitch":     GLITCH_SHADER,
     "warpgrid":   WARPGRID_SHADER,
     "marble":     MARBLE_SHADER,
     "caustics":   CAUSTICS_SHADER,
-    "apollonian": APOLLONIAN_SHADER,
+    "fractal":    FRACTAL_SHADER,
     "spiral":     SPIRAL_SHADER,
-    "kaleido":    KALEIDO_SHADER,
     "raymarched": RAYMARCHED_SHADER,
 }
 
@@ -1072,10 +989,8 @@ class VJApp(Gtk.Application):
             "  <tt>[ / ]</tt>  prev / next generator (cycle all)\n"
             "  <tt>A</tt>      plasma\n"
             "  <tt>S</tt>      tunnel\n"
-            "  <tt>G</tt>      waves\n"
             "  <tt>H</tt>      cells\n"
             "  <tt>K</tt>      moiré\n"
-            "  <tt>L</tt>      metaballs\n"
             "  <tt>`</tt>      toggle nerd stats\n"
             "  <tt>Esc</tt>    quit"
             "</small>"
@@ -1182,19 +1097,17 @@ class VJApp(Gtk.Application):
             self._install_generator(GENERATOR_ORDER[self._current_generator_idx])
             return True
 
-        # Generator hotkeys — preserve the old pygame app's layout
-        # so muscle memory carries over. Particle/line-based
-        # generators (D=starfield, F=warp, J=lissajous) aren't
-        # ported yet — they need different shader primitives than
-        # a single fragment shader can do cleanly. The keys are
-        # left unbound until those land.
+        # Direct generator hotkeys. After the operator's audition
+        # pass: keep A/S/H/K bindings for the originals they
+        # explicitly approved; everything else is reachable via
+        # `[` / `]` until the favourites system goes in (the
+        # operator wants generator favs to work the same way clip
+        # favs will: tap to recall, hold to assign current).
         gen_keys = {
             Gdk.KEY_a: "plasma",
             Gdk.KEY_s: "tunnel",
-            Gdk.KEY_g: "waves",
             Gdk.KEY_h: "cells",
             Gdk.KEY_k: "moire",
-            Gdk.KEY_l: "metaballs",
         }
         if key in gen_keys and not (mod & Gdk.ModifierType.CONTROL_MASK):
             self._install_generator(gen_keys[key])

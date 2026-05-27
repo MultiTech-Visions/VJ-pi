@@ -98,6 +98,49 @@ widget.
 Each phase must end in something runnable on real Pi 5 hardware,
 not just "syntax checked locally."
 
+## Deferred features (operator-requested, parked here so the next
+## session doesn't lose them)
+
+These were captured during the generator audition pass. None are
+blocking; they all hang off the parameter system or favourites
+system that's still to come.
+
+- **Per-generator runtime parameters.** Old pygame app used
+  ←→↑↓ to tune `param_x` / `param_y` on the active generator.
+  Need to come back. `hexgrid` specifically wants:
+    * angle (so it can run vertical / diagonal as a banner)
+    * scroll speed
+  Other generators (`marble`, `caustics`, `fractal`) would also
+  benefit. The framework belongs in phase 6 alongside the FX
+  chain — both need the same "live-controllable knob" plumbing.
+
+- **Generator favourites grid.** Same affordance as clip
+  favourites (phase 4c): tap a key to recall, hold to assign the
+  currently-cycling generator to that slot. Operator wants this
+  so they can keep the [/] cycle exhaustive but also have direct
+  hotkey recall on the 5–8 they actually use in a set.
+
+- **Image-textured generators.** Operator asked about using a
+  bitmap to texture the ray-marched donut. Doable but it's a
+  different source-bin shape than the videotestsrc-only
+  generators we have today (needs filesrc → decodebin →
+  imagefreeze → glupload feeding the shader's input texture,
+  with the shader sampling the image via the standard
+  `sampler2D tex` uniform). Keep `raymarched` as procedural for
+  now; add a second variant (e.g. `imagedonut`) later when
+  there's an `assets/images/` folder and a pipeline path that
+  feeds bitmaps to glshader.
+
+- **`fractal` shader needs more dramatic zoom + smoother direction
+  changes.** Current iteration is a 30s saw-tooth zoom with a
+  drifting Lissajous-style centre. Operator's exact ask was
+  "everything like this I've seen before is zooming into the
+  same place infinitely... I want that, but then at some point
+  we should take a left or right turn". Future work: instead of
+  a hard reset every cycle, ease into a new bearing while still
+  zooming. Could pre-compute a path through known-interesting
+  fractal landmarks and traverse it as a continuous curve.
+
 ## Verified state on Pi 5
 
 - **Phase 1:** SMPTE bars visible in both windows. No GL state leak,
