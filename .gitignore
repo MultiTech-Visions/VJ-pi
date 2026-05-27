@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 venv/
 vj_state.json
+vj_last_run.log
+vj_last_update.log

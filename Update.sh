@@ -1,26 +1,30 @@
 #!/bin/bash
 # pi-paint VJ — update from GitHub.
 # Double-click this file in the file manager and choose "Execute in Terminal".
-# Pulls the latest version from the `main` branch and updates Python
-# dependencies if requirements.txt changed. Safe to re-run.
+# Pulls the latest from main and runs setup.sh again if its content changed.
 #
 # Works two ways:
 #   • If this folder is already a git clone: fast-forwards to origin/main.
-#   • If you got the files as a ZIP download (no .git folder): it does a
-#     one-time bootstrap by cloning the repo into a temp dir, moving the
-#     .git folder into place, and force-syncing tracked files. Your own
-#     MP4 clips in assets/clips/ and assets/overlays/ are untracked, so
-#     they're left alone. Same for venv/ and vj_state.json.
+#   • If you got the files as a ZIP download (no .git folder): bootstraps
+#     by cloning the repo into a temp dir, moving the .git folder into
+#     place, and force-syncing tracked files. Your own MP4 clips in
+#     assets/clips/ and assets/overlays/ are untracked, so they're left
+#     alone. Same for vj_state.json and the log files.
 
 set -e
 cd "$(dirname "$0")"
 
-# Tee everything to vj_last_update.log so the operator (or a debug
-# request) can always check what the most recent update actually did.
-# Truncate first so a fresh run isn't mistaken for stale output.
+# Self-tee re-exec so the log is reliable even when set -e exits the
+# inner shell mid-script. The previous `exec > >(tee -a ...)` pattern
+# left tee's file output block-buffered — on an aborted update the
+# tail of the log silently vanished (which is exactly the part you
+# needed to see). With the pipe form, the inner shell ending closes
+# the pipe, tee gets EOF, flushes the file, and exits cleanly.
 LOG="$(pwd)/vj_last_update.log"
-: >"$LOG"
-exec > >(tee -a "$LOG") 2>&1
+if [ "${VJ_UPDATE_TEED:-0}" = "0" ]; then
+    export VJ_UPDATE_TEED=1
+    exec bash "$0" "$@" 2>&1 | tee "$LOG"
+fi
 date '+[VJ] update start: %Y-%m-%d %H:%M:%S'
 
 REPO_URL="https://github.com/MultiTech-Visions/VJ-pi.git"
@@ -41,7 +45,7 @@ fi
 
 # ── 1. Bootstrap if this isn't a git checkout ─────────────────────────
 if [ ! -d ".git" ]; then
-  echo "[1/4] No .git folder found — this folder isn't a git checkout yet."
+  echo "[1/3] No .git folder found — this folder isn't a git checkout yet."
   echo "      Bootstrapping by cloning $REPO_URL ..."
   echo ""
 
@@ -63,13 +67,10 @@ if [ ! -d ".git" ]; then
     sleep "$WAIT"
   done
 
-  # Move the freshly-cloned .git into place so this folder becomes a
-  # real git checkout. Untracked files (your clips, venv, etc.) stay put.
   mv "$TMPDIR/repo/.git" ./.git
   rm -rf "$TMPDIR"
   trap - EXIT
 
-  # Force-sync tracked files to origin/main. Untracked files are untouched.
   echo "    Syncing tracked files to latest main..."
   git fetch origin main
   git reset --hard origin/main
@@ -77,35 +78,30 @@ if [ ! -d ".git" ]; then
 
   echo "    done. This folder is now a git checkout — future updates will be fast."
   echo ""
-  STASHED=0
+  OLD_SETUP_HASH=""
 else
-  # ── 1b. Already a git checkout — stash any local changes ────────────
-  STASHED=0
+  # ── 1b. Already a git checkout ────────────────────────────────────
   if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "[1/4] Local changes detected — stashing them before update..."
+    echo "[1/3] Local changes detected — stashing them before update..."
     git stash push -u -m "Update.sh auto-stash $(date +%Y-%m-%d_%H:%M:%S)"
-    STASHED=1
     echo "    done. (Restore later with: git stash pop)"
   else
-    echo "[1/4] No local changes to stash."
+    echo "[1/3] No local changes to stash."
   fi
   echo ""
 
-  # ── 2. Remember requirements.txt hash before pulling ──────────────────
-  OLD_REQ_HASH=""
-  if [ -f requirements.txt ]; then
-    OLD_REQ_HASH=$(sha1sum requirements.txt | awk '{print $1}')
+  OLD_SETUP_HASH=""
+  if [ -f setup.sh ]; then
+    OLD_SETUP_HASH=$(sha1sum setup.sh | awk '{print $1}')
   fi
 
-  # ── 3. Fetch + fast-forward to origin/main ────────────────────────────
-  echo "[2/4] Fetching latest from GitHub..."
+  echo "[2/3] Fetching latest from GitHub..."
   for attempt in 1 2 3 4; do
     if git fetch origin main; then
       break
     fi
     if [ "$attempt" -eq 4 ]; then
       echo "ERROR: could not fetch from origin after 4 attempts."
-      echo "       Check your internet connection and try again."
       read -p "Press Enter to close..."
       exit 1
     fi
@@ -117,7 +113,7 @@ else
   echo ""
 
   CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  echo "[3/4] Updating to latest main (current branch: $CURRENT_BRANCH)..."
+  echo "[3/3] Updating to latest main (current branch: $CURRENT_BRANCH)..."
   if [ "$CURRENT_BRANCH" = "main" ]; then
     git pull --ff-only origin main
   else
@@ -129,35 +125,26 @@ else
   echo ""
 fi
 
-# ── 4. Update Python deps if requirements.txt changed ─────────────────
-# (For the bootstrap path, OLD_REQ_HASH is unset, so we always run pip.)
-NEW_REQ_HASH=""
-if [ -f requirements.txt ]; then
-  NEW_REQ_HASH=$(sha1sum requirements.txt | awk '{print $1}')
+# ── 2. Re-run setup.sh if it changed ──────────────────────────────────
+# In the GStreamer era there's no requirements.txt to diff (all deps
+# come from apt via setup.sh). If setup.sh's content changed,
+# something in the apt list probably moved — re-run it so the
+# operator doesn't trip over a missing package next launch.
+NEW_SETUP_HASH=""
+if [ -f setup.sh ]; then
+  NEW_SETUP_HASH=$(sha1sum setup.sh | awk '{print $1}')
 fi
-
-if [ -d "venv" ] && [ "${OLD_REQ_HASH:-bootstrap}" != "$NEW_REQ_HASH" ]; then
-  echo "[4/4] requirements.txt changed (or first run) — updating Python packages..."
-  ./venv/bin/pip install --upgrade pip
-  ./venv/bin/pip install -r requirements.txt
-  echo "    done."
-elif [ ! -d "venv" ]; then
-  echo "[4/4] No venv found — run setup.sh to install dependencies."
-else
-  echo "[4/4] requirements.txt unchanged — skipping pip install."
+if [ -n "$NEW_SETUP_HASH" ] && [ "$OLD_SETUP_HASH" != "$NEW_SETUP_HASH" ]; then
+  echo "setup.sh changed since last run — you should re-run it:"
+  echo "  bash setup.sh"
+  echo ""
 fi
-echo ""
 
 # ── Done ──────────────────────────────────────────────────────────────
 echo "============================================================"
 echo "  Update complete!"
 echo "============================================================"
 echo ""
-if [ "$STASHED" -eq 1 ]; then
-  echo "NOTE: your local changes were stashed before the update."
-  echo "      Restore them with:   git stash pop"
-  echo ""
-fi
 echo "You can now double-click 'Start VJ.sh' to launch."
 echo ""
 read -p "Press Enter to close this window..."
