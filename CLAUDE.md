@@ -88,8 +88,8 @@ widget.
 | 1     | DONE     | Dual-window GTK3 + GStreamer scaffold via `videotestsrc`   |
 | 2     | DONE     | Real clip decode (`filesrc + decodebin → glupload`)         |
 | 2.5   | DONE     | Asset processor (`Process Assets.sh`): bulk HEVC 720p       |
-| 3     | NEXT     | Generators as GLSL fragment shaders via `glshader`          |
-| 4     | TODO     | Compositor + clip selection + keymap + favourites           |
+| 3     | DONE     | Generators (tunnel, plasma) as GLSL shaders via `glshader`  |
+| 4     | NEXT     | Compositor + clip selection + keymap + favourites           |
 | 5     | TODO     | Mapping mode (groups, spaces, fit modes, edit-mode mouse)   |
 | 6     | TODO     | FX chain, hits, autopilot, HUD status + FPS + polish        |
 

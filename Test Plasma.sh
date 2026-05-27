@@ -1,9 +1,10 @@
 #!/bin/bash
-# pi-paint VJ — single-screen test mode.
-# Both windows (output + control HUD) on display 0 as resizable windows.
-# Use this when there's no projector connected, just to try things out.
+# pi-paint VJ — phase 3 GPU generator test (plasma).
+# Double-click in the file manager and choose "Execute".
 #
-# Same log-tee + GUI-error-on-crash pattern as Start VJ.sh.
+# Runs the same dual-window pipeline as Start VJ.sh but with the
+# plasma GLSL fragment shader (smooth four-sine interference, hue
+# cycling) instead of a clip. No clips required.
 
 cd "$(dirname "$0")"
 LOG="$(pwd)/vj_last_run.log"
@@ -28,7 +29,7 @@ show_error() {
 }
 
 : >"$LOG"
-date '+[VJ] launch start: %Y-%m-%d %H:%M:%S' >>"$LOG"
+date '+[VJ] launch start (plasma generator): %Y-%m-%d %H:%M:%S' >>"$LOG"
 git -C "$(pwd)" log --oneline -1 2>/dev/null >>"$LOG"
 
 if ! python3 -c "
@@ -42,16 +43,12 @@ from gi.repository import Gtk, Gst
   exit 1
 fi
 
-# --single-screen tells the app to place both windows on display 0
-# and skip the projector-fullscreen path. Flag is consumed by main.py
-# in a later phase; phase 1 just respects whichever monitor the WM
-# lands on.
-python3 main.py --single-screen "$@" >>"$LOG" 2>&1
+python3 main.py --source plasma "$@" >>"$LOG" 2>&1
 EXIT=$?
 
 if [ "$EXIT" -ne 0 ]; then
   TAIL=$(tail -40 "$LOG" 2>/dev/null)
   show_error "VJ-pi crashed (exit $EXIT)" \
-    "main.py exited with status $EXIT.\n\nFull log:  $LOG\n\nLast lines:\n\n$TAIL"
+    "main.py --source plasma exited with status $EXIT.\n\nFull log:  $LOG\n\nLast lines:\n\n$TAIL"
 fi
 exit "$EXIT"
