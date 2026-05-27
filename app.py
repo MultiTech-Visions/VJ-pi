@@ -31,7 +31,9 @@ through gstreamer's gl* family. CPU presentation via gldownload
 before the gtksinks — see CLAUDE.md for the V3D-dual-context
 post-mortem that justifies all of this.
 """
+import math
 import sys
+import time as time_mod
 from pathlib import Path
 
 import gi
@@ -231,6 +233,21 @@ precision highp float;
 #endif
 varying vec2 v_texcoord;
 uniform float time;
+// Snake positions pushed from CPU each tick. Sixteen separate
+// vec2 uniforms because GstStructure can't carry bracket-named
+// fields from Python — we copy them into a local array at the
+// top of main() and loop over that instead. Head is snake_15
+// (current); snake_0 is the tail. Coords are in normalized
+// (0..1) v_texcoord space, matching the texture the maze
+// itself is drawn in. The CPU walks the truchet arc graph so
+// each position sits exactly on an arc (the snake never
+// crosses a boundary line). If the uniforms haven't been set
+// yet they default to (0,0), which puts the snake briefly at
+// the top-left corner before the first CPU tick fires.
+uniform vec2 snake_0,  snake_1,  snake_2,  snake_3;
+uniform vec2 snake_4,  snake_5,  snake_6,  snake_7;
+uniform vec2 snake_8,  snake_9,  snake_10, snake_11;
+uniform vec2 snake_12, snake_13, snake_14, snake_15;
 
 vec3 hsv2rgb(vec3 c) {
     vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
@@ -240,16 +257,6 @@ vec3 hsv2rgb(vec3 c) {
 
 float rand(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
-// Snake position at time t in normalized (0..1) v_texcoord space.
-// Two slow incommensurate sin/cos terms per axis so the path
-// fills the screen without ever exactly repeating.
-vec2 snake_at(float t) {
-    return vec2(
-        0.5 + 0.40 * sin(t * 0.13) + 0.10 * sin(t * 0.41),
-        0.5 + 0.40 * cos(t * 0.11) + 0.10 * cos(t * 0.37)
-    );
 }
 
 void main() {
@@ -269,26 +276,31 @@ void main() {
     float ring = max(smoothstep(0.06, 0.0, abs(d1 - 0.5)),
                      smoothstep(0.06, 0.0, abs(d2 - 0.5)));
 
-    // Snake trail: sample the snake's position at 24 points in
-    // the recent past (0 → ~2s back). Each sample contributes a
-    // tight exponential glow centred on that historical position;
-    // weighted to fade with age. The accumulated glow is the
-    // visible snake body.
+    // Copy 16 individually-named uniforms into a local array so
+    // the loop can use a dynamic index. (Uniform arrays with
+    // dynamic indices aren't portable in GLES 2.0; local arrays
+    // are.) Each entry is a snake position the CPU placed exactly
+    // on a truchet arc.
+    vec2 snake[16];
+    snake[0]  = snake_0;   snake[1]  = snake_1;
+    snake[2]  = snake_2;   snake[3]  = snake_3;
+    snake[4]  = snake_4;   snake[5]  = snake_5;
+    snake[6]  = snake_6;   snake[7]  = snake_7;
+    snake[8]  = snake_8;   snake[9]  = snake_9;
+    snake[10] = snake_10;  snake[11] = snake_11;
+    snake[12] = snake_12;  snake[13] = snake_13;
+    snake[14] = snake_14;  snake[15] = snake_15;
+
+    // Trail: glow weight ramps tail→head so the body fades.
     float glow = 0.0;
-    for (int i = 0; i < 24; i++) {
-        float dt = float(i) * 0.08;
-        vec2 sp = snake_at(time - dt);
-        float d = distance(v_texcoord, sp);
-        float head = exp(-d * 80.0);
-        float age_fade = 1.0 - float(i) / 24.0;
-        glow += head * age_fade;
+    for (int i = 0; i < 16; i++) {
+        float d = distance(v_texcoord, snake[i]);
+        float age_weight = float(i + 1) / 16.0;
+        glow += exp(-d * 80.0) * age_weight;
     }
 
-    // Tight bright ball at the snake's current position — gives
-    // it a visible "head" you can track separately from the
-    // body-trail. Concentrated falloff so it's a small dot, not
-    // a halo.
-    float head = exp(-distance(v_texcoord, snake_at(time)) * 120.0);
+    // Tight bright ball at the head.
+    float head = exp(-distance(v_texcoord, snake[15]) * 120.0);
 
     // Maze: full-brightness coloured arcs at their natural hue.
     // (Earlier dim-base version was too murky.)
@@ -697,6 +709,181 @@ IMAGE_FED_GENERATORS = {"donut"}
 GENERATOR_ORDER = list(GENERATORS.keys())
 
 
+# ── Truchet snake-game CPU simulation ────────────────────────────────
+#
+# The truchet generator's "snake" is a literal Snake-game-style
+# entity that walks the arc graph of the visible maze. The CPU
+# tracks its state (current cell, which side it entered from,
+# progress along the current arc) and ticks it forward at ~30Hz,
+# pushing its head + 15 trail positions to the shader as uniforms.
+# The shader only RENDERS — it doesn't compute where the snake is.
+#
+# Why on the CPU: a fragment shader can't easily simulate a
+# sequence of cell-to-cell transitions (each cell's outgoing
+# direction depends on the snake's incoming direction + the tile's
+# random rotation, which is iterative). Doing it on the CPU and
+# pushing the result as uniforms is the clean separation.
+
+# Direction conventions used here:
+#   N = "north"  → cell_y += 1  → towards higher v_texcoord.y
+#   S = "south"  → cell_y -= 1
+#   E = "east"   → cell_x += 1
+#   W = "west"   → cell_x -= 1
+# These labels are arbitrary — what matters is that Python's
+# notion of which neighbour cell shares the exit edge matches
+# the shader's geometry, which it does because both use the
+# same `gp = fract(pix)` cell decomposition.
+SNAKE_DIR_DELTA = {
+    "W": (-1, 0), "N": (0, 1), "E": (1, 0), "S": (0, -1),
+}
+SNAKE_OPPOSITE = {"W": "E", "N": "S", "E": "W", "S": "N"}
+
+# Truchet tile arc topology — which exit corresponds to which
+# entry, for each of the two tile rotation states.
+#   Type 1 (not flipped, hash <= 0.5): arcs at SW + NE corners
+#     → W↔S (via SW arc), N↔E (via NE arc)
+#   Type 2 (flipped, hash > 0.5): arcs at SE + NW corners
+#     → E↔S (via SE arc), W↔N (via NW arc)
+SNAKE_TYPE1_FLOW = {"W": "S", "S": "W", "N": "E", "E": "N"}
+SNAKE_TYPE2_FLOW = {"E": "S", "S": "E", "W": "N", "N": "W"}
+
+# Edge midpoint coordinates in local cell space (0..1).
+SNAKE_EDGE_MIDS = {
+    "N": (0.5, 1.0), "S": (0.5, 0.0),
+    "E": (1.0, 0.5), "W": (0.0, 0.5),
+}
+
+# Match the shader's `scale` constant and snap period exactly.
+TRUCHET_SCALE = 50.0
+TRUCHET_SNAP_PERIOD = 20.0
+SNAKE_TRAIL_LEN = 16
+
+
+def _truchet_tile_flipped(cx, cy, t):
+    """Mirror the shader's `rand(gid + floor(time / 20.0)) > 0.5`
+    exactly. Returns whether the tile at (cx, cy) is in its
+    flipped orientation at time `t`."""
+    snap = math.floor(t / TRUCHET_SNAP_PERIOD)
+    # Shader: rand(gid + floor(time/20)). gid is the vec2 cell
+    # coord; the float `snap` broadcasts across both axes. Then
+    # rand(p) = fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453).
+    arg = (cx + snap) * 127.1 + (cy + snap) * 311.7
+    v = math.sin(arg) * 43758.5453
+    return (v - math.floor(v)) > 0.5
+
+
+def _snake_arc_xy(start_dir, end_dir, progress):
+    """Local position (0..1) on the quarter-arc joining the
+    start-edge midpoint to the end-edge midpoint. `progress` 0
+    is at the start edge, 1 at the end edge."""
+    sx, sy = SNAKE_EDGE_MIDS[start_dir]
+    ex, ey = SNAKE_EDGE_MIDS[end_dir]
+    # Arc center = the corner adjacent to both edges. W or E
+    # picks x = 0 or 1; S or N picks y = 0 or 1.
+    cx = 0.0 if "W" in (start_dir, end_dir) else 1.0
+    cy = 0.0 if "S" in (start_dir, end_dir) else 1.0
+    sa = math.atan2(sy - cy, sx - cx)
+    ea = math.atan2(ey - cy, ex - cx)
+    diff = ea - sa
+    # Always take the short way round (the quarter arc).
+    while diff > math.pi:
+        diff -= 2.0 * math.pi
+    while diff < -math.pi:
+        diff += 2.0 * math.pi
+    angle = sa + diff * progress
+    return (cx + 0.5 * math.cos(angle), cy + 0.5 * math.sin(angle))
+
+
+class TruchetSnake:
+    """A literal Snake-game-style entity walking the truchet arc
+    graph. Constrained to the visible arcs — never crosses a
+    boundary line because each cell transition uses the tile's
+    actual arc topology.
+
+    Wraps modulo the cell grid so the snake can wander forever
+    without falling off the canvas. When the maze's 20-second
+    "snap" re-shuffles tile rotations, the snake's outgoing
+    direction is re-derived from whatever tile is now under it —
+    so it continues along whichever arc the new tile actually
+    has (no dead-arc trapping)."""
+
+    SPEED = 1.5  # arcs traversed per second
+
+    def __init__(self, canvas_w, canvas_h):
+        self.cells_x = max(1, int(canvas_w // TRUCHET_SCALE))
+        self.cells_y = max(1, int(canvas_h // TRUCHET_SCALE))
+        self.cell_x = self.cells_x // 2
+        self.cell_y = self.cells_y // 2
+        self.incoming = "W"
+        self.progress = 0.0
+        self.trail = []  # list of (norm_x, norm_y), oldest first
+        self._last_t = None
+
+    def reset(self):
+        """Drop the snake somewhere mid-canvas with a fresh trail.
+        Called when truchet is (re-)activated."""
+        self.cell_x = self.cells_x // 2
+        self.cell_y = self.cells_y // 2
+        self.incoming = "W"
+        self.progress = 0.0
+        self.trail = []
+        self._last_t = None
+
+    def _outgoing(self, t):
+        flipped = _truchet_tile_flipped(self.cell_x, self.cell_y, t)
+        flow = SNAKE_TYPE2_FLOW if flipped else SNAKE_TYPE1_FLOW
+        return flow[self.incoming]
+
+    def update(self, t):
+        """Advance the snake to time `t` (seconds, monotonic)."""
+        if self._last_t is None:
+            self._last_t = t
+        dt = max(0.0, min(0.1, t - self._last_t))  # cap big jumps
+        self._last_t = t
+        self.progress += dt * self.SPEED
+        # Transition through cells if progress crossed 1.0. Guard
+        # rail of 8 in case a huge dt would push us through many
+        # cells — should never happen in practice but if it does,
+        # don't burn the timer.
+        for _ in range(8):
+            if self.progress < 1.0:
+                break
+            self.progress -= 1.0
+            outgoing = self._outgoing(t)
+            dx, dy = SNAKE_DIR_DELTA[outgoing]
+            self.cell_x = (self.cell_x + dx) % self.cells_x
+            self.cell_y = (self.cell_y + dy) % self.cells_y
+            self.incoming = SNAKE_OPPOSITE[outgoing]
+        if self.progress >= 1.0:
+            self.progress = 0.999
+        # Compute current world-norm position.
+        outgoing = self._outgoing(t)
+        local_x, local_y = _snake_arc_xy(
+            self.incoming, outgoing, self.progress)
+        # Use TRUE scale (TRUCHET_SCALE / canvas_dim) so the
+        # snake's norm coords agree with the shader's v_texcoord
+        # mapping exactly — partial right/top columns left
+        # unused but visually faithful.
+        norm_x = (self.cell_x + local_x) * TRUCHET_SCALE / (
+            self.cells_x * TRUCHET_SCALE)
+        norm_y = (self.cell_y + local_y) * TRUCHET_SCALE / (
+            self.cells_y * TRUCHET_SCALE)
+        # Simplifies to (cx + local) / cells, but written this
+        # way makes the intent obvious.
+        self.trail.append((norm_x, norm_y))
+        if len(self.trail) > SNAKE_TRAIL_LEN:
+            self.trail = self.trail[-SNAKE_TRAIL_LEN:]
+
+    def positions(self):
+        """Padded list of SNAKE_TRAIL_LEN positions. Head is the
+        last element. Unfilled slots (on cold start) repeat the
+        oldest known position so all 16 uniforms are valid."""
+        out = list(self.trail)
+        while len(out) < SNAKE_TRAIL_LEN:
+            out.insert(0, out[0] if out else (0.5, 0.5))
+        return out
+
+
 def _find_donut_image():
     """Pick an image at random from assets/images/ to texture the
     donut. Returns a Path or None.
@@ -817,6 +1004,17 @@ class VJApp(Gtk.Application):
         self._current_generator_idx = 0
         # Big "what's playing" label, set from _refresh_status.
         self._big_status_label = None
+        # CPU-side state for the truchet snake-game. The snake's
+        # full state lives here; the shader only renders glow at
+        # the positions we push as uniforms each tick. See the
+        # TruchetSnake class above for the simulation details.
+        # _snake_start_t is set the first time the truchet
+        # generator is activated so the snake's notion of time
+        # aligns with the shader's `time` uniform for the snap
+        # cadence.
+        self._truchet_snake = TruchetSnake(CANVAS_W, CANVAS_H)
+        self._snake_start_t = None
+        self._snake_uniforms_err_logged = False
 
     # ── GTK Application lifecycle ──────────────────────────────────
 
@@ -874,6 +1072,13 @@ class VJApp(Gtk.Application):
 
         self.pipeline.set_state(Gst.State.PLAYING)
         print(f"[vj] pipeline up: {Gst.version_string()}")
+
+        # 30Hz snake-sim tick. Runs unconditionally; the callback
+        # is a no-op when truchet isn't the active generator, so
+        # the cost when idle is just one Python function call per
+        # frame (negligible). Keeping it always-on avoids juggling
+        # start/stop on every generator swap.
+        GLib.timeout_add(33, self._on_truchet_snake_tick)
 
     def do_shutdown(self):
         if self.pipeline is not None:
@@ -1065,9 +1270,63 @@ class VJApp(Gtk.Application):
         if name in GENERATOR_ORDER:
             self._current_generator_idx = GENERATOR_ORDER.index(name)
         self._current_source = ("generator", name)
+        # Reset the snake whenever truchet is (re-)activated so it
+        # always starts mid-screen with a clean trail. Also anchor
+        # the snake's local clock here — its sense of time runs
+        # from when truchet became active, matching the shader's
+        # snap cadence which uses gstreamer time from that point.
+        if name == "truchet":
+            self._truchet_snake.reset()
+            self._snake_start_t = time_mod.monotonic()
         self._swap_source_bin(new_bin, start_state)
         print(f"[vj] → generator: {name}")
         self._refresh_status()
+
+    def _on_truchet_snake_tick(self):
+        """30Hz GLib timer callback. Advances the snake-game
+        simulation and pushes its current head + trail positions
+        to the truchet shader as uniforms. No-op when truchet
+        isn't the active source.
+
+        Returns True so GLib keeps the timer alive."""
+        active = (self._current_source
+                  and self._current_source[0] == "generator"
+                  and self._current_source[1] == "truchet")
+        if not active or self._source_bin is None:
+            return True
+        if self._snake_start_t is None:
+            self._snake_start_t = time_mod.monotonic()
+        t = time_mod.monotonic() - self._snake_start_t
+        self._truchet_snake.update(t)
+        shader = self._source_bin.get_by_name("shader")
+        if shader is None:
+            return True
+        # Build the GstStructure of vec2 uniforms via the only
+        # syntax that actually carries vec2 values through Python:
+        # `from_string` with the typed-array form
+        # `name=< (double)x, (double)y >`. Bracket-named fields
+        # (e.g. snake[0]) can't get a value attached from Python,
+        # which is why the GLSL declares 16 individual uniforms.
+        positions = self._truchet_snake.positions()
+        fields = ", ".join(
+            f"snake_{i}=< (double){x:.5f}, (double){y:.5f} >"
+            for i, (x, y) in enumerate(positions)
+        )
+        struct_str = f"uniforms, {fields};"
+        result = Gst.Structure.from_string(struct_str)
+        if result is None or result[0] is None:
+            if not self._snake_uniforms_err_logged:
+                print(f"[vj] truchet snake: failed to build uniforms "
+                      f"structure (parse returned None)")
+                self._snake_uniforms_err_logged = True
+            return True
+        try:
+            shader.set_property("uniforms", result[0])
+        except Exception as exc:
+            if not self._snake_uniforms_err_logged:
+                print(f"[vj] truchet snake: set uniforms failed: {exc!r}")
+                self._snake_uniforms_err_logged = True
+        return True
 
     def _swap_source_bin(self, new_bin, start_state):
         """Tear down the existing source bin (if any), add the new
