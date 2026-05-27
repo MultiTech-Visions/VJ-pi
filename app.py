@@ -2,8 +2,11 @@
 
 Architecture (single GL/EGL context, V3D-native on Pi 5):
 
-    videotestsrc ─ glupload ─ tee ─┬─▶ gldownload ─ videoconvert ─ gtksink (output)
-                                   └─▶ gldownload ─ videoconvert ─ gtksink (HUD)
+    filesrc ─ decodebin ─┐
+                         │
+                         ▼
+    videoconvert ─ videoscale ─ glupload ─ tee ─┬─▶ gldownload ─ videoconvert ─ gtksink (output)
+                                                └─▶ gldownload ─ videoconvert ─ gtksink (HUD)
 
 The tee forks GL textures by refcount (zero-copy). Each branch then
 downloads back to CPU memory because `gtksink` is a CPU sink — it
@@ -11,9 +14,9 @@ accepts `video/x-raw` (system memory), not `video/x-raw(memory:GLMemory)`.
 
 This intentionally avoids `gtkglsink` (the GL-aware variant): each
 gtkglsink widget creates its own GL context, and Pi 5's V3D driver
-leaks state between contexts in the same process — that's the bug
-that killed the previous architecture. One pipeline-internal GL
-context + CPU presentation = the safe combination.
+leaks state between contexts in the same process — the bug that
+killed the previous architecture. One pipeline-internal GL context
++ CPU presentation = the safe combination.
 
 The download cost is one memcpy per sink per frame — at the HUD's
 small preview size + a single projector readout, that's <1ms per
@@ -21,10 +24,10 @@ frame on Pi 5. The win comes later when the GL pipeline does real
 work (decode → composite → shaders → tee → download) and the
 expensive bits stay GPU-resident.
 
-Phase 1: scaffold. videotestsrc only. Two windows on two displays.
-No clips, no generators, no FX, no mapping. Goal is to prove the
-dual-sink GL pipeline actually works on real Pi 5 V3D before any
-VJ logic depends on it.
+Phase 2: real clip playback. filesrc + decodebin replace
+videotestsrc. The first .mp4 / .mov in assets/clips/ plays in a
+loop on both windows. No clip selection, no FX, no mapping yet —
+just proves H.264 / HEVC decode → glupload → tee → display works.
 
 GTK3 (not GTK4) because Pi OS Bookworm's apt doesn't carry
 gst-plugins-rs (where gtk4paintablesink lives). gtksink from
@@ -32,6 +35,7 @@ gstreamer1.0-gtk3 is in apt. Upgrade path to GTK4 is contained
 when Pi OS adopts Trixie.
 """
 import sys
+from pathlib import Path
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -40,15 +44,22 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gtk, Gst, Gdk, Gio, GLib  # noqa: E402
 
 
-# Single source → GL upload → tee → per-branch GL download → gtksink.
-# Each gtksink exposes a Gtk.Widget via its `widget` property — we
-# pack those into the two windows. The GL pipeline shares one context
-# (glupload + the eventual GL effects in later phases), the tee forks
-# GL textures by refcount, then each branch downloads + converts to
-# the raw video format gtksink expects.
-PIPELINE = (
-    "videotestsrc is-live=true pattern=smpte ! "
-    "video/x-raw,width=1280,height=720,framerate=30/1 ! "
+HERE = Path(__file__).resolve().parent
+CLIPS_DIR = HERE / "assets" / "clips"
+
+# Canvas resolution. Sources get scaled to this before glupload so the
+# downstream chain operates on a fixed-size buffer regardless of clip
+# resolution. 1280x720 keeps the per-frame cost modest on Pi 5 while
+# looking sharp on a 1080p projector after the final upscale.
+CANVAS_W = 1280
+CANVAS_H = 720
+
+# Downstream chain — everything from videoconvert to the two sinks.
+# Built once as a Gst.Bin via parse_bin_from_description so we can
+# hand a single sink pad to decodebin's dynamic pad linker.
+DOWNSTREAM_DESC = (
+    "videoconvert ! videoscale ! "
+    f"video/x-raw,width={CANVAS_W},height={CANVAS_H} ! "
     "glupload ! "
     "tee name=t allow-not-linked=true "
     "t. ! queue max-size-buffers=2 leaky=downstream ! "
@@ -60,12 +71,29 @@ PIPELINE = (
 )
 
 
+def _pick_first_clip():
+    """Return the first .mp4 / .mov clip in assets/clips/, or None.
+
+    Phase 2 plays a single hardcoded clip — whichever sorts first.
+    Phase 4 swaps this for the full clip pool + favourites + keyboard
+    selection.
+    """
+    if not CLIPS_DIR.exists():
+        return None
+    candidates = (sorted(CLIPS_DIR.glob("*.mp4"))
+                  + sorted(CLIPS_DIR.glob("*.mov"))
+                  + sorted(CLIPS_DIR.glob("*.MP4"))
+                  + sorted(CLIPS_DIR.glob("*.MOV")))
+    return candidates[0] if candidates else None
+
+
 class VJApp(Gtk.Application):
     """GTK3 + GStreamer application skeleton for the VJ rewrite.
 
     Owns the GStreamer pipeline and the two top-level windows
-    (projector output + control HUD). Phase 1 has zero VJ behaviour;
-    later phases hang sources, FX, mapping, and UI off this skeleton.
+    (projector output + control HUD). Phase 2 plays one looped clip
+    through the dual-sink GL pipeline; later phases hang sources,
+    FX, mapping, and UI off this skeleton.
     """
 
     def __init__(self):
@@ -76,6 +104,7 @@ class VJApp(Gtk.Application):
         self.pipeline = None
         self.output_window = None
         self.hud_window = None
+        self._downstream_bin = None
 
     # ── GTK Application lifecycle ──────────────────────────────────
 
@@ -85,20 +114,57 @@ class VJApp(Gtk.Application):
 
     def do_activate(self):
         Gst.init(None)
+
+        clip = _pick_first_clip()
+        if clip is None:
+            self._fail(
+                f"No clips found in {CLIPS_DIR}\n\n"
+                "Drop an .mp4 or .mov file in there and re-launch.\n"
+                "Phase 2 plays whichever clip sorts first."
+            )
+            return
+        print(f"[vj] playing clip: {clip.name}")
+
+        # Build the pipeline manually so we can attach decodebin's
+        # dynamic video pad to the downstream chain at runtime.
+        # parse_launch can theoretically handle this for video-only
+        # files but breaks on audio+video mp4 (the deferred link
+        # races to whichever pad emerges first). Doing it explicitly
+        # is ~10 lines and removes the race.
+        self.pipeline = Gst.Pipeline.new("vj-pipeline")
+
+        source = Gst.ElementFactory.make("filesrc", "source")
+        source.set_property("location", str(clip))
+
+        decoder = Gst.ElementFactory.make("decodebin", "decoder")
+        decoder.connect("pad-added", self._on_decoder_pad_added)
+
         try:
-            self.pipeline = Gst.parse_launch(PIPELINE)
+            self._downstream_bin = Gst.parse_bin_from_description(
+                DOWNSTREAM_DESC, True
+            )
         except GLib.Error as exc:
             self._fail(
-                "Could not build the GStreamer pipeline.\n"
+                "Could not build the downstream GStreamer chain.\n"
                 f"  Error: {exc.message}\n\n"
                 "Hint: is `gstreamer1.0-gtk3` installed? Re-run setup.sh."
             )
             return
+        self._downstream_bin.set_name("downstream")
+
+        for el in (source, decoder, self._downstream_bin):
+            self.pipeline.add(el)
+
+        if not source.link(decoder):
+            self._fail("Could not link filesrc → decodebin")
+            return
+        # decodebin → downstream is linked in _on_decoder_pad_added
+        # once decodebin figures out the stream type.
 
         output_sink = self.pipeline.get_by_name("output_sink")
         hud_sink = self.pipeline.get_by_name("hud_sink")
         if output_sink is None or hud_sink is None:
-            self._fail("gtksink elements missing from the parsed pipeline")
+            self._fail("gtksink elements missing from the parsed downstream bin")
             return
 
         output_widget = output_sink.get_property("widget")
@@ -109,7 +175,7 @@ class VJApp(Gtk.Application):
         hud_widget.show()
 
         self.output_window = self._build_output_window(output_widget)
-        self.hud_window = self._build_hud_window(hud_widget)
+        self.hud_window = self._build_hud_window(hud_widget, clip.name)
         self.add_window(self.output_window)
         self.add_window(self.hud_window)
 
@@ -130,46 +196,59 @@ class VJApp(Gtk.Application):
             self.pipeline.set_state(Gst.State.NULL)
         Gtk.Application.do_shutdown(self)
 
+    # ── decodebin dynamic pad ──────────────────────────────────────
+
+    def _on_decoder_pad_added(self, _decoder, new_pad):
+        """decodebin emits a pad per detected stream. We only want
+        video — ignore audio (most mp4s have both). The downstream
+        bin has a single ghost sink (the videoconvert input)."""
+        caps = new_pad.get_current_caps()
+        if caps is None:
+            return
+        struct_name = caps.get_structure(0).get_name()
+        if not struct_name.startswith("video/"):
+            return
+        sink_pad = self._downstream_bin.get_static_pad("sink")
+        if sink_pad is None or sink_pad.is_linked():
+            return
+        result = new_pad.link(sink_pad)
+        if result == Gst.PadLinkReturn.OK:
+            print(f"[vj] decoder → downstream linked ({struct_name})")
+        else:
+            print(f"[vj] decoder link failed: {result}")
+
     # ── Window construction ────────────────────────────────────────
 
     def _build_output_window(self, video_widget):
         win = Gtk.ApplicationWindow(application=self)
         win.set_title("pi-paint VJ — Output")
-        win.set_default_size(1280, 720)
-        # Hide the cursor over the projection — operator can park it
-        # somewhere off-screen if they want it back. (Phase 5+ flips
-        # this on for mapping/edit mode.)
+        win.set_default_size(CANVAS_W, CANVAS_H)
         win.add(video_widget)
         win.connect("destroy", lambda *_: self.quit())
-        # Esc / Shift+Esc panic exit; F11 / F12 will be display
-        # cycling in phase 4. For phase 1 just Esc-to-quit.
         win.connect("key-press-event", self._on_key_press)
         return win
 
-    def _build_hud_window(self, video_widget):
+    def _build_hud_window(self, video_widget, clip_name):
         win = Gtk.ApplicationWindow(application=self)
         win.set_title("VJ Control")
         win.set_default_size(680, 720)
         # Vertical box: preview on top, placeholder status below.
-        # Later phases add the favourites grid, FPS readout, status
-        # panel, key cheat sheet etc. underneath the preview.
+        # Later phases add favourites grid, FPS readout, status
+        # panel, key cheat sheet etc.
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         box.set_margin_top(6)
         box.set_margin_bottom(6)
         box.set_margin_start(6)
         box.set_margin_end(6)
-        # Constrain the preview height so the rest of the HUD has
-        # room as we add to it. 380px ≈ same proportion the pygame
-        # HUD used.
         video_widget.set_size_request(-1, 380)
         box.pack_start(video_widget, False, False, 0)
-        placeholder = Gtk.Label()
-        placeholder.set_markup(
-            "<b>VJ Control HUD</b>\n"
-            "<small>phase 1 scaffold — videotestsrc dual-sink proof</small>"
+        status = Gtk.Label()
+        status.set_markup(
+            f"<b>VJ Control HUD</b>\n"
+            f"<small>phase 2 — playing: {GLib.markup_escape_text(clip_name)}</small>"
         )
-        placeholder.set_xalign(0.0)
-        box.pack_start(placeholder, False, False, 0)
+        status.set_xalign(0.0)
+        box.pack_start(status, False, False, 0)
         win.add(box)
         win.connect("destroy", lambda *_: self.quit())
         win.connect("key-press-event", self._on_key_press)
@@ -182,8 +261,8 @@ class VJApp(Gtk.Application):
 
         Pi setups typically have the projector on monitor 1 and the
         small operator screen on monitor 0. We position via the
-        monitor's geometry (Gdk.Monitor.get_geometry returns absolute
-        screen coords on multi-head X) then optionally fullscreen.
+        monitor's geometry (absolute screen coords on multi-head X)
+        then optionally fullscreen.
         """
         display = Gdk.Display.get_default()
         if display is None:
@@ -194,8 +273,6 @@ class VJApp(Gtk.Application):
         idx = min(max(0, monitor_idx), n - 1)
         monitor = display.get_monitor(idx)
         geo = monitor.get_geometry()
-        # Move to the monitor's top-left corner before realising
-        # fullscreen so the WM picks the right physical screen.
         window.move(geo.x, geo.y)
         if fullscreen:
             window.fullscreen_on_monitor(display.get_default_screen(), idx)
@@ -209,9 +286,6 @@ class VJApp(Gtk.Application):
             self.quit()
             return True
         if key == Gdk.KEY_Escape:
-            # Phase 1 has no FX/clip state to panic-clear, so Esc
-            # alone just quits for now. Later phases route this to
-            # the "panic" command (clear FX, overlays, hits).
             self.quit()
             return True
         return False
@@ -230,8 +304,17 @@ class VJApp(Gtk.Application):
             err, _ = msg.parse_warning()
             print(f"[vj.gst] warn: {err.message}")
         elif t == Gst.MessageType.EOS:
-            print("[vj.gst] end of stream")
-            self.quit()
+            # Loop the clip: seek back to position 0. seek_simple with
+            # FLUSH causes a small frame stutter at the loop point; a
+            # proper segment-seek loop is smoother but requires more
+            # state. Phase 4 (where we add the clip pool + crossfades)
+            # is the right time to refine this.
+            print("[vj.gst] EOS — looping")
+            self.pipeline.seek_simple(
+                Gst.Format.TIME,
+                Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+                0,
+            )
 
     # ── Failure surface ────────────────────────────────────────────
 
