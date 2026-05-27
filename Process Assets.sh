@@ -1,11 +1,27 @@
 #!/bin/bash
-# pi-paint VJ — bulk transcode the clip + overlay library to HEVC 720p.
+# pi-paint VJ — bulk transcode the clip + overlay library to MJPEG 720p.
 # Double-click in the file manager and choose "Execute".
 #
-# Why: Pi 5 has no H.264 hardware decode (the block was removed by
-# the Pi Foundation). HEVC at canvas resolution gets hardware decode
-# via v4l2slh265dec, freeing the CPU. Transcoding once = smooth
-# playback forever.
+# Why MJPEG and not HEVC: the obvious answer would be HEVC since
+# Pi 5 has hardware HEVC decode (v4l2slh265dec). In practice the
+# zero-copy DMABuf path from that decoder into glupload doesn't
+# negotiate cleanly on Pi OS today — the workaround (videoconvert
+# between decoder and glupload) eats ~60% CPU just shuffling YUV
+# from DMABuf into system memory, and there are known buffer-
+# format issues downstream. See [[research-findings-pi-vj]].
+#
+# MJPEG flips this: each frame is an independent JPEG. libjpeg-turbo
+# decodes it directly to system memory with no negotiation drama,
+# glupload picks it up cleanly, and the whole rendering path is
+# happy. Measured on a Pi 5 with our 2-branch tee downstream:
+#   HEVC 720p:   ~98% CPU (broken DMABuf path tax)
+#   H.264 720p: ~207% CPU (no Pi 5 hw decode, software at 720p
+#               is heavy on the ARM cores even with 4 of them)
+#   MJPEG 720p:  ~19% CPU  ← winner
+#
+# Trade-off: MJPEG files are ~2× the size of HEVC at equivalent
+# visual quality (5-second loop: ~35MB vs ~18MB). For a VJ clip
+# library this is fine. Disk is cheap; CPU at showtime isn't.
 #
 # Behaviour:
 #   * Walks assets/clips/ and assets/overlays/.
@@ -71,7 +87,7 @@ if [ "$TOTAL" -eq 0 ]; then
 fi
 echo "[VJ] found $TOTAL candidate file(s)" >> "$LOG"
 
-# Returns 0 if the file is already HEVC at exactly 1280x720 — the
+# Returns 0 if the file is already MJPEG at exactly 1280x720 — the
 # canonical "no transcode needed" state.
 is_already_processed() {
   local f="$1"
@@ -79,7 +95,7 @@ is_already_processed() {
   info=$(ffprobe -v error -select_streams v:0 \
     -show_entries stream=codec_name,width,height \
     -of csv=p=0 "$f" 2>/dev/null)
-  [ "$info" = "hevc,1280,720" ]
+  [ "$info" = "mjpeg,1280,720" ]
 }
 
 # Drive zenity --progress by echoing percentage + "# comment" lines.
@@ -105,14 +121,26 @@ is_already_processed() {
 
     orig_dir="$dir/.original"
     mkdir -p "$orig_dir"
-    tmp_out="$dir/.${name}.tmp.mp4"
+    # Output container is .mov so the codec→container pairing is
+    # unambiguous (mp4 + mjpeg is technically legal but some
+    # players choke; .mov + mjpeg is the well-trodden path).
+    base="${name%.*}"
+    tmp_out="$dir/.${base}.tmp.mov"
+    final_name="${base}.mov"
 
     {
       echo "[VJ] === transcoding $f ==="
+      # -q:v 5 is a good MJPEG quality default (libjpeg-turbo
+      #   scale of 1-31, lower is higher quality). 5 looks
+      #   visually transparent on VJ-style loops while keeping
+      #   file sizes ~2× HEVC at the same resolution.
+      # -pix_fmt yuvj420p is the JPEG-native colour space; using
+      #   yuv420p would force a needless extra colour-range
+      #   conversion at decode time.
       ffmpeg -y -nostdin -loglevel warning \
         -i "$f" \
         -vf scale=1280:720 \
-        -c:v libx265 -preset fast -crf 23 \
+        -c:v mjpeg -q:v 5 -pix_fmt yuvj420p \
         -an \
         "$tmp_out" 2>&1
       echo "[VJ] === ffmpeg exit $? ==="
@@ -124,14 +152,13 @@ is_already_processed() {
       continue
     fi
 
-    # Atomic-ish swap: original aside, temp into place under the
-    # original filename. The engine doesn't care about renames as
-    # long as the file's contents are valid — keeping the name
-    # stable means any references (favourites, saved state, etc.)
-    # keep working.
+    # Atomic-ish swap: original aside, temp into place. The
+    # container is now .mov (MJPEG-in-.mp4 is technically legal
+    # but flaky with some players), so the processed file gets a
+    # new extension. Originals are kept in .original/ either way.
     mv "$f" "$orig_dir/$name"
-    mv "$tmp_out" "$f"
-    echo "[VJ] ok: $f (original moved to $orig_dir/$name)" >> "$LOG"
+    mv "$tmp_out" "$dir/$final_name"
+    echo "[VJ] ok: $dir/$final_name (original moved to $orig_dir/$name)" >> "$LOG"
   done
 
   echo "100"

@@ -58,15 +58,23 @@ CANVAS_H = 720
 # before its gtksink (gtksink doesn't accept GLMemory). The
 # downstream's ghost sink pad accepts GL textures, so source-bin
 # replacement is a clean unlink/link without touching GL state.
-DOWNSTREAM_DESC = (
-    "tee name=t allow-not-linked=true "
-    "t. ! queue max-size-buffers=2 leaky=downstream ! "
-    "  gldownload ! videoconvert ! "
-    "  gtksink name=output_sink sync=false "
-    "t. ! queue max-size-buffers=2 leaky=downstream ! "
-    "  gldownload ! videoconvert ! "
-    "  gtksink name=hud_sink sync=false"
-)
+# Downstream is built programmatically by _build_downstream_bin()
+# rather than via parse syntax because parse_bin_from_description
+# can't accept the "(memory:GLMemory)" caps feature (parens
+# collide with bin-grouping syntax). Shape:
+#
+#   tee → 2× [ queue → glcolorconvert →
+#              capsfilter(GLMemory, BGRA) → gldownload → gtksink ]
+#
+# Why GL-side BGRA conversion instead of CPU videoconvert: gtksink
+# only accepts system-memory BGRA/BGRx. The naive shape (gldownload
+# → videoconvert → gtksink) does the colour conversion on the CPU
+# AFTER pulling the texture from the GPU — that combined step uses
+# ~65% of a core *per branch* on the Pi 5 at 720p, doubled for
+# the two-window output. Doing the conversion to BGRA on the GPU
+# (glcolorconvert), THEN downloading directly to gtksink, saves
+# the CPU videoconvert step and dramatically cuts the per-frame
+# work.
 
 
 # ── GLSL fragment shaders ─────────────────────────────────────────
@@ -1030,13 +1038,11 @@ class VJApp(Gtk.Application):
         # constructed below and added to the same pipeline.
         self.pipeline = Gst.Pipeline.new("vj-pipeline")
         try:
-            self._downstream_bin = Gst.parse_bin_from_description(
-                DOWNSTREAM_DESC, True
-            )
-        except GLib.Error as exc:
+            self._downstream_bin = self._build_downstream_bin()
+        except Exception as exc:
             self._fail(
                 "Could not build the downstream GStreamer chain.\n"
-                f"  Error: {exc.message}\n\n"
+                f"  Error: {exc!r}\n\n"
                 "Hint: is `gstreamer1.0-gtk3` installed? Re-run setup.sh."
             )
             return
@@ -1084,6 +1090,55 @@ class VJApp(Gtk.Application):
         if self.pipeline is not None:
             self.pipeline.set_state(Gst.State.NULL)
         Gtk.Application.do_shutdown(self)
+
+    # ── Downstream-bin builder ─────────────────────────────────────
+
+    def _build_downstream_bin(self):
+        """Build the downstream chain programmatically.
+
+        See the DOWNSTREAM_DESC comment near the top of the file
+        for the shape and the rationale. Two branches off a tee,
+        each doing GL-side BGRA conversion → direct download into
+        gtksink. No CPU `videoconvert` anywhere — that's the win.
+        """
+        outer = Gst.Bin.new("downstream")
+        tee = Gst.ElementFactory.make("tee", "t")
+        tee.set_property("allow-not-linked", True)
+        outer.add(tee)
+        gl_bgra_caps = Gst.Caps.from_string(
+            "video/x-raw(memory:GLMemory),format=BGRA")
+
+        def branch(sink_name):
+            """Build one tee output branch and return (entry pad, sink element)."""
+            q = Gst.ElementFactory.make("queue", None)
+            q.set_property("max-size-buffers", 2)
+            q.set_property("leaky", 2)  # downstream
+            cc = Gst.ElementFactory.make("glcolorconvert", None)
+            cf = Gst.ElementFactory.make("capsfilter", None)
+            cf.set_property("caps", gl_bgra_caps)
+            dl = Gst.ElementFactory.make("gldownload", None)
+            sink = Gst.ElementFactory.make("gtksink", sink_name)
+            sink.set_property("sync", False)
+            for e in (q, cc, cf, dl, sink):
+                outer.add(e)
+            if not (q.link(cc) and cc.link(cf)
+                    and cf.link(dl) and dl.link(sink)):
+                raise RuntimeError(f"downstream branch link failed ({sink_name})")
+            # Link the tee's request pad to the queue's sink.
+            tee_src = tee.request_pad_simple("src_%u")
+            if tee_src is None:
+                raise RuntimeError("tee request pad failed")
+            if tee_src.link(q.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+                raise RuntimeError(f"tee → queue link failed ({sink_name})")
+            return sink
+
+        branch("output_sink")
+        branch("hud_sink")
+
+        # Expose the tee's sink pad as the bin's sink so source-bin
+        # links work as before (single link point into downstream).
+        outer.add_pad(Gst.GhostPad.new("sink", tee.get_static_pad("sink")))
+        return outer
 
     # ── Source-bin builders ────────────────────────────────────────
 
