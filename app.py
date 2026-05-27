@@ -129,9 +129,154 @@ void main() {
 }
 """
 
+# Two-source rippling interference pattern — two moving centres,
+# each emanating sinusoidal rings, summed and hue-cycled.
+WAVES_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+const float PI = 3.14159265358979;
+
+void main() {
+    vec2 pix = v_texcoord * vec2(1280.0, 720.0);
+    float t = time;
+    vec2 c1 = vec2(1280.0 * 0.3 + sin(t * 0.5) * 1280.0 * 0.15,
+                    720.0 * 0.5 + cos(t * 0.4) *  720.0 * 0.2);
+    vec2 c2 = vec2(1280.0 * 0.7 + cos(t * 0.6) * 1280.0 * 0.15,
+                    720.0 * 0.5 + sin(t * 0.45) * 720.0 * 0.2);
+    float period = 52.0;
+    float r1 = distance(pix, c1) / period;
+    float r2 = distance(pix, c2) / period;
+    float v = (sin(r1 * PI * 2.0 - t * 2.0)
+             + sin(r2 * PI * 2.0 + t * 1.5)) * 0.25 + 0.5;
+    float hue = fract(v + t * 0.1);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.86, v)), 1.0);
+}
+"""
+
+# Animated quasi-voronoi cellular pattern. The sin*sin product
+# creates a grid of "cells" that wobble as the input coordinates
+# get phase-shifted by their neighbours over time.
+CELLS_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+const float PI = 3.14159265358979;
+
+void main() {
+    vec2 pix = v_texcoord * vec2(1280.0, 720.0);
+    float t = time;
+    float scale = 0.038;
+    float u = pix.x * scale + sin(pix.y * scale * 0.6 + t)      * 0.4;
+    float vv = pix.y * scale + cos(pix.x * scale * 0.6 + t * 1.1) * 0.4;
+    float pat = abs(sin(u * PI) * sin(vv * PI));
+    pat = pow(pat, 0.6);
+    float hue = fract((u * 28.0 + t * 14.0) / 180.0);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.82, pat)), 1.0);
+}
+"""
+
+# Concentric-ring moiré from two slowly orbiting sources. The
+# interference between two ring patterns gives the optical-illusion
+# look that's hard to look away from at the projector.
+MOIRE_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+    vec2 pix = v_texcoord * vec2(1280.0, 720.0);
+    vec2 ctr = vec2(640.0, 360.0);
+    float t = time;
+    float ox = 1280.0 * 0.10;
+    float oy =  720.0 * 0.10;
+    vec2 c1 = ctr + vec2(sin(t * 0.5) * ox, cos(t * 0.4) * oy);
+    vec2 c2 = ctr - vec2(sin(t * 0.5) * ox, cos(t * 0.4) * oy);
+    float spacing = 14.0;
+    float r1 = distance(pix, c1) / spacing;
+    float r2 = distance(pix, c2) / spacing;
+    float pat = (sin(r1 + t * 2.0) + sin(r2 - t * 1.5)) * 0.25 + 0.5;
+    float hue = fract(pat + t * 22.0 / 180.0);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.82, pat)), 1.0);
+}
+"""
+
+# Classic sum-of-fields metaballs — six orbiting points each
+# contribute an inverse-square "blob" field; threshold (via
+# brightness) gives the merging-blob look that's been in every
+# VJ tool since the demoscene days.
+METABALLS_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+const float PI = 3.14159265358979;
+
+void main() {
+    vec2 pix = v_texcoord * vec2(1280.0, 720.0);
+    float t = time;
+    float influence = 1280.0 * 26.0 * 1.4;
+    float field = 0.0;
+    for (int i = 0; i < 6; i++) {
+        float phase = float(i) * 2.0 * PI / 6.0;
+        float bx = 640.0 + cos(t * 0.5 + phase * 1.3) * 1280.0 * 0.35;
+        float by = 360.0 + sin(t * 0.7 + phase * 1.7) *  720.0 * 0.35;
+        float dx = pix.x - bx;
+        float dy = pix.y - by;
+        float r2 = dx * dx + dy * dy + 1.0;
+        field += influence / r2;
+    }
+    float intensity = clamp(field / 2.5, 0.0, 1.0);
+    float hue = fract((intensity * 80.0 + t * 20.0) / 180.0);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.9, intensity)), 1.0);
+}
+"""
+
 GENERATORS = {
     "plasma": PLASMA_SHADER,
     "tunnel": TUNNEL_SHADER,
+    "waves": WAVES_SHADER,
+    "cells": CELLS_SHADER,
+    "moire": MOIRE_SHADER,
+    "metaballs": METABALLS_SHADER,
 }
 
 
@@ -437,15 +582,21 @@ class VJApp(Gtk.Application):
         box.pack_start(self._status_label, False, False, 0)
         self._refresh_status()
 
-        # Brief key cheat sheet for phase 4a. Phase 6 will replace
-        # this with a richer panel + favourites grid.
+        # Key cheat sheet. Phase 6 will replace with a richer
+        # panel + favourites grid; for now the operator can read
+        # the active bindings off the HUD.
         keymap = Gtk.Label()
         keymap.set_markup(
             "<small>"
-            "<b>Keys</b> — phase 4a:\n"
+            "<b>Keys</b>:\n"
             "  <tt>- / =</tt>  prev / next clip\n"
-            "  <tt>A</tt>      plasma generator\n"
-            "  <tt>S</tt>      tunnel generator\n"
+            "  <tt>A</tt>      plasma\n"
+            "  <tt>S</tt>      tunnel\n"
+            "  <tt>G</tt>      waves\n"
+            "  <tt>H</tt>      cells\n"
+            "  <tt>K</tt>      moiré\n"
+            "  <tt>L</tt>      metaballs\n"
+            "  <tt>`</tt>      toggle nerd stats\n"
             "  <tt>Esc</tt>    quit"
             "</small>"
         )
@@ -520,14 +671,22 @@ class VJApp(Gtk.Application):
             self._install_clip(self._current_clip_idx + 1)
             return True
 
-        # Generator hotkeys — match the old keymap subset that's
-        # ported so far. A / S correspond to the first two
-        # generators in the old layout (plasma / tunnel).
-        if key == Gdk.KEY_a and not (mod & Gdk.ModifierType.CONTROL_MASK):
-            self._install_generator("plasma")
-            return True
-        if key == Gdk.KEY_s and not (mod & Gdk.ModifierType.CONTROL_MASK):
-            self._install_generator("tunnel")
+        # Generator hotkeys — preserve the old pygame app's layout
+        # so muscle memory carries over. Particle/line-based
+        # generators (D=starfield, F=warp, J=lissajous) aren't
+        # ported yet — they need different shader primitives than
+        # a single fragment shader can do cleanly. The keys are
+        # left unbound until those land.
+        gen_keys = {
+            Gdk.KEY_a: "plasma",
+            Gdk.KEY_s: "tunnel",
+            Gdk.KEY_g: "waves",
+            Gdk.KEY_h: "cells",
+            Gdk.KEY_k: "moire",
+            Gdk.KEY_l: "metaballs",
+        }
+        if key in gen_keys and not (mod & Gdk.ModifierType.CONTROL_MASK):
+            self._install_generator(gen_keys[key])
             return True
 
         return False
