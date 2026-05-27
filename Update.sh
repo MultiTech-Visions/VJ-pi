@@ -15,6 +15,14 @@
 set -e
 cd "$(dirname "$0")"
 
+# Tee everything to vj_last_update.log so the operator (or a debug
+# request) can always check what the most recent update actually did.
+# Truncate first so a fresh run isn't mistaken for stale output.
+LOG="$(pwd)/vj_last_update.log"
+: >"$LOG"
+exec > >(tee -a "$LOG") 2>&1
+date '+[VJ] update start: %Y-%m-%d %H:%M:%S'
+
 REPO_URL="https://github.com/MultiTech-Visions/VJ-pi.git"
 
 echo ""
