@@ -4,6 +4,7 @@ venv/
 vj_state.json
 vj_last_run.log
 vj_last_update.log
+vj_last_process.log
 
 # Never let git stash / commit grab user media. The clips and
 # overlays folders are operator data — large binaries that have no
