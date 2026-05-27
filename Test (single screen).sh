@@ -40,7 +40,7 @@ fi
 date '+[VJ] launch start: %Y-%m-%d %H:%M:%S' >>"$LOG"
 git -C "$(pwd)" log --oneline -1 2>/dev/null >>"$LOG"
 
-if ! PYGAME_HIDE_SUPPORT_PROMPT=1 ./venv/bin/python -c "import pygame, moderngl, numpy, cv2" >>"$LOG" 2>&1; then
+if ! PYGAME_HIDE_SUPPORT_PROMPT=1 ./venv/bin/python -c "import pygame, numpy, cv2" >>"$LOG" 2>&1; then
   echo "[VJ] missing python deps — running pip install -r requirements.txt..." >>"$LOG"
   if ! ./venv/bin/pip install -r requirements.txt >>"$LOG" 2>&1; then
     show_error "VJ-pi: dependency install failed" \

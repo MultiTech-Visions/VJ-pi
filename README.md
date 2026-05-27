@@ -66,9 +66,9 @@ The HUD has an **OUTPUT DISPLAY** picker. Two ways to drive it:
   back to the output; the keyboard shortcuts always work.
 
 Switching is **live** in both windowed test mode and fullscreen mode.
-Under the hood "fullscreen" is implemented as a borderless SDL2 window
-(`borderless=True`) sized to fill the chosen display — this sidesteps
-the [long-standing SDL2 bug](https://github.com/libsdl-org/SDL/issues/3192)
+Under the hood "fullscreen" is implemented as a borderless window
+(`NOFRAME`) sized to fill the chosen display — this sidesteps the
+[long-standing SDL2 bug](https://github.com/libsdl-org/SDL/issues/3192)
 where `SDL_WINDOW_FULLSCREEN` can't be reliably retargeted between
 monitors. The output covers the full display the same way a true
 fullscreen window would.
@@ -379,13 +379,10 @@ blit to pygame screen
 
 ## Performance notes
 
-- Default render resolution is **1280×720** (HD); the rendered frame
-  is uploaded to a streaming SDL2 texture each frame and the GPU
-  (V3D on Pi 5) handles the canvas → display upscale during
-  `renderer.present()`. That replaces the previous per-frame
-  `pygame.transform.smoothscale`, which was the dominant CPU cost at
-  1080p+ projector resolutions. Clip downsampling on initial load
-  still uses `cv2.INTER_AREA` for clean anti-aliased shrinking and
+- Default render resolution is **1280×720** (HD); the output surface
+  scales to the display via `pygame.transform.smoothscale` (bilinear)
+  so it doesn't look pixelated on a 1080p projector. Clip downsampling
+  uses `cv2.INTER_AREA` for clean anti-aliased shrinking and
   `cv2.INTER_LINEAR` for upscaling.
 - **`assets/Process Assets.sh` bakes every clip to the render
   resolution** so the per-frame `cv2.resize` is a no-op at playback —
