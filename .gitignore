@@ -17,3 +17,6 @@ assets/clips/*
 assets/overlays/*
 !assets/overlays/.gitkeep
 !assets/overlays/README*
+assets/images/*
+!assets/images/.gitkeep
+!assets/images/README*

@@ -43,6 +43,7 @@ from gi.repository import Gtk, Gst, Gdk, Gio, GLib  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 CLIPS_DIR = HERE / "assets" / "clips"
+IMAGES_DIR = HERE / "assets" / "images"
 
 # Canvas resolution. Source bins normalise to this before the
 # downstream tee, so the GL texture flowing through is always
@@ -283,12 +284,29 @@ void main() {
         glow += head * age_fade;
     }
 
+    // Tight bright ball at the snake's current position — gives
+    // it a visible "head" you can track separately from the
+    // body-trail. Concentrated falloff so it's a small dot, not
+    // a halo.
+    float head = exp(-distance(v_texcoord, snake_at(time)) * 120.0);
+
+    // Maze: full-brightness coloured arcs at their natural hue.
+    // (Earlier dim-base version was too murky.)
     float hue = fract(rand(gid) * 0.7 + time * 0.05);
-    // Base truchet visible dimly + bright arc segments where the
-    // snake passes. clamp(...,0,1) prevents over-saturation when
-    // the snake head sits right on top of an arc.
-    float intensity = clamp(ring * (0.25 + glow * 1.5), 0.0, 1.0);
-    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.85, intensity)), 1.0);
+    vec3 arc = hsv2rgb(vec3(hue, 0.85, ring));
+
+    // Where the snake's body overlaps an arc, blend the arc
+    // toward white. clamp(...,0,1) caps it: arcs the snake is
+    // currently ON go fully white, ones recently passed turn
+    // toward white proportionally, ones the snake hasn't been
+    // near keep their natural colour.
+    float white_amount = clamp(ring * glow * 2.0, 0.0, 1.0);
+    vec3 col = mix(arc, vec3(1.0), white_amount);
+
+    // Head ball sits on top of everything, bright white.
+    col = clamp(col + vec3(head * 0.95), 0.0, 1.0);
+
+    gl_FragColor = vec4(col, 1.0);
 }
 """
 
@@ -520,15 +538,16 @@ void main() {
 }
 """
 
-# Mandelbrot fractal zoom with directional drift — actual zoom
-# into the fractal, but the target point drifts over time so the
-# camera doesn't endlessly approach the same well-known landmark
-# (operator's note: "everything like this I've seen before is
-# zooming into the same place infinitely... I want that, but then
-# at some point we should take a left or right turn"). The target
-# is a slow Lissajous-style walk through the Mandelbrot's
-# interesting interior region; zoom cycles on a 30s saw, so every
-# cycle starts fresh from a slightly different bearing.
+# Mandelbrot zoom into Seahorse Valley with wobble. The earlier
+# version drifted across the whole (x,y) plane and landed in the
+# all-black interior of the set — operator's complaint: "the
+# zoom went into the black part." The set's colourful detail
+# lives on its boundary; (-0.745, 0.113) is a known-good anchor
+# in the seahorse-shaped tendril cluster, and the wobble is
+# small enough in fractal-space that we never leave the
+# interesting region. At high zoom the wobble sweeps the
+# camera through the visible detail, which is what gives the
+# "take a left or right turn while zooming" feel.
 FRACTAL_SHADER = """\
 #version 100
 #ifdef GL_ES
@@ -544,47 +563,47 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 void main() {
-    // Two slow drifters at incommensurate frequencies — the
-    // combined center never repeats exactly. Stays within the
-    // -1.5..0.5, -1..1 fractal-interesting window.
-    float t = time * 0.07;
-    vec2 center = vec2(
-        -0.55 + 0.45 * sin(t * 1.0) + 0.15 * sin(t * 2.7),
-         0.00 + 0.45 * cos(t * 0.83) + 0.15 * cos(t * 2.3)
+    // Anchor inside Seahorse Valley. The whole shader stays
+    // near here — never wanders into the black interior.
+    vec2 anchor = vec2(-0.745, 0.113);
+
+    // Small wobble in fractal space, two incommensurate freqs
+    // per axis. At low zoom this is invisible; at deep zoom it
+    // sweeps the camera through visible detail — the "turn".
+    float t = time * 0.05;
+    vec2 wobble = vec2(
+        sin(t * 1.0) * 0.003 + sin(t * 2.7) * 0.001,
+        cos(t * 0.83) * 0.003 + cos(t * 2.3) * 0.001
     );
+    vec2 center = anchor + wobble;
 
-    // Saw-tooth zoom. Each cycle: zoom from 1× to ~e^6 = 400×
-    // over ~30 seconds, then snap back to 1×. The drifting
-    // centre means the "snap" lands in a different region each
-    // time, so the operator sees a constantly-changing zoom
-    // through the fractal.
-    float cycle = mod(time * 0.2, 6.0);
-    float zoom = exp(cycle);
+    // 60-second zoom cycle. Starts at zoom=7.4× (local structure
+    // visible, not the whole black-interior set) and ramps to
+    // ~1100×. Wobble has moved by reset time, so the next cycle
+    // re-enters at a different angle through the same valley.
+    float zoom_t = mod(time, 60.0);
+    float zoom = exp(2.0 + zoom_t * 0.083);
 
-    vec2 uv = (v_texcoord - 0.5) * 4.0 / zoom;
+    vec2 uv = (v_texcoord - 0.5) * 3.0 / zoom;
     uv.x *= 1280.0 / 720.0;
     vec2 z = vec2(0.0);
     vec2 c = uv + center;
     float fi = 0.0;
     bool escaped = false;
-    for (int i = 0; i < 128; i++) {
+    for (int i = 0; i < 256; i++) {
         if (dot(z, z) > 256.0) { escaped = true; break; }
         z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
         fi += 1.0;
     }
 
     if (!escaped) {
-        // Interior of the set — dark, lightly tinted by drift.
         gl_FragColor = vec4(0.0, 0.0, 0.04, 1.0);
         return;
     }
 
-    // Smooth coloring: continuous iteration count via log-log
-    // re-mapping of the escape radius. Hue cycles slowly + by
-    // depth so distinct rings of colour develop as we zoom.
     float smooth_i = fi - log2(log2(dot(z, z))) + 4.0;
     float hue = fract(smooth_i * 0.025 + time * 0.04);
-    float val = pow(smooth_i / 128.0, 0.5);
+    float val = pow(smooth_i / 256.0, 0.4);
     gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.75, val)), 1.0);
 }
 """
@@ -686,6 +705,92 @@ void main() {
 }
 """
 
+# Image-textured donut — same ray-marched torus, but instead of
+# the procedural hue/depth gradient, samples the shader's input
+# texture (the `tex` uniform that glshader binds to whatever
+# upstream feeds it). When the source bin uses a still image
+# (filesrc → decodebin → imagefreeze) instead of videotestsrc-
+# black, `tex` IS that image, and we wrap it around the torus
+# surface as a UV-mapped material. The scroll on tex_uv.x makes
+# the image wind around the donut over time.
+IMAGE_DONUT_SHADER = """\
+#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+uniform sampler2D tex;
+
+const float PI = 3.14159265359;
+
+float sdTorus(vec3 p, vec2 t) {
+    vec2 q = vec2(length(p.xz) - t.x, p.y);
+    return length(q) - t.y;
+}
+
+vec3 rotY(vec3 p, float a) {
+    float c = cos(a), s = sin(a);
+    return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+}
+vec3 rotX(vec3 p, float a) {
+    float c = cos(a), s = sin(a);
+    return vec3(p.x, c * p.y - s * p.z, s * p.y + c * p.z);
+}
+
+float map(vec3 p) {
+    p = rotY(p, time * 0.5);
+    p = rotX(p, time * 0.3);
+    return sdTorus(p, vec2(1.0, 0.4));
+}
+
+// Map a 3D point on the torus surface to a (u, v) coordinate
+// suitable for sampling the input texture. Inverts the rotation
+// we applied in `map` so the texture sticks to the torus rather
+// than spinning past it.
+vec2 torusUV(vec3 p_world) {
+    vec3 p = rotX(p_world, -time * 0.3);
+    p = rotY(p, -time * 0.5);
+    float u = atan(p.z, p.x);            // -PI..PI around major
+    vec2 q = vec2(length(p.xz), p.y);
+    vec2 dq = q - vec2(1.0, 0.0);        // R = 1.0
+    float v = atan(dq.y, dq.x);          // -PI..PI around minor
+    return vec2((u + PI) / (2.0 * PI),
+                (v + PI) / (2.0 * PI));
+}
+
+void main() {
+    vec2 uv_scr = v_texcoord - 0.5;
+    uv_scr.x *= 1280.0 / 720.0;
+    vec3 ro = vec3(0.0, 0.0, -3.0);
+    vec3 rd = normalize(vec3(uv_scr, 1.0));
+    float t = 0.0;
+    bool hit = false;
+    for (int i = 0; i < 64; i++) {
+        vec3 pos = ro + rd * t;
+        float d = map(pos);
+        if (d < 0.001) { hit = true; break; }
+        t += d;
+        if (t > 10.0) break;
+    }
+    if (!hit) {
+        gl_FragColor = vec4(0.0, 0.0, 0.05, 1.0);
+        return;
+    }
+    vec3 hit_pos = ro + rd * t;
+    vec2 tex_uv = torusUV(hit_pos);
+    // Slow scroll around the major circumference — the image
+    // wraps around the donut like a label on a tin can.
+    tex_uv.x = fract(tex_uv.x + time * 0.05);
+    vec3 col = texture2D(tex, tex_uv).rgb;
+    // Simple depth darken so the back of the donut isn't full
+    // bright — gives it a hint of 3D form.
+    float depth = t / 10.0;
+    col *= 1.0 - depth * 0.4;
+    gl_FragColor = vec4(col, 1.0);
+}
+"""
+
 # The full catalogue. Order here is also the cycle order for
 # `[` / `]`. New ones go at the end so muscle memory holds.
 GENERATORS = {
@@ -703,12 +808,83 @@ GENERATORS = {
     "fractal":    FRACTAL_SHADER,
     "spiral":     SPIRAL_SHADER,
     "raymarched": RAYMARCHED_SHADER,
+    "imagedonut": IMAGE_DONUT_SHADER,  # special: image-fed
 }
+
+# Generators whose source bin needs an image instead of the
+# default videotestsrc-black. Keyed off the name so the rest of
+# the dispatch logic doesn't have to special-case anything.
+IMAGE_FED_GENERATORS = {"imagedonut"}
 
 # Cycle order for `[` / `]`. Same as dict order but explicit
 # (dict iteration order is technically insertion-order in
 # Python 3.7+; this list makes the contract obvious).
 GENERATOR_ORDER = list(GENERATORS.keys())
+
+
+def _find_donut_image():
+    """Pick an image from assets/images/ to texture the donut
+    with. Returns a Path or None.
+
+    Walks png / jpg / jpeg, alphabetical, first one wins.
+    Operator can drop their own image in the folder; the
+    next launch picks it up. If the folder is empty (or
+    missing), `_ensure_placeholder_image` writes a default
+    test pattern so the imagedonut generator works out of
+    the box.
+    """
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    candidates = (sorted(IMAGES_DIR.glob("*.png"))
+                  + sorted(IMAGES_DIR.glob("*.jpg"))
+                  + sorted(IMAGES_DIR.glob("*.jpeg"))
+                  + sorted(IMAGES_DIR.glob("*.PNG"))
+                  + sorted(IMAGES_DIR.glob("*.JPG")))
+    if candidates:
+        return candidates[0]
+    placeholder = _ensure_placeholder_image()
+    return placeholder
+
+
+def _ensure_placeholder_image():
+    """Write a colourful checker placeholder if assets/images/ is
+    empty, so imagedonut has something to texture with on first
+    launch. Operator should drop their own image to replace.
+
+    Uses cairo (already in the GTK stack — no new deps). Returns
+    the placeholder path or None if cairo isn't available.
+    """
+    default = IMAGES_DIR / "_default_checker.png"
+    if default.exists():
+        return default
+    try:
+        import cairo
+    except ImportError:
+        print("[vj] cairo not available; cannot generate placeholder image")
+        return None
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1024, 512)
+    ctx = cairo.Context(surface)
+    # Wide aspect (2:1) matches the torus UV unwrap better than
+    # a square. Vibrant 6-colour cycling checker — visible on
+    # the donut even at small UV scales.
+    colours = [
+        (1.0, 0.20, 0.30),
+        (1.0, 0.60, 0.00),
+        (1.0, 1.00, 0.20),
+        (0.2, 1.00, 0.50),
+        (0.2, 0.60, 1.00),
+        (0.7, 0.30, 1.00),
+    ]
+    cell = 64
+    for y in range(8):
+        for x in range(16):
+            idx = (x + y) % 6
+            r, g, b = colours[idx]
+            ctx.set_source_rgb(r, g, b)
+            ctx.rectangle(x * cell, y * cell, cell, cell)
+            ctx.fill()
+    surface.write_to_png(str(default))
+    print(f"[vj] wrote placeholder donut texture → {default}")
+    return default
 
 
 def _list_clips():
@@ -908,6 +1084,58 @@ class VJApp(Gtk.Application):
         shader.set_property("fragment", GENERATORS[name])
         return outer
 
+    def _build_image_source_bin(self, name, image_path):
+        """Build a Gst.Bin: filesrc → decodebin → videoconvert →
+        imagefreeze → videoscale → glupload → glshader[name]. The
+        image is fed as the shader's input texture (the standard
+        `tex` uniform glshader binds to its upstream).
+
+        Same outer shape as the regular generator bin (single GL
+        ghost src pad at canvas resolution), so the downstream
+        link path doesn't need to know which kind of source this
+        is.
+        """
+        if name not in GENERATORS:
+            raise ValueError(f"unknown generator {name!r}")
+        outer = Gst.Bin.new(f"image-generator-source-{name}")
+        filesrc = Gst.ElementFactory.make("filesrc", None)
+        filesrc.set_property("location", str(image_path))
+        decoder = Gst.ElementFactory.make("decodebin", None)
+        # imagefreeze turns a one-frame decode into a continuous
+        # stream at the requested framerate — the shader then
+        # always has a current input buffer to sample as `tex`.
+        norm = Gst.parse_bin_from_description(
+            f"videoconvert ! imagefreeze ! videoscale ! "
+            f"video/x-raw,width={CANVAS_W},height={CANVAS_H},"
+            f"framerate=30/1 ! "
+            f"glupload ! glshader name=shader",
+            True,
+        )
+        outer.add(filesrc)
+        outer.add(decoder)
+        outer.add(norm)
+        if not filesrc.link(decoder):
+            raise RuntimeError("filesrc → decodebin link failed")
+
+        norm_sink = norm.get_static_pad("sink")
+        def on_pad_added(_dec, new_pad):
+            caps = new_pad.get_current_caps()
+            if caps is None:
+                return
+            struct_name = caps.get_structure(0).get_name()
+            if not (struct_name.startswith("video/")
+                    or struct_name.startswith("image/")):
+                return
+            if norm_sink and not norm_sink.is_linked():
+                new_pad.link(norm_sink)
+        decoder.connect("pad-added", on_pad_added)
+
+        outer.add_pad(Gst.GhostPad.new(
+            "src", norm.get_static_pad("src")))
+        norm.get_by_name("shader").set_property(
+            "fragment", GENERATORS[name])
+        return outer
+
     # ── Source-bin install / replace ───────────────────────────────
 
     def _install_clip(self, idx, start_state=Gst.State.PLAYING):
@@ -936,9 +1164,27 @@ class VJApp(Gtk.Application):
     def _install_generator(self, name, start_state=Gst.State.PLAYING):
         """Make a glshader-driven generator the active source.
         Also pins the cycle pointer (_current_generator_idx) on this
-        name so the `[` / `]` cycle picks up from here."""
+        name so the `[` / `]` cycle picks up from here.
+
+        Image-fed generators (those in IMAGE_FED_GENERATORS) get
+        a different source-bin shape — image file → imagefreeze →
+        shader — so their `tex` uniform sees the image instead of
+        videotestsrc black.
+        """
         try:
-            new_bin = self._build_generator_source_bin(name)
+            if name in IMAGE_FED_GENERATORS:
+                image_path = _find_donut_image()
+                if image_path is None:
+                    print(f"[vj] {name}: no image in assets/images/ and "
+                          "couldn't generate placeholder; falling back to "
+                          "raymarched")
+                    name = "raymarched"
+                    new_bin = self._build_generator_source_bin(name)
+                else:
+                    new_bin = self._build_image_source_bin(name, image_path)
+                    print(f"[vj] {name}: using image {image_path.name}")
+            else:
+                new_bin = self._build_generator_source_bin(name)
         except Exception as exc:
             print(f"[vj] failed to build generator source ({name}): {exc!r}")
             return
