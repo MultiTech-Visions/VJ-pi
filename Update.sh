@@ -17,10 +17,21 @@ cd "$(dirname "$0")"
 
 # Tee everything to vj_last_update.log so the operator (or a debug
 # request) can always check what the most recent update actually did.
-# Truncate first so a fresh run isn't mistaken for stale output.
+#
+# Implementation: re-exec self with stdout/stderr piped to tee.
+# Previous version used `exec > >(tee -a "$LOG")` which leaves tee's
+# file output block-buffered (~4 KB) — set -e mid-script then kills
+# the subshell before tee flushes, and the disk log silently loses
+# the tail (i.e. the actual error). The pipe-form below survives
+# that: when set -e exits the inner shell, the pipe closes, tee gets
+# EOF, flushes everything to the file, and exits cleanly. tee
+# truncates the file on open (no -a) so a fresh run replaces stale
+# content instead of growing forever.
 LOG="$(pwd)/vj_last_update.log"
-: >"$LOG"
-exec > >(tee -a "$LOG") 2>&1
+if [ "${VJ_UPDATE_TEED:-0}" = "0" ]; then
+    export VJ_UPDATE_TEED=1
+    exec bash "$0" "$@" 2>&1 | tee "$LOG"
+fi
 date '+[VJ] update start: %Y-%m-%d %H:%M:%S'
 
 REPO_URL="https://github.com/MultiTech-Visions/VJ-pi.git"
