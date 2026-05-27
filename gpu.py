@@ -175,6 +175,15 @@ def _init():
         return None
     if _BACKEND is not None:
         return _BACKEND
+    # Operator kill switch: set VJ_NO_GPU=1 in the launcher (or the
+    # environment) to skip moderngl entirely. Useful for isolating
+    # the GPU path from any unrelated issue, or for reverting to the
+    # known-good CPU build without uninstalling moderngl.
+    import os
+    if os.environ.get("VJ_NO_GPU"):
+        print("[vj.gpu] VJ_NO_GPU set; generators stay on CPU")
+        _BACKEND = False
+        return None
     try:
         import moderngl
     except ImportError as exc:
