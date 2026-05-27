@@ -106,7 +106,24 @@ def _open_output_window(cfg):
 
 
 def _open_control_window(size, display_idx):
-    """Create a second SDL2 window + renderer for the control HUD."""
+    """Create a second SDL2 window + renderer for the control HUD.
+
+    The HUD renderer is forced to the SOFTWARE backend (accelerated=0).
+    Why: gpu.py's standalone moderngl EGL context shares the V3D
+    driver state with any GL-accelerated SDL_Renderer on the Pi, and
+    we've observed the HUD turn solid black the moment moderngl
+    initialises — V3D leaks driver state between contexts despite
+    them being nominally independent. The output window stays on the
+    hardware renderer (it's the larger framebuffer that benefits most
+    from GPU scaling); the HUD goes through CPU rasterisation and
+    presents through X with zero GL state to corrupt. ~680×720 of HUD
+    pixels at 30 fps is trivial CPU work on Pi 5 — not a bottleneck.
+
+    Falls back to the default (accelerated) renderer if SDL refuses
+    accelerated=0 — older builds may not honour the flag, and on those
+    setups moderngl probably isn't loading either so the conflict
+    doesn't arise.
+    """
     from pygame._sdl2.video import Window, Renderer
     centered_on_display = 0x2FFF0000 | (display_idx & 0xFFFF)
     win = Window(
@@ -116,7 +133,14 @@ def _open_control_window(size, display_idx):
         resizable=True,
     )
     win.show()
-    renderer = Renderer(win)
+    try:
+        renderer = Renderer(win, accelerated=0)
+        print("[vj] control HUD: software renderer "
+              "(avoids V3D GL state conflict with gpu.py)")
+    except (TypeError, pygame.error):
+        renderer = Renderer(win)
+        print("[vj] control HUD: accelerated renderer "
+              "(software fallback rejected by SDL)")
     return win, renderer
 
 
