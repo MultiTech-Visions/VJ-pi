@@ -1088,13 +1088,27 @@ class VJApp(Gtk.Application):
     # ── Source-bin builders ────────────────────────────────────────
 
     def _build_clip_source_bin(self, clip_path):
-        """Build a Gst.Bin: filesrc → decodebin → videoconvert →
-        videoscale → capsfilter → glupload. The bin has a ghost src
-        pad outputting GL textures at CANVAS_W × CANVAS_H.
+        """Build a Gst.Bin: filesrc → decodebin → glupload. The
+        bin has a ghost src pad outputting GL textures at the
+        clip's native resolution.
 
-        decodebin's pad-added is hooked up to link into the post-
-        decoder normalisation chain at runtime — same pattern as
-        phase 2, just localised to this bin.
+        Why no videoconvert/videoscale: Pi 5's v4l2slh265dec
+        outputs DMABuf (zero-copy buffer references). glupload
+        accepts DMABuf directly and ingests it without touching
+        system memory. Putting videoconvert+videoscale on the
+        CPU side between the decoder and glupload forces a
+        DMABuf → system-memory copy + colour convert, which on
+        a 720p HEVC stream eats 60+% of one core just to shuffle
+        bytes that the GPU could have used as-is.
+
+        Trade-off: clips should be at canvas resolution
+        (1280×720). Process Assets.sh standardises them; any
+        non-conforming clip will render at its native size with
+        gtksink doing widget-level scaling. Higher GPU/CPU cost
+        if a clip is e.g. 1920×1080, but functional.
+
+        decodebin's pad-added is hooked up to link into the
+        normalisation chain at runtime — same pattern as before.
         """
         bin_name = f"clip-source-{id(clip_path) & 0xffff:04x}"
         outer = Gst.Bin.new(bin_name)
@@ -1102,17 +1116,24 @@ class VJApp(Gtk.Application):
         filesrc = Gst.ElementFactory.make("filesrc", None)
         filesrc.set_property("location", str(clip_path))
 
-        decoder = Gst.ElementFactory.make("decodebin", None)
+        # decodebin3 (NOT decodebin). decodebin's auto-plug fails
+        # to negotiate the DMABuf zero-copy path from v4l2slh265dec
+        # to glupload — it picks software decode instead, eating
+        # 60% CPU. decodebin3's smarter negotiation picks the
+        # hardware decoder AND preserves DMABuf into glupload.
+        decoder = Gst.ElementFactory.make("decodebin3", None)
+        if decoder is None:
+            # Older system without decodebin3 — fall back to
+            # decodebin. CPU will be higher; user can install
+            # gstreamer1.0-plugins-base updates.
+            print("[vj] decodebin3 not available, falling back to decodebin "
+                  "(higher CPU on HEVC clips)")
+            decoder = Gst.ElementFactory.make("decodebin", None)
 
-        # Post-decoder normalisation: bring whatever decodebin
-        # produces up/down to canvas resolution + raw video, then
-        # upload to GL. parse_bin_from_description gives us ghost
-        # pads on the unconnected ends (videoconvert sink + glupload
-        # src), which we use below.
+        # Direct DMABuf → GL upload. No format/resolution
+        # conversion on the CPU side.
         norm = Gst.parse_bin_from_description(
-            f"videoconvert ! videoscale ! "
-            f"video/x-raw,width={CANVAS_W},height={CANVAS_H} ! "
-            f"glupload",
+            "glupload",
             True,
         )
 
