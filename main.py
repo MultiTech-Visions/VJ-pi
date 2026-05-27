@@ -38,10 +38,9 @@ def parse_args():
 def _set_sdl_hints():
     """SDL behaviour hints — must be set BEFORE pygame.init().
 
-    Output window position / display is handled by constructing the SDL2
-    Window with `position=WINDOWPOS_CENTERED_DISPLAY(N)` (see
-    _open_output_window), so no SDL_VIDEO_FULLSCREEN_DISPLAY or
-    SDL_VIDEO_WINDOW_POS env vars needed any more.
+    Output window position / display is handled via set_mode(display=N) and
+    NOFRAME (see _open_output_window), so no SDL_VIDEO_FULLSCREEN_DISPLAY
+    or SDL_VIDEO_WINDOW_POS needed any more.
     """
     # Don't grab the keyboard exclusively — the control HUD window needs
     # to receive its own clicks without focus getting yanked away.
@@ -59,71 +58,36 @@ def _display_size(display_idx, fallback):
 
 
 def _open_output_window(cfg):
-    """Open the output window as an SDL2 Window + Renderer pair.
-
-    Returns (window, renderer). The renderer is hardware-accelerated by
-    default on V3D, so the per-frame canvas → display upscale happens on
-    the GPU instead of `pygame.transform.smoothscale` on the CPU.
+    """Open the output window.
 
     For "fullscreen" we open a *borderless window sized to the target
     display* rather than using SDL_WINDOW_FULLSCREEN. SDL2 has a long-
     standing bug (https://github.com/libsdl-org/SDL/issues/3192) where
     its fullscreen flags don't honour a specific display reliably and
-    can't be moved between monitors at runtime. A borderless window
-    centered on display N works on every SDL build and can be re-created
-    on any monitor at runtime (see Engine.switch_output_display).
+    can't be moved between monitors at runtime. A NOFRAME window with
+    `display=N` and size = display N's resolution works on every SDL
+    build and can be re-opened on any monitor by calling set_mode again.
+
+    Manual frame scaling already happens in Engine.blit_to_output, so
+    rendering at 854x480 onto a display-sized surface is fine.
     """
-    from pygame._sdl2.video import Window, Renderer
     if cfg.fullscreen:
         dw, dh = _display_size(cfg.display, (cfg.width, cfg.height))
+        flags = pygame.NOFRAME
         size = (dw, dh)
-        borderless = True
     else:
+        flags = 0
         size = (cfg.width, cfg.height)
-        borderless = False
-    # SDL_WINDOWPOS_CENTERED_DISPLAY(N) = 0x2FFF0000 | N — places the new
-    # window on a specific physical display without needing a separate
-    # post-create move (which X11 occasionally drops on the floor).
-    pos_val = 0x2FFF0000 | (cfg.display & 0xFFFF)
     try:
-        win = Window(
-            "pi-paint VJ — Output",
-            size=size,
-            position=(pos_val, pos_val),
-            borderless=borderless,
-        )
+        return pygame.display.set_mode(size, flags, display=cfg.display)
     except (TypeError, pygame.error, ValueError) as exc:
-        print(f"[vj] Window(display={cfg.display}) failed: {exc!r}; "
+        print(f"[vj] set_mode(display={cfg.display}) failed: {exc!r}; "
               f"falling back to default display")
-        win = Window(
-            "pi-paint VJ — Output",
-            size=size,
-            borderless=borderless,
-        )
-    win.show()
-    renderer = Renderer(win)
-    return win, renderer
+        return pygame.display.set_mode(size, flags)
 
 
 def _open_control_window(size, display_idx):
-    """Create a second SDL2 window + renderer for the control HUD.
-
-    The HUD renderer is forced to the SOFTWARE backend (accelerated=0).
-    Why: gpu.py's standalone moderngl EGL context shares the V3D
-    driver state with any GL-accelerated SDL_Renderer on the Pi, and
-    we've observed the HUD turn solid black the moment moderngl
-    initialises — V3D leaks driver state between contexts despite
-    them being nominally independent. The output window stays on the
-    hardware renderer (it's the larger framebuffer that benefits most
-    from GPU scaling); the HUD goes through CPU rasterisation and
-    presents through X with zero GL state to corrupt. ~680×720 of HUD
-    pixels at 30 fps is trivial CPU work on Pi 5 — not a bottleneck.
-
-    Falls back to the default (accelerated) renderer if SDL refuses
-    accelerated=0 — older builds may not honour the flag, and on those
-    setups moderngl probably isn't loading either so the conflict
-    doesn't arise.
-    """
+    """Create a second SDL2 window + renderer for the control HUD."""
     from pygame._sdl2.video import Window, Renderer
     centered_on_display = 0x2FFF0000 | (display_idx & 0xFFFF)
     win = Window(
@@ -133,14 +97,7 @@ def _open_control_window(size, display_idx):
         resizable=True,
     )
     win.show()
-    try:
-        renderer = Renderer(win, accelerated=0)
-        print("[vj] control HUD: software renderer "
-              "(avoids V3D GL state conflict with gpu.py)")
-    except (TypeError, pygame.error):
-        renderer = Renderer(win)
-        print("[vj] control HUD: accelerated renderer "
-              "(software fallback rejected by SDL)")
+    renderer = Renderer(win)
     return win, renderer
 
 
@@ -187,15 +144,16 @@ def main():
         gen_render_scale=max(0.1, min(1.0, args.gen_render_scale)),
     )
 
-    output_window, output_renderer = _open_output_window(cfg)
+    output_screen = _open_output_window(cfg)
+    pygame.display.set_caption("pi-paint VJ — Output")
 
     # NOTE: we *don't* try to move the window to the target display at
     # launch any more — the SDL pump loop took long enough that X11
     # marked the window as unresponsive and the WM force-closed it on
-    # first click. If the window opened on the wrong monitor, the
-    # operator can press F12 to move it after launch.
+    # first click. If pygame opened the window on the wrong monitor,
+    # the operator can press F12 to move it after launch.
 
-    engine = Engine(cfg, output_window, output_renderer)
+    engine = Engine(cfg, output_screen)
     # Cursor visibility is mode-aware (hidden only in clean live fullscreen);
     # let the engine decide so a session that boots straight into mapping
     # mode from persisted state still shows the pointer over the projector.
