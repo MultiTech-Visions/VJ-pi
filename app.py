@@ -2,24 +2,34 @@
 
 Architecture (single GL/EGL context, V3D-native on Pi 5):
 
-    videotestsrc ─ glupload ─ tee ─┬─▶ glcolorconvert ─ gtksink (output)
-                                   └─▶ glcolorconvert ─ gtksink (HUD)
+    videotestsrc ─ glupload ─ tee ─┬─▶ gldownload ─ videoconvert ─ gtksink (output)
+                                   └─▶ gldownload ─ videoconvert ─ gtksink (HUD)
 
-Both sinks share the same GL pipeline state — no second context, no
-SDL/EGL state-leak fight, no per-frame readback. The HUD's preview
-widget IS the same pipeline output as the projector, just packed
-into a smaller GTK widget.
+The tee forks GL textures by refcount (zero-copy). Each branch then
+downloads back to CPU memory because `gtksink` is a CPU sink — it
+accepts `video/x-raw` (system memory), not `video/x-raw(memory:GLMemory)`.
 
-Phase 1: this scaffold. videotestsrc only. Two windows on two
-displays. No clips, no generators, no FX, no mapping. Goal is to
-prove the dual-sink GL pipeline actually works on real Pi 5 V3D
-before any VJ logic depends on it.
+This intentionally avoids `gtkglsink` (the GL-aware variant): each
+gtkglsink widget creates its own GL context, and Pi 5's V3D driver
+leaks state between contexts in the same process — that's the bug
+that killed the previous architecture. One pipeline-internal GL
+context + CPU presentation = the safe combination.
 
-GTK3 (not GTK4) because Pi OS Bookworm's apt repo doesn't carry
-gst-plugins-rs (which is where gtk4paintablesink lives). gtksink
-from gstreamer1.0-gtk3 is in apt and works the same way for our
-purposes — `widget` property exposes a Gtk.Widget we pack into a
-window. Upgrade path to GTK4 is contained when Pi OS adopts it.
+The download cost is one memcpy per sink per frame — at the HUD's
+small preview size + a single projector readout, that's <1ms per
+frame on Pi 5. The win comes later when the GL pipeline does real
+work (decode → composite → shaders → tee → download) and the
+expensive bits stay GPU-resident.
+
+Phase 1: scaffold. videotestsrc only. Two windows on two displays.
+No clips, no generators, no FX, no mapping. Goal is to prove the
+dual-sink GL pipeline actually works on real Pi 5 V3D before any
+VJ logic depends on it.
+
+GTK3 (not GTK4) because Pi OS Bookworm's apt doesn't carry
+gst-plugins-rs (where gtk4paintablesink lives). gtksink from
+gstreamer1.0-gtk3 is in apt. Upgrade path to GTK4 is contained
+when Pi OS adopts Trixie.
 """
 import sys
 
@@ -30,20 +40,23 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gtk, Gst, Gdk, Gio, GLib  # noqa: E402
 
 
-# One source, GL-uploaded, forked via `tee` into two `gtksink`s.
+# Single source → GL upload → tee → per-branch GL download → gtksink.
 # Each gtksink exposes a Gtk.Widget via its `widget` property — we
-# pack those into the two windows. The GL context is shared across
-# the whole pipeline so the tee just refcounts the GL textures
-# instead of copying pixels.
+# pack those into the two windows. The GL pipeline shares one context
+# (glupload + the eventual GL effects in later phases), the tee forks
+# GL textures by refcount, then each branch downloads + converts to
+# the raw video format gtksink expects.
 PIPELINE = (
     "videotestsrc is-live=true pattern=smpte ! "
     "video/x-raw,width=1280,height=720,framerate=30/1 ! "
     "glupload ! "
     "tee name=t allow-not-linked=true "
     "t. ! queue max-size-buffers=2 leaky=downstream ! "
-    "  glcolorconvert ! gtksink name=output_sink sync=false "
+    "  gldownload ! videoconvert ! "
+    "  gtksink name=output_sink sync=false "
     "t. ! queue max-size-buffers=2 leaky=downstream ! "
-    "  glcolorconvert ! gtksink name=hud_sink sync=false"
+    "  gldownload ! videoconvert ! "
+    "  gtksink name=hud_sink sync=false"
 )
 
 
