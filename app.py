@@ -538,75 +538,12 @@ void main() {
 }
 """
 
-# Mandelbrot zoom into Seahorse Valley with wobble. The earlier
-# version drifted across the whole (x,y) plane and landed in the
-# all-black interior of the set — operator's complaint: "the
-# zoom went into the black part." The set's colourful detail
-# lives on its boundary; (-0.745, 0.113) is a known-good anchor
-# in the seahorse-shaped tendril cluster, and the wobble is
-# small enough in fractal-space that we never leave the
-# interesting region. At high zoom the wobble sweeps the
-# camera through the visible detail, which is what gives the
-# "take a left or right turn while zooming" feel.
-FRACTAL_SHADER = """\
-#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
-
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
-void main() {
-    // Anchor inside Seahorse Valley. The whole shader stays
-    // near here — never wanders into the black interior.
-    vec2 anchor = vec2(-0.745, 0.113);
-
-    // Small wobble in fractal space, two incommensurate freqs
-    // per axis. At low zoom this is invisible; at deep zoom it
-    // sweeps the camera through visible detail — the "turn".
-    float t = time * 0.05;
-    vec2 wobble = vec2(
-        sin(t * 1.0) * 0.003 + sin(t * 2.7) * 0.001,
-        cos(t * 0.83) * 0.003 + cos(t * 2.3) * 0.001
-    );
-    vec2 center = anchor + wobble;
-
-    // 60-second zoom cycle. Starts at zoom=7.4× (local structure
-    // visible, not the whole black-interior set) and ramps to
-    // ~1100×. Wobble has moved by reset time, so the next cycle
-    // re-enters at a different angle through the same valley.
-    float zoom_t = mod(time, 60.0);
-    float zoom = exp(2.0 + zoom_t * 0.083);
-
-    vec2 uv = (v_texcoord - 0.5) * 3.0 / zoom;
-    uv.x *= 1280.0 / 720.0;
-    vec2 z = vec2(0.0);
-    vec2 c = uv + center;
-    float fi = 0.0;
-    bool escaped = false;
-    for (int i = 0; i < 256; i++) {
-        if (dot(z, z) > 256.0) { escaped = true; break; }
-        z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
-        fi += 1.0;
-    }
-
-    if (!escaped) {
-        gl_FragColor = vec4(0.0, 0.0, 0.04, 1.0);
-        return;
-    }
-
-    float smooth_i = fi - log2(log2(dot(z, z))) + 4.0;
-    float hue = fract(smooth_i * 0.025 + time * 0.04);
-    float val = pow(smooth_i / 256.0, 0.4);
-    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.75, val)), 1.0);
-}
-"""
+# (Mandelbrot fractal zoom removed — too expensive on Pi 5 V3D
+# at 256 iterations × 1280×720 = ~235M ops/frame. Ran at ~1 fps.
+# If we ever come back to it: needs a much lower iteration cap
+# OR a multi-pass approach (low-res preview, full-res only for
+# foreground), neither of which is worth the complexity right
+# now.)
 
 # Galactic spiral arms. Polar log-spiral pattern with hue
 # cycling along the radial angle. Slow, deep, hypnotic.
@@ -643,77 +580,17 @@ void main() {
 # FX-chain phase as a frame transform rather than a standalone
 # generator. Kaleido is more useful applied to other generators.)
 
-# Actual 3D ray-marched rotating torus. Volumetric feel because
-# the renderer is computing per-pixel distance to a 3D surface.
-# Heaviest shader on the list but still well within Pi 5 budget.
-RAYMARCHED_SHADER = """\
-#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
+# (Procedural ray-marched donut removed — operator's call:
+# keep only the image-textured variant below. The texturing is
+# what makes the donut interesting; the procedural hue gradient
+# version was redundant once the image-fed one existed.)
 
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
-float sdTorus(vec3 p, vec2 t) {
-    vec2 q = vec2(length(p.xz) - t.x, p.y);
-    return length(q) - t.y;
-}
-
-vec3 rotateY(vec3 p, float a) {
-    float c = cos(a), s = sin(a);
-    return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
-}
-
-vec3 rotateX(vec3 p, float a) {
-    float c = cos(a), s = sin(a);
-    return vec3(p.x, c * p.y - s * p.z, s * p.y + c * p.z);
-}
-
-float map(vec3 p) {
-    p = rotateY(p, time * 0.5);
-    p = rotateX(p, time * 0.3);
-    return sdTorus(p, vec2(1.0, 0.4));
-}
-
-void main() {
-    vec2 uv = (v_texcoord - 0.5);
-    uv.x *= 1280.0 / 720.0;
-    vec3 ro = vec3(0.0, 0.0, -3.0);
-    vec3 rd = normalize(vec3(uv, 1.0));
-    float t = 0.0;
-    bool hit = false;
-    for (int i = 0; i < 64; i++) {
-        vec3 pos = ro + rd * t;
-        float d = map(pos);
-        if (d < 0.001) { hit = true; break; }
-        t += d;
-        if (t > 10.0) break;
-    }
-    if (!hit) {
-        gl_FragColor = vec4(0.0, 0.0, 0.05, 1.0);
-        return;
-    }
-    float depth = t / 10.0;
-    float hue = fract(0.6 - depth * 0.3 + time * 0.05);
-    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.7, 1.0 - depth * 0.5)), 1.0);
-}
-"""
-
-# Image-textured donut — same ray-marched torus, but instead of
-# the procedural hue/depth gradient, samples the shader's input
-# texture (the `tex` uniform that glshader binds to whatever
-# upstream feeds it). When the source bin uses a still image
-# (filesrc → decodebin → imagefreeze) instead of videotestsrc-
-# black, `tex` IS that image, and we wrap it around the torus
-# surface as a UV-mapped material. The scroll on tex_uv.x makes
-# the image wind around the donut over time.
-IMAGE_DONUT_SHADER = """\
+# Image-textured donut: ray-marched torus + image as surface
+# material. The shader samples its `tex` uniform (whatever the
+# upstream source bin feeds in) and wraps it around the torus
+# via UV unwrap. The image scrolls slowly around the major
+# circumference so it animates.
+DONUT_SHADER = """\
 #version 100
 #ifdef GL_ES
 precision highp float;
@@ -805,16 +682,14 @@ GENERATORS = {
     "warpgrid":   WARPGRID_SHADER,
     "marble":     MARBLE_SHADER,
     "caustics":   CAUSTICS_SHADER,
-    "fractal":    FRACTAL_SHADER,
     "spiral":     SPIRAL_SHADER,
-    "raymarched": RAYMARCHED_SHADER,
-    "imagedonut": IMAGE_DONUT_SHADER,  # special: image-fed
+    "donut":      DONUT_SHADER,  # image-fed
 }
 
 # Generators whose source bin needs an image instead of the
 # default videotestsrc-black. Keyed off the name so the rest of
 # the dispatch logic doesn't have to special-case anything.
-IMAGE_FED_GENERATORS = {"imagedonut"}
+IMAGE_FED_GENERATORS = {"donut"}
 
 # Cycle order for `[` / `]`. Same as dict order but explicit
 # (dict iteration order is technically insertion-order in
@@ -823,31 +698,30 @@ GENERATOR_ORDER = list(GENERATORS.keys())
 
 
 def _find_donut_image():
-    """Pick an image from assets/images/ to texture the donut
-    with. Returns a Path or None.
+    """Pick an image at random from assets/images/ to texture the
+    donut. Returns a Path or None.
 
-    Walks png / jpg / jpeg, alphabetical, first one wins.
-    Operator can drop their own image in the folder; the
-    next launch picks it up. If the folder is empty (or
-    missing), `_ensure_placeholder_image` writes a default
-    test pattern so the imagedonut generator works out of
-    the box.
+    Random pick (not alphabetical) — each time the operator
+    activates the donut generator they get a different image,
+    so cycling away and back is a way to shuffle textures.
+    Falls back to a generated checker pattern only if the
+    folder is genuinely empty.
     """
+    import random
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    candidates = (sorted(IMAGES_DIR.glob("*.png"))
-                  + sorted(IMAGES_DIR.glob("*.jpg"))
-                  + sorted(IMAGES_DIR.glob("*.jpeg"))
-                  + sorted(IMAGES_DIR.glob("*.PNG"))
-                  + sorted(IMAGES_DIR.glob("*.JPG")))
+    candidates = (list(IMAGES_DIR.glob("*.png"))
+                  + list(IMAGES_DIR.glob("*.jpg"))
+                  + list(IMAGES_DIR.glob("*.jpeg"))
+                  + list(IMAGES_DIR.glob("*.PNG"))
+                  + list(IMAGES_DIR.glob("*.JPG")))
     if candidates:
-        return candidates[0]
-    placeholder = _ensure_placeholder_image()
-    return placeholder
+        return random.choice(candidates)
+    return _ensure_placeholder_image()
 
 
 def _ensure_placeholder_image():
     """Write a colourful checker placeholder if assets/images/ is
-    empty, so imagedonut has something to texture with on first
+    empty, so the donut generator has something to texture with on first
     launch. Operator should drop their own image to replace.
 
     Uses cairo (already in the GTK stack — no new deps). Returns
@@ -1177,8 +1051,8 @@ class VJApp(Gtk.Application):
                 if image_path is None:
                     print(f"[vj] {name}: no image in assets/images/ and "
                           "couldn't generate placeholder; falling back to "
-                          "raymarched")
-                    name = "raymarched"
+                          "plasma")
+                    name = "plasma"
                     new_bin = self._build_generator_source_bin(name)
                 else:
                     new_bin = self._build_image_source_bin(name, image_path)
