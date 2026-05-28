@@ -74,6 +74,14 @@ precision highp float;
 varying vec2 v_texcoord;
 uniform float time;
 
+vec3 palette(float t) {
+    vec3 a = vec3(0.05, 0.07, 0.10);
+    vec3 b = vec3(0.45, 0.50, 0.55);
+    vec3 c = vec3(1.00, 0.78, 0.48);
+    vec3 d = vec3(0.05, 0.28, 0.42);
+    return a + b * cos(6.28318 * (c * t + d));
+}
+
 float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
@@ -100,21 +108,83 @@ float fbm(vec2 p) {
     return v;
 }
 
+float chemical(vec2 p) {
+    float t = time * 0.055;
+    p += vec2(fbm(p * 0.75 + t), fbm(p * 0.82 - t)) * 1.4;
+    float a = fbm(p * 2.6 + vec2(t * 1.2, -t * 0.7));
+    float b = fbm(p * 5.4 - vec2(t * 0.8, t * 1.1));
+    float c = fbm(p * 10.8 + vec2(a * 2.0, b * 2.0));
+    return a * 0.58 + b * 0.31 + c * 0.22;
+}
+
 void main() {
     vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
-    float t = time * 0.12;
-    float n1 = fbm(p * 5.0 + vec2(t, -t * 0.7));
-    float n2 = fbm(p * 11.0 - vec2(t * 1.3, t));
-    float cells = sin((n1 * 2.2 - n2 * 1.6 + length(p) * 0.9 - time * 0.08) * 18.0);
-    float membrane = smoothstep(0.03, 0.0, abs(cells));
-    float islands = smoothstep(0.48, 0.82, n1 * n2 + membrane * 0.35);
-    float edge = smoothstep(0.12, 0.0, abs(islands - 0.5));
-    vec3 ink = vec3(0.02, 0.025, 0.035);
-    vec3 chemA = vec3(0.10, 0.55, 0.82);
-    vec3 chemB = vec3(0.95, 0.85, 0.35);
-    vec3 col = mix(ink, chemA, islands);
-    col = mix(col, chemB, membrane);
-    col += edge * vec3(0.35, 0.45, 0.55);
+    float v = chemical(p * 3.2);
+    float bands = sin((v + length(p) * 0.08 - time * 0.018) * 34.0);
+    float membrane = smoothstep(0.30, 0.0, abs(bands));
+    float fill = smoothstep(0.25, 0.70, v);
+    float pits = smoothstep(0.72, 0.92, chemical(p * 6.4 + 4.0));
+    float ridges = max(membrane, smoothstep(0.16, 0.0, abs(fract(v * 7.0) - 0.5)));
+    vec3 col = mix(vec3(0.030, 0.055, 0.075), palette(v * 0.7 + time * 0.012), fill);
+    col = mix(col, vec3(0.00, 0.78, 0.98), ridges * 0.82);
+    col = mix(col, vec3(1.00, 0.94, 0.42), membrane * 0.62);
+    col *= 0.88 + pits * 0.34;
+    col += membrane * 0.10;
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+LENIA_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(41.0, 289.0))) * 45758.5453);
+}
+
+float orb(vec2 p, vec2 c, float r, float wobble) {
+    vec2 q = p - c;
+    float a = atan(q.y, q.x);
+    float d = length(q);
+    float edge = r * (1.0 + 0.12 * sin(a * 5.0 + wobble) + 0.07 * sin(a * 9.0 - wobble * 0.7));
+    return exp(-pow(d / edge, 2.5));
+}
+
+float creature(vec2 p, vec2 c, float seed) {
+    float t = time * (0.16 + seed * 0.035);
+    vec2 drift = vec2(sin(t + seed * 5.1), cos(t * 0.83 + seed * 3.7)) * 0.11;
+    c += drift;
+    float body = 0.0;
+    body += orb(p, c, 0.145, time * 0.9 + seed);
+    body += orb(p, c + vec2(cos(t * 1.7), sin(t * 1.4)) * 0.105, 0.082, -time + seed);
+    body += orb(p, c + vec2(cos(t * 1.1 + 2.1), sin(t * 1.5 + 1.4)) * 0.125, 0.070, time * 1.3);
+    body += orb(p, c + vec2(cos(t * 1.3 + 4.2), sin(t * 1.2 + 2.7)) * 0.110, 0.056, -time * 1.1);
+    return clamp(body, 0.0, 1.0);
+}
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float field = 0.0;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -2; x <= 2; x++) {
+            vec2 cell = vec2(float(x), float(y));
+            float h = hash(cell);
+            vec2 c = cell * vec2(0.42, 0.36) + vec2(hash(cell + 3.1), hash(cell + 8.7)) * 0.18;
+            field += creature(p, c, h) * (0.55 + h * 0.45);
+        }
+    }
+    field = clamp(field, 0.0, 1.0);
+    float skin = smoothstep(0.18, 0.72, field);
+    float rim = smoothstep(0.08, 0.0, abs(field - 0.38));
+    float core = smoothstep(0.62, 0.96, field);
+    vec3 bg = vec3(0.015, 0.018, 0.026);
+    vec3 flesh = mix(vec3(0.10, 0.50, 0.80), vec3(0.92, 0.35, 0.72), 0.5 + 0.5 * sin(time * 0.18));
+    vec3 col = mix(bg, flesh, skin);
+    col += rim * vec3(0.75, 0.95, 1.00);
+    col += core * vec3(0.95, 0.85, 0.35) * 0.45;
     gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
 """
@@ -135,6 +205,7 @@ GPU_GENERATORS = {
     'caustics': CAUSTICS_SHADER,
     'spiral': SPIRAL_SHADER,
     'linea': LINEA_SHADER,
+    'lenia': LENIA_SHADER,
     'grayscott': GRAYSCOTT_SHADER,
     'donut': DONUT_SHADER,
 }

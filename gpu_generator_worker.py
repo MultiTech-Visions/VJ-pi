@@ -94,7 +94,11 @@ class Renderer:
         if name not in GPU_GENERATORS:
             raise ValueError(f"unknown GPU generator: {name}")
         self.ensure(name, width, height, token)
-        sample = self.sink.emit("try-pull-sample", 2 * Gst.SECOND)
+        sample = None
+        for _ in range(4):
+            sample = self.sink.emit("try-pull-sample", 1 * Gst.SECOND)
+            if sample is not None:
+                break
         if sample is None:
             bus = self.pipeline.get_bus()
             msg = bus.pop_filtered(Gst.MessageType.ERROR | Gst.MessageType.WARNING)
