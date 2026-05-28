@@ -1090,11 +1090,17 @@ class VlcBackend:
             print("[vj] python3-vlc not installed — run setup.sh")
             return False
         self._vlc = vlc  # cache module reference for event types
+        # Keep VLC's default keybindings active so the operator
+        # ALWAYS has a panic exit (q, Ctrl-Q, Esc) even if
+        # something grabs focus or fullscreens unexpectedly.
+        # This is non-negotiable after a "couldn't get out, had
+        # to hard-reset" incident.
         self.instance = vlc.Instance(
             "--no-xlib",
             "--quiet",
             "--no-video-title-show",
             "--no-osd",
+            "--key-quit=q,Ctrl+q,Esc",
         )
         if self.instance is None:
             print("[vj] failed to construct VLC instance")
@@ -1299,19 +1305,20 @@ class VJApp(Gtk.Application):
         self.pipeline.set_state(Gst.State.PLAYING)
         print(f"[vj] pipeline up: {Gst.version_string()}")
 
-        # Fullscreen mpv on the projector — only if a 2nd monitor
-        # actually exists AND we weren't asked for single-screen
-        # mode. On a one-display Pi (or remote/headless), keep mpv
-        # windowed so the HUD stays visible alongside.
+        # DO NOT auto-fullscreen the player. VLC's set_fullscreen
+        # doesn't honour a target output the way mpv's
+        # --fs-screen-name does — it just fullscreens onto
+        # whichever monitor its window happens to be on, which
+        # turned out to be the operator screen with no way to
+        # escape. Operator presses `F` to toggle fullscreen
+        # manually once they've confirmed the player window is on
+        # the right display. (`q`, `Ctrl-Q`, and `Esc` always quit
+        # VLC, per the --key-quit binding above.)
         display = Gdk.Display.get_default()
         n_monitors = display.get_n_monitors() if display else 1
-        print(f"[vj] {n_monitors} monitor(s) detected; mpv "
-              f"target={self._player.projector_output}")
-        if n_monitors >= 2 and not self.single_screen:
-            GLib.timeout_add(400, self._player_fullscreen_once)
-        else:
-            print(f"[vj] not fullscreening mpv "
-                  f"(single screen or --single-screen flag)")
+        print(f"[vj] {n_monitors} monitor(s) detected; player "
+              f"target={self._player.projector_output}; "
+              f"press F in HUD to fullscreen, q/Esc in player to quit")
 
         # 30Hz snake-sim tick. Runs unconditionally; the callback
         # is a no-op when truchet isn't the active generator, so
@@ -1703,8 +1710,9 @@ class VJApp(Gtk.Application):
             "  <tt>S</tt>      tunnel\n"
             "  <tt>H</tt>      cells\n"
             "  <tt>K</tt>      moiré\n"
+            "  <tt>F</tt>      toggle player fullscreen\n"
             "  <tt>`</tt>      toggle nerd stats\n"
-            "  <tt>Esc</tt>    quit"
+            "  <tt>Esc</tt>    quit  <small>(also q / Ctrl-Q in player)</small>"
             "</small>"
         )
         keymap.set_xalign(0.0)
@@ -1775,9 +1783,21 @@ class VJApp(Gtk.Application):
         key = event.keyval
         mod = event.state
 
-        # Quit
+        # Quit. Esc routed through the HUD always works regardless
+        # of player state.
         if key == Gdk.KEY_Escape:
             self.quit()
+            return True
+
+        # Toggle player fullscreen. Manual only — the app does NOT
+        # auto-fullscreen on launch (caused a "stuck fullscreen on
+        # the wrong screen, had to hard-reset" incident). The
+        # operator decides when to fullscreen, having seen which
+        # display the player window actually opened on.
+        if key in (Gdk.KEY_f, Gdk.KEY_F):
+            self._player_fullscreen_toggle = not getattr(
+                self, "_player_fullscreen_toggle", False)
+            self._player.fullscreen(self._player_fullscreen_toggle)
             return True
 
         # Clip cycling — `-` and `=` (plus their shifted twins for
