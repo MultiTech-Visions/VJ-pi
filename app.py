@@ -58,13 +58,22 @@ CANVAS_H = 720
 # before its gtksink (gtksink doesn't accept GLMemory). The
 # downstream's ghost sink pad accepts GL textures, so source-bin
 # replacement is a clean unlink/link without touching GL state.
+# Output branch runs at full 720p 30 fps (it's what the
+# projector shows). HUD branch is downscaled to 320×180 at
+# 10 fps — that's all the small preview widget on the operator
+# screen can actually display, and it cuts the HUD branch's
+# CPU cost by ~80% (less data through videoconvert + gtksink,
+# fewer paints per second). videorate drops surplus frames
+# *before* the per-frame videoconvert/gtksink work.
 DOWNSTREAM_DESC = (
     "tee name=t allow-not-linked=true "
     "t. ! queue max-size-buffers=2 leaky=downstream ! "
     "  gldownload ! videoconvert ! "
     "  gtksink name=output_sink sync=false "
     "t. ! queue max-size-buffers=2 leaky=downstream ! "
-    "  gldownload ! videoconvert ! "
+    "  gldownload ! videorate ! video/x-raw,framerate=10/1 ! "
+    "  videoscale ! video/x-raw,width=320,height=180 ! "
+    "  videoconvert ! "
     "  gtksink name=hud_sink sync=false"
 )
 # Why a CPU videoconvert and not GPU-side glcolorconvert:
