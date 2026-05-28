@@ -1085,10 +1085,22 @@ class MpvBackend:
             f"--fs-screen-name={self.projector_output}",
             "--geometry=640x360",
             f"--hwdec={self.hwdec}",
+            # Force OpenGL backend on Pi 5. The default `gpu-next`
+            # uses libplacebo + Vulkan; the Mesa v3dv Vulkan driver
+            # on Pi 5 fails to allocate a swapchain
+            # (VK_ERROR_OUT_OF_HOST_MEMORY) and mpv shows a freeze
+            # frame indefinitely. --vo=gpu + --gpu-api=opengl uses
+            # OpenGL ES which works.
+            "--vo=gpu",
+            "--gpu-api=opengl",
+            "--gpu-context=wayland",
             "--osd-level=0",
             "--no-osd-bar",
             "--no-terminal",
-            "--msg-level=all=v",
+            # Only warn-level + above. The verbose-everything
+            # default produced 300KB+ logs per run on Pi 5
+            # because of the libplacebo memory-pool trace.
+            "--msg-level=all=warn,vo=info,cplayer=info",
             f"--log-file={MPV_LOG}",
             f"--input-ipc-server={MPV_SOCKET}",
         ]
