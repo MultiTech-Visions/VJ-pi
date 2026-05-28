@@ -31,7 +31,11 @@ through gstreamer's gl* family. CPU presentation via gldownload
 before the gtksinks — see CLAUDE.md for the V3D-dual-context
 post-mortem that justifies all of this.
 """
+import json
 import math
+import os
+import socket
+import subprocess
 import sys
 import time as time_mod
 from pathlib import Path
@@ -45,6 +49,8 @@ from gi.repository import Gtk, Gst, Gdk, Gio, GLib  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 CLIPS_DIR = HERE / "assets" / "clips"
+MPV_SOCKET = "/tmp/vj-mpv-socket"
+MPV_LOG = HERE / "vj_last_mpv.log"
 IMAGES_DIR = HERE / "assets" / "images"
 
 # Canvas resolution. Source bins normalise to this before the
@@ -980,6 +986,124 @@ def _list_clips():
             + sorted(CLIPS_DIR.glob("*.MOV")))
 
 
+# ── mpv subprocess backend (clip playback) ───────────────────────────
+#
+# Pi 5 + GStreamer + DMABuf for HEVC is a fight we keep losing.
+# mpv with --hwdec=drm just works: ~25% CPU for 720p HEVC, no
+# pipeline negotiation drama. Used here for the clip-playback
+# side only — generators still go through the GStreamer pipeline
+# below because that's where the GLSL shaders + snake-game
+# uniforms live cleanly.
+#
+# Architecture:
+#   - mpv runs as a subprocess from app launch to app quit, with
+#     a Unix-socket IPC server.
+#   - When the operator picks a clip, we send `loadfile <path>`
+#     over IPC and unpause. mpv handles decode, loop, sync.
+#   - When the operator picks a generator, we send `set pause yes`
+#     to mpv and bring the GStreamer output GTK window to the
+#     front. mpv's window stays underneath, paused (~0% CPU).
+#
+# Window stacking is the awkward bit on Wayland — set_keep_above
+# is hint-only, but Pi OS's compositor (labwc) honours it.
+
+class MpvBackend:
+    """Owns an mpv subprocess. Send commands via JSON over the
+    IPC socket. Loadfile + pause + fullscreen are all we need."""
+
+    def __init__(self, projector_output, hwdec="drm"):
+        self.projector_output = projector_output
+        self.hwdec = hwdec
+        self.proc = None
+
+    def spawn(self):
+        """Start mpv idle with the IPC socket. Returns True if
+        mpv came up + socket is accepting connections."""
+        try:
+            os.unlink(MPV_SOCKET)
+        except OSError:
+            pass
+        args = [
+            "mpv",
+            "--idle=yes",
+            "--keep-open=always",
+            "--loop-file=inf",
+            f"--screen-name={self.projector_output}",
+            f"--fs-screen-name={self.projector_output}",
+            "--geometry=640x360",
+            f"--hwdec={self.hwdec}",
+            "--osd-level=0",
+            "--no-osd-bar",
+            "--no-terminal",
+            "--msg-level=all=v",
+            f"--log-file={MPV_LOG}",
+            f"--input-ipc-server={MPV_SOCKET}",
+        ]
+        print(f"[vj] launching mpv: hwdec={self.hwdec}, "
+              f"screen={self.projector_output}")
+        try:
+            self.proc = subprocess.Popen(
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            print("[vj] mpv not installed — run setup.sh")
+            return False
+        # Wait up to 5s for the IPC socket to come up.
+        deadline = time_mod.monotonic() + 5.0
+        while time_mod.monotonic() < deadline:
+            if os.path.exists(MPV_SOCKET):
+                try:
+                    with self._open() as s:
+                        s.close()
+                        return True
+                except OSError:
+                    pass
+            if self.proc.poll() is not None:
+                print(f"[vj] mpv exited code {self.proc.returncode} "
+                      "before IPC socket was ready")
+                return False
+            time_mod.sleep(0.1)
+        print(f"[vj] mpv IPC socket never appeared at {MPV_SOCKET}")
+        return False
+
+    def _open(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(MPV_SOCKET)
+        return s
+
+    def send(self, *cmd):
+        """Fire-and-forget IPC command."""
+        try:
+            with self._open() as s:
+                payload = json.dumps({"command": list(cmd)}) + "\n"
+                s.sendall(payload.encode("utf-8"))
+        except OSError as exc:
+            print(f"[vj] mpv send {cmd} failed: {exc}")
+
+    def loadfile(self, path):
+        self.send("loadfile", str(path))
+
+    def pause(self, paused=True):
+        self.send("set_property", "pause", bool(paused))
+
+    def fullscreen(self, on=True):
+        self.send("set_property", "fullscreen", bool(on))
+
+    def shutdown(self):
+        if self.proc is None:
+            return
+        self.send("quit")
+        try:
+            self.proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        self.proc = None
+
+
 class VJApp(Gtk.Application):
     """GTK3 + GStreamer application owning the pipeline and the two
     top-level windows.
@@ -1005,6 +1129,13 @@ class VJApp(Gtk.Application):
         self._downstream_bin = None
         self._source_bin = None
         self._status_label = None
+
+        # mpv subprocess for clip playback (see MpvBackend
+        # docstring for the why). Spawned in do_activate so its
+        # IPC socket is ready before the first _install_clip.
+        projector_output = os.environ.get(
+            "VJ_PROJECTOR_OUTPUT", "HDMI-A-1")
+        self._mpv = MpvBackend(projector_output, hwdec="drm")
 
         # Clip pool state — list of paths + index of the last clip
         # that was active. We remember the index even when the
@@ -1043,6 +1174,14 @@ class VJApp(Gtk.Application):
     def do_activate(self):
         Gst.init(None)
         print(f"[vj] initial source: {self.initial_source_kind}")
+
+        # Spawn mpv up-front so the IPC socket exists by the time
+        # _install_clip needs it. Failure to launch is non-fatal —
+        # we still have generators via GStreamer; only clip mode
+        # breaks. Operator gets a console warning.
+        if not self._mpv.spawn():
+            print("[vj] WARNING: mpv didn't start — clips won't play. "
+                  "Generators still work.")
 
         # Build the stable downstream bin once. The source bin gets
         # constructed below and added to the same pipeline.
@@ -1099,6 +1238,8 @@ class VJApp(Gtk.Application):
         GLib.timeout_add(33, self._on_truchet_snake_tick)
 
     def do_shutdown(self):
+        if self._mpv is not None:
+            self._mpv.shutdown()
         if self.pipeline is not None:
             self.pipeline.set_state(Gst.State.NULL)
         Gtk.Application.do_shutdown(self)
@@ -1236,25 +1377,47 @@ class VJApp(Gtk.Application):
     # ── Source-bin install / replace ───────────────────────────────
 
     def _install_clip(self, idx, start_state=Gst.State.PLAYING):
-        """Make assets/clips/<sorted>[idx] the active source.
+        """Make assets/clips/<sorted>[idx] the active source via mpv.
 
-        Used by both first-launch (start_state=NULL — caller will
-        promote the pipeline to PLAYING after) and runtime swaps
-        (start_state=PLAYING — we restart the source side).
+        Sends `loadfile` over IPC + unpauses mpv. The GStreamer
+        pipeline's source is set to a black plasma so the
+        downstream/output_window stays alive in case the operator
+        cycles back to a generator — but the output_window is
+        hidden so mpv's window shows through on the projector.
+
+        start_state is kept for signature compatibility with the
+        generator install method; on the mpv path it just controls
+        whether we leave mpv paused (NULL) or running (PLAYING).
         """
         if not self._clips:
             print("[vj] no clips loaded — ignoring clip switch")
             return
         idx = idx % len(self._clips)
         clip = self._clips[idx]
-        try:
-            new_bin = self._build_clip_source_bin(clip)
-        except Exception as exc:
-            print(f"[vj] failed to build clip source ({clip.name}): {exc!r}")
-            return
         self._current_clip_idx = idx
         self._current_source = ("clip", clip)
-        self._swap_source_bin(new_bin, start_state)
+        # Tell mpv to play the clip. mpv handles decode/loop/sync.
+        self._mpv.loadfile(clip)
+        self._mpv.pause(False)
+        # Hide the GStreamer output window so mpv's window is what
+        # the projector shows. The GStreamer pipeline keeps a
+        # source loaded (a cheap plasma) so swap-back-to-generator
+        # is instant, but its rendering goes to nothing visible.
+        if self.output_window is not None:
+            self.output_window.hide()
+        # Ensure a generator source-bin exists so the pipeline
+        # isn't dangling — re-install plasma at NULL state so it's
+        # idle. (Skip on first-launch when output_window doesn't
+        # exist yet; the initial source is set by do_activate.)
+        if (self.output_window is not None
+                and (self._source_bin is None
+                     or not (self._current_source
+                             and self._current_source[0] == "generator"))):
+            try:
+                bin_ = self._build_generator_source_bin("plasma")
+                self._swap_source_bin(bin_, Gst.State.NULL)
+            except Exception as exc:
+                print(f"[vj] couldn't park GStreamer source on plasma: {exc!r}")
         print(f"[vj] → clip {idx + 1}/{len(self._clips)}: {clip.name}")
         self._refresh_status()
 
@@ -1297,6 +1460,15 @@ class VJApp(Gtk.Application):
             self._truchet_snake.reset()
             self._snake_start_t = time_mod.monotonic()
         self._swap_source_bin(new_bin, start_state)
+        # Pause mpv (clip mode stops being on top of the projector)
+        # and bring the GStreamer output window to the front. mpv
+        # stays alive — paused at ~0% CPU — so the next clip-mode
+        # switch is instant.
+        self._mpv.pause(True)
+        if self.output_window is not None:
+            self.output_window.show_all()
+            self.output_window.present()
+            self.output_window.set_keep_above(True)
         print(f"[vj] → generator: {name}")
         self._refresh_status()
 
