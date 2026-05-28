@@ -1218,17 +1218,35 @@ class VJApp(Gtk.Application):
         bus.add_signal_watch()
         bus.connect("message", self._on_bus_message)
 
-        self.output_window.show_all()
+        # Only show the GStreamer output window if a generator is
+        # the active source. In clip mode it stays hidden so mpv's
+        # window is what the projector shows — otherwise both
+        # windows compete and the operator gets a stray third
+        # window stacked on the desktop.
+        in_clip_mode = (self._current_source
+                        and self._current_source[0] == "clip")
+        if not in_clip_mode:
+            self.output_window.show_all()
         self.hud_window.show_all()
         if self.single_screen:
-            self._move_window_to_monitor(self.output_window, 0, fullscreen=False)
+            if not in_clip_mode:
+                self._move_window_to_monitor(self.output_window, 0, fullscreen=False)
             self._move_window_to_monitor(self.hud_window, 0, fullscreen=False)
         else:
-            self._move_window_to_monitor(self.output_window, 1, fullscreen=True)
+            if not in_clip_mode:
+                self._move_window_to_monitor(self.output_window, 1, fullscreen=True)
             self._move_window_to_monitor(self.hud_window, 0, fullscreen=False)
 
         self.pipeline.set_state(Gst.State.PLAYING)
         print(f"[vj] pipeline up: {Gst.version_string()}")
+
+        # Fullscreen mpv on the projector if a 2nd monitor exists.
+        # On single-screen it stays windowed so the operator can
+        # see both the clip and the HUD. Deferred 400 ms so mpv
+        # has time to finish creating its window before the
+        # property set takes effect.
+        if not self.single_screen:
+            GLib.timeout_add(400, self._mpv_fullscreen_once)
 
         # 30Hz snake-sim tick. Runs unconditionally; the callback
         # is a no-op when truchet isn't the active generator, so
@@ -1471,6 +1489,11 @@ class VJApp(Gtk.Application):
             self.output_window.set_keep_above(True)
         print(f"[vj] → generator: {name}")
         self._refresh_status()
+
+    def _mpv_fullscreen_once(self):
+        """One-shot GLib callback: tell mpv to go fullscreen."""
+        self._mpv.fullscreen(True)
+        return False  # don't repeat
 
     def _on_truchet_snake_tick(self):
         """30Hz GLib timer callback. Advances the snake-game
