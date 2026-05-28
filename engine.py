@@ -106,6 +106,7 @@ class Engine:
         # most live-action keys (clip / gen / FX / params / favourites)
         # route to the selected group instead of global state.
         self.mapping = MappingManager(persisted.get("mapping"))
+        self._repair_mapping_media_refs()
         self.mode = "mapping" if self.mapping.enabled else "live"
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
@@ -131,6 +132,43 @@ class Engine:
         self._auto_target_y = 0.5
 
         self.running = True
+
+    def _repair_mapping_media_refs(self):
+        """Retarget stale mapping media names after the clip library changes.
+
+        Mapping state stores clip filename stems. If the library is rebuilt,
+        old stems can point at files that no longer exist; without repair the
+        group has valid geometry but a black source frame. Use the first
+        current clip as the deterministic fallback so `-/=` can keep cycling
+        from a real library position.
+        """
+        dirty = False
+        fallback_clip = self.clips.name(0) if len(self.clips) else None
+        for group in self.mapping.groups:
+            if (group.content_kind == "clip"
+                    and group.clip_stem
+                    and self.clips.find_by_stem(group.clip_stem) is None):
+                print(f"[vj] mapping: clip '{group.clip_stem}' not found")
+                if fallback_clip is not None:
+                    print(f"[vj] mapping: retargeting {group.name} to {fallback_clip}")
+                    group.clip_stem = fallback_clip
+                    self.clips.ensure_open(0)
+                else:
+                    group.clip_stem = None
+                    group.content_kind = "blackout"
+                dirty = True
+            if (group.content_kind == "generative"
+                    and group.gen_name
+                    and group.gen_name not in GENERATIVES):
+                print(f"[vj] mapping: generator '{group.gen_name}' not found")
+                group.gen_name = GENERATIVES[0] if GENERATIVES else None
+                if group.gen_name is None:
+                    group.content_kind = "blackout"
+                dirty = True
+        if dirty:
+            state = load_state()
+            state["mapping"] = self.mapping.to_dict()
+            save_state(state)
 
     # ── Mapping-mode action routing ───────────────────────────────────
 
@@ -230,6 +268,7 @@ class Engine:
         if which == "clip":
             g.content_kind = "clip"
         pool.ensure_open(new_idx)
+        print(f"[vj] mapping: {g.name} {which} → {pool.name(new_idx)}")
         self._persist_mapping()
 
     @staticmethod
@@ -981,13 +1020,17 @@ class Engine:
         is_clip = (group.content_kind == "clip" and group.clip_stem)
         if is_clip:
             idx = self.clips.find_by_stem(group.clip_stem)
-            if idx is not None:
+            if idx is None and len(self.clips) > 0:
+                idx = 0
+                group.clip_stem = self.clips.name(idx)
+                self._persist_mapping()
+            if idx is None:
+                frame = np.zeros((h, w, 3), dtype=np.uint8)
+            else:
                 self.clips.ensure_open(idx)
                 frame = self.clips.read_at(idx)
                 if frame is None:
                     frame = np.zeros((h, w, 3), dtype=np.uint8)
-            else:
-                frame = np.zeros((h, w, 3), dtype=np.uint8)
         elif group.content_kind == "generative" and group.gen_name:
             gw, gh = self._gen_render_size()
             frame = self._render_generative(
