@@ -1,15 +1,20 @@
 #!/bin/bash
-# pi-paint VJ — dual display launcher.
+# pi-paint VJ — dual display launcher (main use case).
 # Double-click in the file manager and choose "Execute".
 #
-# No venv any more — system Python + apt-installed PyGObject /
-# GStreamer. setup.sh handles installation.
+# Control HUD     → display 0 (your small screen) by default
+# Projector output → display 1 (fullscreen) by default on first launch
 #
-# Failure reporting: when the file manager launches this with
-# "Execute" (not "Execute in Terminal") there's no console for
-# errors to go to, so a startup crash would disappear silently. We
-# capture everything into vj_last_run.log and pop a zenity dialog
-# on non-zero exit with the tail of the log.
+# After the first launch you can pick the output display from the
+# Control HUD (F11 to cycle, F12 to apply, or click the buttons). That
+# choice is saved to vj_state.json and reused on every subsequent
+# launch — so this script's OUTPUT_DISPLAY only matters until you've
+# applied a pick once. To force a different display on the next launch,
+# either re-apply via the HUD or delete vj_state.json.
+
+OUTPUT_DISPLAY=1
+CONTROL_DISPLAY=0
+CONTROL_SIZE="680x720"
 
 cd "$(dirname "$0")"
 LOG="$(pwd)/vj_last_run.log"
@@ -25,42 +30,37 @@ show_error() {
     printf '%s\n\n%s\n' "$title" "$body" | xmessage -file - 2>/dev/null
     return
   fi
-  for term in lxterminal xterm gnome-terminal mate-terminal x-terminal-emulator; do
-    if command -v "$term" >/dev/null 2>&1; then
-      "$term" -e bash -c "printf '%s\n\n%s\n\n' '$title' '$body'; read -p 'Press Enter to close...'"
-      return
-    fi
-  done
+  echo "$title"
+  echo "$body"
 }
 
-# Truncate the log up front so a fresh run is never mistaken for a
-# stale one — every line below this point belongs to *this*
-# invocation. Stamp the start time and the current git commit so
-# debug requests have unambiguous version info.
 : >"$LOG"
 date '+[VJ] launch start: %Y-%m-%d %H:%M:%S' >>"$LOG"
 git -C "$(pwd)" log --oneline -1 2>/dev/null >>"$LOG"
 
-# Pre-flight: verify the GTK3 + GStreamer Python bindings load.
-# Catches the "operator pulled code but didn't re-run setup.sh"
-# case before they get a confusing GStreamer error mid-launch.
-if ! python3 -c "
-import gi
-gi.require_version('Gtk', '3.0')
-gi.require_version('Gst', '1.0')
-from gi.repository import Gtk, Gst
-" >>"$LOG" 2>&1; then
-  show_error "VJ-pi: missing dependencies" \
-    "The GTK3 / GStreamer Python bindings aren't installed.\n\nRun setup.sh first.\n\nLog: $LOG\n\nLast lines:\n\n$(tail -20 "$LOG")"
+if [ ! -d "venv" ]; then
+  show_error "VJ-pi: setup needed" \
+    "Setup hasn't been run yet.\n\nDouble-click setup.sh first.\n\nLog: $LOG"
   exit 1
 fi
 
-python3 main.py "$@" >>"$LOG" 2>&1
-EXIT=$?
+# Only pass --output-display when no saved choice exists; that way the
+# HUD picker's persistent selection always wins. Uncomment the second
+# block instead if you want this script to override the saved state.
+ARGS=( --fullscreen --control --control-display "$CONTROL_DISPLAY" --control-size "$CONTROL_SIZE" )
+if [ ! -f vj_state.json ]; then
+  ARGS+=( --output-display "$OUTPUT_DISPLAY" )
+fi
+# To force OUTPUT_DISPLAY every launch, comment the block above and
+# uncomment this one:
+# ARGS=( --fullscreen --output-display "$OUTPUT_DISPLAY" --control \
+#        --control-display "$CONTROL_DISPLAY" --control-size "$CONTROL_SIZE" )
 
+./venv/bin/python main.py "${ARGS[@]}" >>"$LOG" 2>&1
+EXIT=$?
 if [ "$EXIT" -ne 0 ]; then
   TAIL=$(tail -40 "$LOG" 2>/dev/null)
   show_error "VJ-pi crashed (exit $EXIT)" \
-    "main.py exited with status $EXIT.\n\nFull log:  $LOG\n\nLast lines:\n\n$TAIL"
+    "main.py exited with status $EXIT.\n\nFull log: $LOG\n\nLast lines:\n\n$TAIL"
 fi
 exit "$EXIT"
