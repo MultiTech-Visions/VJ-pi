@@ -28,6 +28,97 @@ CAUSTICS_SHADER = "#version 100\n#ifdef GL_ES\nprecision highp float;\n#endif\nv
 
 SPIRAL_SHADER = '#version 100\n#ifdef GL_ES\nprecision highp float;\n#endif\nvarying vec2 v_texcoord;\nuniform float time;\n\nvec3 hsv2rgb(vec3 c) {\n    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);\n    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);\n}\n\nconst float PI = 3.14159265358979;\n\nvoid main() {\n    vec2 p = (v_texcoord - 0.5) * vec2(1280.0, 720.0);\n    float r = length(p);\n    float a = atan(p.y, p.x);\n    float arms = 5.0;\n    float v = sin(a * arms + log(r + 1.0) * 2.0 - time * 1.5);\n    v = pow(abs(v), 1.5);\n    v *= smoothstep(0.0, 100.0, r) * smoothstep(800.0, 400.0, r);\n    float hue = fract(a / (2.0 * PI) + time * 0.05);\n    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.85, v)), 1.0);\n}\n'
 
+LINEA_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+float lineField(vec2 p, float a, float freq, float phase) {
+    vec2 d = vec2(cos(a), sin(a));
+    float v = sin(dot(p, d) * freq + phase);
+    return smoothstep(0.915, 1.0, abs(v));
+}
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+    float l = 0.0;
+    l += lineField(p + vec2(0.05 * sin(t * 0.3), 0.03 * cos(t * 0.2)),
+                   0.2 + sin(t * 0.13) * 0.4, 34.0, t * 1.7);
+    l += lineField(p, 1.6 + cos(t * 0.17) * 0.5, 42.0, -t * 1.2);
+    l += lineField(p + vec2(sin(t * 0.2), cos(t * 0.25)) * 0.08,
+                   2.5, 25.0, t * 0.9);
+    l += lineField(p + vec2(cos(t * 0.16), sin(t * 0.11)) * 0.05,
+                   -0.7 + sin(t * 0.19) * 0.3, 55.0, t * 0.55);
+    float grid = clamp(l, 0.0, 1.0);
+    float glow = min(l * 0.45, 1.0);
+    float hue = fract(0.56 + t * 0.035 + p.x * 0.08 + p.y * 0.05);
+    vec3 col = hsv2rgb(vec3(hue, 0.82, grid));
+    col += hsv2rgb(vec3(hue + 0.08, 0.70, glow)) * 0.35;
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+GRAYSCOTT_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+    float v = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 5; i++) {
+        v += amp * noise(p);
+        p *= 2.03;
+        amp *= 0.5;
+    }
+    return v;
+}
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time * 0.12;
+    float n1 = fbm(p * 5.0 + vec2(t, -t * 0.7));
+    float n2 = fbm(p * 11.0 - vec2(t * 1.3, t));
+    float cells = sin((n1 * 2.2 - n2 * 1.6 + length(p) * 0.9 - time * 0.08) * 18.0);
+    float membrane = smoothstep(0.03, 0.0, abs(cells));
+    float islands = smoothstep(0.48, 0.82, n1 * n2 + membrane * 0.35);
+    float edge = smoothstep(0.12, 0.0, abs(islands - 0.5));
+    vec3 ink = vec3(0.02, 0.025, 0.035);
+    vec3 chemA = vec3(0.10, 0.55, 0.82);
+    vec3 chemB = vec3(0.95, 0.85, 0.35);
+    vec3 col = mix(ink, chemA, islands);
+    col = mix(col, chemB, membrane);
+    col += edge * vec3(0.35, 0.45, 0.55);
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
 DONUT_SHADER = "#version 100\n#ifdef GL_ES\nprecision highp float;\n#endif\nvarying vec2 v_texcoord;\nuniform float time;\nuniform sampler2D tex;\n\nconst float PI = 3.14159265359;\n\nfloat sdTorus(vec3 p, vec2 t) {\n    vec2 q = vec2(length(p.xz) - t.x, p.y);\n    return length(q) - t.y;\n}\n\nvec3 rotY(vec3 p, float a) {\n    float c = cos(a), s = sin(a);\n    return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);\n}\nvec3 rotX(vec3 p, float a) {\n    float c = cos(a), s = sin(a);\n    return vec3(p.x, c * p.y - s * p.z, s * p.y + c * p.z);\n}\n\nfloat map(vec3 p) {\n    p = rotY(p, time * 0.5);\n    p = rotX(p, time * 0.3);\n    return sdTorus(p, vec2(1.0, 0.4));\n}\n\n// Map a 3D point on the torus surface to a (u, v) coordinate\n// suitable for sampling the input texture. Inverts the rotation\n// we applied in `map` so the texture sticks to the torus rather\n// than spinning past it.\nvec2 torusUV(vec3 p_world) {\n    vec3 p = rotX(p_world, -time * 0.3);\n    p = rotY(p, -time * 0.5);\n    float u = atan(p.z, p.x);            // -PI..PI around major\n    vec2 q = vec2(length(p.xz), p.y);\n    vec2 dq = q - vec2(1.0, 0.0);        // R = 1.0\n    float v = atan(dq.y, dq.x);          // -PI..PI around minor\n    return vec2((u + PI) / (2.0 * PI),\n                (v + PI) / (2.0 * PI));\n}\n\nvoid main() {\n    vec2 uv_scr = v_texcoord - 0.5;\n    uv_scr.x *= 1280.0 / 720.0;\n    vec3 ro = vec3(0.0, 0.0, -3.0);\n    vec3 rd = normalize(vec3(uv_scr, 1.0));\n    float t = 0.0;\n    bool hit = false;\n    for (int i = 0; i < 64; i++) {\n        vec3 pos = ro + rd * t;\n        float d = map(pos);\n        if (d < 0.001) { hit = true; break; }\n        t += d;\n        if (t > 10.0) break;\n    }\n    if (!hit) {\n        gl_FragColor = vec4(0.0, 0.0, 0.05, 1.0);\n        return;\n    }\n    vec3 hit_pos = ro + rd * t;\n    vec2 tex_uv = torusUV(hit_pos);\n    // Slow scroll around the major circumference — the image\n    // wraps around the donut like a label on a tin can.\n    tex_uv.x = fract(tex_uv.x + time * 0.05);\n    vec3 col = texture2D(tex, tex_uv).rgb;\n    // Simple depth darken so the back of the donut isn't full\n    // bright — gives it a hint of 3D form.\n    float depth = t / 10.0;\n    col *= 1.0 - depth * 0.4;\n    gl_FragColor = vec4(col, 1.0);\n}\n"
 
 GPU_GENERATORS = {
@@ -43,6 +134,8 @@ GPU_GENERATORS = {
     'marble': MARBLE_SHADER,
     'caustics': CAUSTICS_SHADER,
     'spiral': SPIRAL_SHADER,
+    'linea': LINEA_SHADER,
+    'grayscott': GRAYSCOTT_SHADER,
     'donut': DONUT_SHADER,
 }
 
