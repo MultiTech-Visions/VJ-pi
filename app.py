@@ -31,10 +31,8 @@ through gstreamer's gl* family. CPU presentation via gldownload
 before the gtksinks — see CLAUDE.md for the V3D-dual-context
 post-mortem that justifies all of this.
 """
-import json
 import math
 import os
-import socket
 import subprocess
 import sys
 import time as time_mod
@@ -49,8 +47,6 @@ from gi.repository import Gtk, Gst, Gdk, Gio, GLib  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 CLIPS_DIR = HERE / "assets" / "clips"
-MPV_SOCKET = "/tmp/vj-mpv-socket"
-MPV_LOG = HERE / "vj_last_mpv.log"
 IMAGES_DIR = HERE / "assets" / "images"
 
 # Canvas resolution. Source bins normalise to this before the
@@ -1039,14 +1035,19 @@ def _detect_projector_output():
     return enabled[0][0]
 
 
-# ── mpv subprocess backend (clip playback) ───────────────────────────
+# ── VLC backend (clip playback) ──────────────────────────────────────
 #
-# Pi 5 + GStreamer + DMABuf for HEVC is a fight we keep losing.
-# mpv with --hwdec=drm just works: ~25% CPU for 720p HEVC, no
-# pipeline negotiation drama. Used here for the clip-playback
-# side only — generators still go through the GStreamer pipeline
-# below because that's where the GLSL shaders + snake-game
-# uniforms live cleanly.
+# Why VLC and not mpv or our own GStreamer pipeline:
+# Adafruit's Pi Video Looper 2 (the dev-blessed Pi 5 video looping
+# reference implementation, tested on Pi 4 + 5) is ~80 lines of
+# python-vlc. We do the same here. VLC picks the right backend
+# automatically on Pi 5 OpenGL — no Vulkan swapchain failures,
+# no DMABuf negotiation, no per-frame CPU videoconvert. Measured
+# bare-VLC playing 720p HEVC on this Pi: ~7% CPU.
+#
+# Used here for clip playback only — generators still go through
+# the GStreamer pipeline below because that's where the GLSL
+# shaders + snake-game uniforms live cleanly.
 #
 # Architecture:
 #   - mpv runs as a subprocess from app launch to app quit, with
@@ -1060,113 +1061,103 @@ def _detect_projector_output():
 # Window stacking is the awkward bit on Wayland — set_keep_above
 # is hint-only, but Pi OS's compositor (labwc) honours it.
 
-class MpvBackend:
-    """Owns an mpv subprocess. Send commands via JSON over the
-    IPC socket. Loadfile + pause + fullscreen are all we need."""
+class VlcBackend:
+    """Thin wrapper around python-vlc — same surface as the
+    previous MpvBackend (spawn/loadfile/pause/fullscreen/
+    shutdown) so the rest of the app doesn't care which engine
+    is under it.
 
-    def __init__(self, projector_output, hwdec="drm"):
+    VLC runs in-process via libvlc and creates its own native
+    window. We don't try to embed it in our GTK output window
+    — embedding via set_xwindow() needs an X11 XID which on
+    Wayland means XWayland-mode windows, and even Adafruit's
+    looper sidesteps it (they use pygame just to grab a window
+    ID). VLC's own window stacks underneath our generator
+    output window, hidden in clip mode by the existing
+    show/hide logic in _install_clip / _install_generator."""
+
+    def __init__(self, projector_output):
         self.projector_output = projector_output
-        self.hwdec = hwdec
-        self.proc = None
+        self.instance = None
+        self.player = None
 
     def spawn(self):
-        """Start mpv idle with the IPC socket. Returns True if
-        mpv came up + socket is accepting connections."""
+        """Create the VLC instance + media player. No subprocess
+        — libvlc lives in-process. Returns True on success."""
         try:
-            os.unlink(MPV_SOCKET)
-        except OSError:
-            pass
-        args = [
-            "mpv",
-            "--idle=yes",
-            "--keep-open=always",
-            "--loop-file=inf",
-            f"--screen-name={self.projector_output}",
-            f"--fs-screen-name={self.projector_output}",
-            "--geometry=640x360",
-            f"--hwdec={self.hwdec}",
-            # Force OpenGL backend on Pi 5. The default `gpu-next`
-            # uses libplacebo + Vulkan; the Mesa v3dv Vulkan driver
-            # on Pi 5 fails to allocate a swapchain
-            # (VK_ERROR_OUT_OF_HOST_MEMORY) and mpv shows a freeze
-            # frame indefinitely. --vo=gpu + --gpu-api=opengl uses
-            # OpenGL ES which works.
-            "--vo=gpu",
-            "--gpu-api=opengl",
-            "--gpu-context=wayland",
-            "--osd-level=0",
-            "--no-osd-bar",
-            "--no-terminal",
-            # Only warn-level + above. The verbose-everything
-            # default produced 300KB+ logs per run on Pi 5
-            # because of the libplacebo memory-pool trace.
-            "--msg-level=all=warn,vo=info,cplayer=info",
-            f"--log-file={MPV_LOG}",
-            f"--input-ipc-server={MPV_SOCKET}",
-        ]
-        print(f"[vj] launching mpv: hwdec={self.hwdec}, "
-              f"screen={self.projector_output}")
-        try:
-            self.proc = subprocess.Popen(
-                args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-            )
-        except FileNotFoundError:
-            print("[vj] mpv not installed — run setup.sh")
+            import vlc
+        except ImportError:
+            print("[vj] python3-vlc not installed — run setup.sh")
             return False
-        # Wait up to 5s for the IPC socket to come up.
-        deadline = time_mod.monotonic() + 5.0
-        while time_mod.monotonic() < deadline:
-            if os.path.exists(MPV_SOCKET):
-                try:
-                    with self._open() as s:
-                        s.close()
-                        return True
-                except OSError:
-                    pass
-            if self.proc.poll() is not None:
-                print(f"[vj] mpv exited code {self.proc.returncode} "
-                      "before IPC socket was ready")
-                return False
-            time_mod.sleep(0.1)
-        print(f"[vj] mpv IPC socket never appeared at {MPV_SOCKET}")
-        return False
+        self._vlc = vlc  # cache module reference for event types
+        self.instance = vlc.Instance(
+            "--no-xlib",
+            "--quiet",
+            "--no-video-title-show",
+            "--no-osd",
+        )
+        if self.instance is None:
+            print("[vj] failed to construct VLC instance")
+            return False
+        self.player = self.instance.media_player_new()
+        # Loop the current media by re-playing on
+        # MediaPlayerEndReached. Instance-level --input-repeat
+        # doesn't apply cleanly to a single media_player; this
+        # handler is the reliable loop path.
+        events = self.player.event_manager()
+        events.event_attach(
+            vlc.EventType.MediaPlayerEndReached,
+            lambda _ev: self._on_end_reached(),
+        )
+        print(f"[vj] VLC ready (libvlc {vlc.libvlc_get_version().decode()}); "
+              f"target output={self.projector_output}")
+        return True
 
-    def _open(self):
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.connect(MPV_SOCKET)
-        return s
-
-    def send(self, *cmd):
-        """Fire-and-forget IPC command."""
-        try:
-            with self._open() as s:
-                payload = json.dumps({"command": list(cmd)}) + "\n"
-                s.sendall(payload.encode("utf-8"))
-        except OSError as exc:
-            print(f"[vj] mpv send {cmd} failed: {exc}")
+    def _on_end_reached(self):
+        """MediaPlayerEndReached fires on the VLC event thread.
+        Can't call player.play() from there (libvlc is not
+        reentrant on the event thread); schedule on GLib idle."""
+        def _restart():
+            try:
+                self.player.stop()
+                self.player.play()
+            except Exception as exc:
+                print(f"[vj] loop restart failed: {exc!r}")
+            return False
+        GLib.idle_add(_restart)
 
     def loadfile(self, path):
-        self.send("loadfile", str(path))
+        if self.player is None or self.instance is None:
+            return
+        media = self.instance.media_new(str(path))
+        self.player.set_media(media)
+        self.player.play()
 
     def pause(self, paused=True):
-        self.send("set_property", "pause", bool(paused))
+        if self.player is None:
+            return
+        # set_pause(1) pauses, set_pause(0) unpauses.
+        self.player.set_pause(1 if paused else 0)
 
     def fullscreen(self, on=True):
-        self.send("set_property", "fullscreen", bool(on))
+        if self.player is None:
+            return
+        self.player.set_fullscreen(bool(on))
 
     def shutdown(self):
-        if self.proc is None:
-            return
-        self.send("quit")
-        try:
-            self.proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-        self.proc = None
+        if self.player is not None:
+            try:
+                self.player.stop()
+                self.player.release()
+            except Exception:
+                pass
+            self.player = None
+        if self.instance is not None:
+            try:
+                self.instance.release()
+            except Exception:
+                pass
+            self.instance = None
 
 
 class VJApp(Gtk.Application):
@@ -1195,17 +1186,15 @@ class VJApp(Gtk.Application):
         self._source_bin = None
         self._status_label = None
 
-        # mpv subprocess for clip playback (see MpvBackend
-        # docstring for the why). Spawned in do_activate so its
-        # IPC socket is ready before the first _install_clip.
+        # Clip playback engine — VLC via python-vlc. Spawned in
+        # do_activate so it's ready before the first _install_clip.
         # The projector output name is auto-detected from
-        # wlr-randr (most-recently-listed enabled output wins,
-        # which on dual-monitor Pi setups is the projector).
-        # Operator can override via VJ_PROJECTOR_OUTPUT env var.
+        # wlr-randr (largest physical size = projector). Operator
+        # can override via VJ_PROJECTOR_OUTPUT env var.
         projector_output = (os.environ.get("VJ_PROJECTOR_OUTPUT")
                             or _detect_projector_output()
                             or "HDMI-A-1")
-        self._mpv = MpvBackend(projector_output, hwdec="drm")
+        self._player = VlcBackend(projector_output)
 
         # Clip pool state — list of paths + index of the last clip
         # that was active. We remember the index even when the
@@ -1249,7 +1238,7 @@ class VJApp(Gtk.Application):
         # _install_clip needs it. Failure to launch is non-fatal —
         # we still have generators via GStreamer; only clip mode
         # breaks. Operator gets a console warning.
-        if not self._mpv.spawn():
+        if not self._player.spawn():
             print("[vj] WARNING: mpv didn't start — clips won't play. "
                   "Generators still work.")
 
@@ -1317,9 +1306,9 @@ class VJApp(Gtk.Application):
         display = Gdk.Display.get_default()
         n_monitors = display.get_n_monitors() if display else 1
         print(f"[vj] {n_monitors} monitor(s) detected; mpv "
-              f"target={self._mpv.projector_output}")
+              f"target={self._player.projector_output}")
         if n_monitors >= 2 and not self.single_screen:
-            GLib.timeout_add(400, self._mpv_fullscreen_once)
+            GLib.timeout_add(400, self._player_fullscreen_once)
         else:
             print(f"[vj] not fullscreening mpv "
                   f"(single screen or --single-screen flag)")
@@ -1332,8 +1321,8 @@ class VJApp(Gtk.Application):
         GLib.timeout_add(33, self._on_truchet_snake_tick)
 
     def do_shutdown(self):
-        if self._mpv is not None:
-            self._mpv.shutdown()
+        if self._player is not None:
+            self._player.shutdown()
         if self.pipeline is not None:
             self.pipeline.set_state(Gst.State.NULL)
         Gtk.Application.do_shutdown(self)
@@ -1491,8 +1480,8 @@ class VJApp(Gtk.Application):
         self._current_clip_idx = idx
         self._current_source = ("clip", clip)
         # Tell mpv to play the clip. mpv handles decode/loop/sync.
-        self._mpv.loadfile(clip)
-        self._mpv.pause(False)
+        self._player.loadfile(clip)
+        self._player.pause(False)
         # Hide the GStreamer output window so mpv's window is what
         # the projector shows. The GStreamer pipeline keeps a
         # source loaded (a cheap plasma) so swap-back-to-generator
@@ -1558,7 +1547,7 @@ class VJApp(Gtk.Application):
         # and bring the GStreamer output window to the front. mpv
         # stays alive — paused at ~0% CPU — so the next clip-mode
         # switch is instant.
-        self._mpv.pause(True)
+        self._player.pause(True)
         if self.output_window is not None:
             self.output_window.show_all()
             self.output_window.present()
@@ -1566,9 +1555,10 @@ class VJApp(Gtk.Application):
         print(f"[vj] → generator: {name}")
         self._refresh_status()
 
-    def _mpv_fullscreen_once(self):
-        """One-shot GLib callback: tell mpv to go fullscreen."""
-        self._mpv.fullscreen(True)
+    def _player_fullscreen_once(self):
+        """One-shot GLib callback: tell the clip player to go
+        fullscreen on the projector output."""
+        self._player.fullscreen(True)
         return False  # don't repeat
 
     def _on_truchet_snake_tick(self):

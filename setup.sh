@@ -51,7 +51,7 @@ sudo apt-get install -y \
   gstreamer1.0-gtk3 \
   gstreamer1.0-x \
   ffmpeg \
-  mpv \
+  vlc python3-vlc \
   libgl1 libegl1
 echo "    done."
 echo ""
