@@ -58,23 +58,17 @@ CANVAS_H = 720
 # before its gtksink (gtksink doesn't accept GLMemory). The
 # downstream's ghost sink pad accepts GL textures, so source-bin
 # replacement is a clean unlink/link without touching GL state.
-# Output branch runs at full 720p 30 fps (it's what the
-# projector shows). HUD branch is downscaled to 320×180 at
-# 10 fps — that's all the small preview widget on the operator
-# screen can actually display, and it cuts the HUD branch's
-# CPU cost by ~80% (less data through videoconvert + gtksink,
-# fewer paints per second). videorate drops surplus frames
-# *before* the per-frame videoconvert/gtksink work.
+# Single-branch downstream: just the projector output. The HUD
+# preview was using ~30% CPU just to render a tiny preview that
+# the operator barely glances at — replaced with a text-only
+# status panel on the HUD window. The `tee` is kept anyway so
+# Phase 6 effects can fork the GL textures without restructuring
+# the pipeline.
 DOWNSTREAM_DESC = (
     "tee name=t allow-not-linked=true "
     "t. ! queue max-size-buffers=2 leaky=downstream ! "
     "  gldownload ! videoconvert ! "
-    "  gtksink name=output_sink sync=false "
-    "t. ! queue max-size-buffers=2 leaky=downstream ! "
-    "  gldownload ! videorate ! video/x-raw,framerate=10/1 ! "
-    "  videoscale ! video/x-raw,width=320,height=180 ! "
-    "  videoconvert ! "
-    "  gtksink name=hud_sink sync=false"
+    "  gtksink name=output_sink sync=false"
 )
 # Why a CPU videoconvert and not GPU-side glcolorconvert:
 # gtksink only accepts system-memory BGRA/BGRx. The "smart"
@@ -1373,20 +1367,19 @@ class VJApp(Gtk.Application):
     # ── Sinks → windows binding ────────────────────────────────────
 
     def _bind_sinks_to_windows(self):
-        """Pull gtksink widgets out of the downstream bin and pack
-        them into the two top-level windows."""
+        """Pull the output gtksink widget out of the downstream bin
+        and pack it into the projector window. HUD window is text-
+        only (no video preview) — saves ~30% CPU vs running a
+        second rendering branch."""
         output_sink = self.pipeline.get_by_name("output_sink")
-        hud_sink = self.pipeline.get_by_name("hud_sink")
-        if output_sink is None or hud_sink is None:
-            self._fail("gtksink elements missing from the pipeline")
+        if output_sink is None:
+            self._fail("output gtksink missing from the pipeline")
             return False
         output_widget = output_sink.get_property("widget")
-        hud_widget = hud_sink.get_property("widget")
         # GTK3 quirk: gtksink's widget defaults to hidden.
         output_widget.show()
-        hud_widget.show()
         self.output_window = self._build_output_window(output_widget)
-        self.hud_window = self._build_hud_window(hud_widget)
+        self.hud_window = self._build_hud_window()
         self.add_window(self.output_window)
         self.add_window(self.hud_window)
         return True
@@ -1402,17 +1395,19 @@ class VJApp(Gtk.Application):
         win.connect("key-press-event", self._on_key_press)
         return win
 
-    def _build_hud_window(self, video_widget):
+    def _build_hud_window(self):
         win = Gtk.ApplicationWindow(application=self)
         win.set_title("VJ Control")
-        win.set_default_size(680, 720)
+        win.set_default_size(680, 480)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         box.set_margin_top(6)
         box.set_margin_bottom(6)
         box.set_margin_start(6)
         box.set_margin_end(6)
-        video_widget.set_size_request(-1, 380)
-        box.pack_start(video_widget, False, False, 0)
+
+        # No video preview here — see _bind_sinks_to_windows for
+        # why. The big status label below is what the operator
+        # uses to track what's playing.
 
         # Big, unmissable "what's playing" label. The operator
         # uses this to identify which generator they're currently
