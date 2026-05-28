@@ -66,16 +66,21 @@ CANVAS_H = 720
 # the pipeline.
 DOWNSTREAM_DESC = (
     "tee name=t allow-not-linked=true "
-    "t. ! queue max-size-buffers=2 leaky=downstream ! "
+    "t. ! queue max-size-buffers=10 leaky=no ! "
     "  gldownload ! videoconvert ! "
-    "  gtksink name=output_sink sync=true"
+    "  gtksink name=output_sink sync=true qos=false"
 )
-# sync=true on the gtksink: render each frame at its PTS instead
-# of as-fast-as-the-decoder-produces. With MJPEG decode now fast
-# enough on Pi 5 (used to be HEVC-bottlenecked), sync=false made
-# a 15-second clip play back in ~2 seconds. Live generator
-# sources also work fine with sync=true since videotestsrc emits
-# at the negotiated 30 fps.
+# sync=true on gtksink: render each frame at its PTS instead of
+# as-fast-as-the-decoder-produces. Without sync MJPEG plays
+# back 7× too fast on Pi 5.
+#
+# qos=false on gtksink: don't drop "late" frames. With
+# qos=true (the default), gtksink discards frames that miss
+# their target presentation time — combined with the bursty
+# CPU-side JPEG decode, this turned playback into "freeze for
+# a beat, then a flicker of motion, then freeze again". qos
+# off plus a deeper queue (10 buffers, non-leaky) gives the
+# decoder room to land its bursts; the sink shows every frame.
 # Why a CPU videoconvert and not GPU-side glcolorconvert:
 # gtksink only accepts system-memory BGRA/BGRx. The "smart"
 # version (glcolorconvert → caps(GLMemory, BGRA) → gldownload
