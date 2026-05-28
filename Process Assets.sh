@@ -1,42 +1,23 @@
 #!/bin/bash
-# pi-paint VJ — bulk transcode the clip + overlay library to MJPEG 720p.
-# Double-click in the file manager and choose "Execute".
+# pi-paint VJ — process clips for the pygame/OpenCV rig.
 #
-# Why MJPEG and not HEVC: the obvious answer would be HEVC since
-# Pi 5 has hardware HEVC decode (v4l2slh265dec). In practice the
-# zero-copy DMABuf path from that decoder into glupload doesn't
-# negotiate cleanly on Pi OS today — the workaround (videoconvert
-# between decoder and glupload) eats ~60% CPU just shuffling YUV
-# from DMABuf into system memory, and there are known buffer-
-# format issues downstream. See [[research-findings-pi-vj]].
-#
-# MJPEG flips this: each frame is an independent JPEG. libjpeg-turbo
-# decodes it directly to system memory with no negotiation drama,
-# glupload picks it up cleanly, and the whole rendering path is
-# happy. Measured on a Pi 5 with our 2-branch tee downstream:
-#   HEVC 720p:   ~98% CPU (broken DMABuf path tax)
-#   H.264 720p: ~207% CPU (no Pi 5 hw decode, software at 720p
-#               is heavy on the ARM cores even with 4 of them)
-#   MJPEG 720p:  ~19% CPU  ← winner
-#
-# Trade-off: MJPEG files are ~2× the size of HEVC at equivalent
-# visual quality (5-second loop: ~35MB vs ~18MB). For a VJ clip
-# library this is fine. Disk is cheap; CPU at showtime isn't.
-#
-# Behaviour:
-#   * Walks assets/clips/ and assets/overlays/.
-#   * For each .mp4 / .mov that ISN'T already HEVC at 1280x720,
-#     transcodes via ffmpeg (libx265, fast preset, crf 23, no audio).
-#   * Moves the original to assets/<dir>/.original/ before swapping
-#     in the new file — NOTHING is deleted. The original stays around
-#     in case the transcode is bad or you want it back.
-#   * Idempotent: re-running skips files already at HEVC 720p.
-#
-# UI: zenity progress dialog with per-file progress while it runs.
-# Errors and per-file ffmpeg output go to vj_last_process.log.
+# Double-click works: a zenity progress window is used when available.
+# Terminal launch also works: the same progress is printed to stdout.
+# Full ffmpeg output and high-level status go to vj_last_process.log.
 
+set -uo pipefail
 cd "$(dirname "$0")"
+
 LOG="$(pwd)/vj_last_process.log"
+CONFIG_PY="config.py"
+TARGET_W=$(grep -E '^\s*width:\s*int\s*=' "$CONFIG_PY" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+TARGET_H=$(grep -E '^\s*height:\s*int\s*=' "$CONFIG_PY" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+TARGET_W=${TARGET_W:-1280}
+TARGET_H=${TARGET_H:-720}
+PRESET="${VJ_FFMPEG_PRESET:-medium}"
+CRF="${VJ_FFMPEG_CRF:-22}"
+PROGRESS_FD=""
+ZENITY_PID=""
 
 show_error() {
   local title="$1"
@@ -47,7 +28,9 @@ show_error() {
   fi
   if command -v xmessage >/dev/null 2>&1; then
     printf '%s\n\n%s\n' "$title" "$body" | xmessage -file - 2>/dev/null
+    return
   fi
+  printf '%s\n\n%s\n' "$title" "$body" >&2
 }
 
 show_info() {
@@ -55,131 +38,195 @@ show_info() {
   local body="$2"
   if command -v zenity >/dev/null 2>&1; then
     zenity --info --width=720 --title="$title" --text="$body" 2>/dev/null
+    return
+  fi
+  printf '%s\n\n%s\n' "$title" "$body"
+}
+
+log() {
+  printf '%s\n' "$*"
+  printf '%s\n' "$*" >>"$LOG"
+}
+
+progress() {
+  local pct="$1"
+  local msg="$2"
+  log "[$pct%] $msg"
+  if [ -n "$PROGRESS_FD" ]; then
+    printf '%s\n# %s\n' "$pct" "$msg" >&"$PROGRESS_FD" 2>/dev/null || true
   fi
 }
 
-# Pre-flight: every tool we depend on
-for tool in ffmpeg ffprobe zenity; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    show_error "Missing tool: $tool" \
-      "The tool '$tool' isn't installed on this Pi.\n\nRun setup.sh first."
+cleanup() {
+  if [ -n "$PROGRESS_FD" ]; then
+    exec {PROGRESS_FD}>&- 2>/dev/null || true
+  fi
+  if [ -n "$ZENITY_PID" ]; then
+    wait "$ZENITY_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+start_gui_progress() {
+  if ! command -v zenity >/dev/null 2>&1; then
+    return
+  fi
+  local pipe
+  pipe=$(mktemp -u /tmp/vj-process-progress.XXXXXX)
+  mkfifo "$pipe" || return
+  zenity --progress \
+    --title="VJ-pi — Process Assets" \
+    --text="Starting..." \
+    --percentage=0 \
+    --width=560 \
+    --auto-close \
+    --no-cancel <"$pipe" 2>/dev/null &
+  ZENITY_PID=$!
+  exec {PROGRESS_FD}>"$pipe"
+  rm -f "$pipe"
+}
+
+require_tool() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    show_error "Missing tool: $1" \
+      "The tool '$1' is not installed.\n\nRun setup.sh first.\n\nLog: $LOG"
     exit 1
   fi
-done
+}
 
-: > "$LOG"
-date '+[VJ] process start: %Y-%m-%d %H:%M:%S' >> "$LOG"
+probe_field() {
+  ffprobe -v error -select_streams v:0 -show_entries "stream=$2" \
+    -of csv=p=0 "$1" 2>/dev/null | head -1
+}
 
-# Collect every .mp4 / .mov from clips/ + overlays/.
-# -maxdepth 1 keeps us from descending into .original/ on a re-run.
-mapfile -t FILES < <(
-  for dir in assets/clips assets/overlays; do
-    [ -d "$dir" ] || continue
-    find "$dir" -maxdepth 1 -type f \( -iname '*.mp4' -o -iname '*.mov' \) | sort
+has_audio() {
+  ffprobe -v error -select_streams a -show_entries stream=index \
+    -of csv=p=0 "$1" 2>/dev/null | grep -q .
+}
+
+duration_us() {
+  local d
+  d=$(ffprobe -v error -show_entries format=duration \
+    -of default=noprint_wrappers=1:nokey=1 "$1" 2>/dev/null)
+  awk -v d="$d" 'BEGIN { if (d > 0) printf "%d", d * 1000000; else print 0 }'
+}
+
+process_file() {
+  local f="$1"
+  local idx="$2"
+  local total="$3"
+  local base stem dir codec width height audio ext_lower
+  base=$(basename "$f")
+  stem="${base%.*}"
+  dir=$(dirname "$f")
+  ext_lower=$(printf '%s' "${base##*.}" | tr '[:upper:]' '[:lower:]')
+
+  progress $(( (idx - 1) * 100 / total )) "[$idx/$total] Inspecting $base"
+
+  codec=$(probe_field "$f" codec_name)
+  width=$(probe_field "$f" width)
+  height=$(probe_field "$f" height)
+  if has_audio "$f"; then audio=1; else audio=0; fi
+  log "  codec=$codec size=${width}x${height} ext=$ext_lower audio=$audio"
+
+  if [ "$codec" = "h264" ] \
+     && [ "$width" = "$TARGET_W" ] && [ "$height" = "$TARGET_H" ] \
+     && [ "$audio" = "0" ] && [ "$ext_lower" = "mp4" ]; then
+    log "  skip: already normalized"
+    return 0
+  fi
+
+  local backup_dir tmp_out out_file vf total_us
+  backup_dir="$dir/_originals"
+  tmp_out="$dir/.processing.$stem.$$.mp4"
+  out_file="$dir/$stem.mp4"
+  vf="scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,crop=${TARGET_W}:${TARGET_H}"
+  total_us=$(duration_us "$f")
+  mkdir -p "$backup_dir"
+
+  log "  transcode: preset=$PRESET crf=$CRF -> $out_file"
+  {
+    echo "[VJ] === ffmpeg $f ==="
+    ffmpeg -y -hide_banner -nostdin \
+      -i "$f" \
+      -vf "$vf" \
+      -c:v libx264 -preset "$PRESET" -crf "$CRF" \
+      -pix_fmt yuv420p -movflags +faststart -an \
+      -progress pipe:1 -stats_period 1 \
+      "$tmp_out" 2>&1
+    echo "[VJ] === ffmpeg exit ${PIPESTATUS[0]} ==="
+  } | while IFS= read -r line; do
+    printf '%s\n' "$line" >>"$LOG"
+    case "$line" in
+      out_time_ms=*)
+        if [ "$total_us" -gt 0 ]; then
+          local out_us file_pct overall_pct
+          out_us=${line#out_time_ms=}
+          file_pct=$(( out_us * 100 / total_us ))
+          [ "$file_pct" -gt 100 ] && file_pct=100
+          overall_pct=$(( ((idx - 1) * 100 + file_pct) / total ))
+          progress "$overall_pct" "[$idx/$total] Transcoding $base (${file_pct}%)"
+        fi
+        ;;
+      progress=end)
+        progress $(( idx * 100 / total )) "[$idx/$total] Finished ffmpeg for $base"
+        ;;
+    esac
   done
+
+  if [ ! -s "$tmp_out" ]; then
+    log "  ERROR: empty output; leaving original in place"
+    rm -f "$tmp_out"
+    return 1
+  fi
+
+  mv -f "$f" "$backup_dir/$base"
+  mv -f "$tmp_out" "$out_file"
+  log "  ok: wrote $out_file; original -> $backup_dir/$base"
+}
+
+require_tool ffmpeg
+require_tool ffprobe
+
+: >"$LOG"
+date '+[VJ] process start: %Y-%m-%d %H:%M:%S' >>"$LOG"
+start_gui_progress
+
+log "============================================================"
+log "  pi-paint VJ — Asset Processor"
+log "============================================================"
+log "Target: ${TARGET_W}x${TARGET_H} H.264 mp4, no audio"
+log "Preset: $PRESET   CRF: $CRF"
+log "Log: $LOG"
+
+# Clean only our own partial outputs from killed runs.
+find assets/clips -maxdepth 1 -type f -name '.processing.*.mp4' -delete 2>/dev/null || true
+
+mapfile -d '' FILES < <(
+  find assets/clips -maxdepth 1 -type f \
+    \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.mkv' \
+    -o -iname '*.webm' -o -iname '*.avi' -o -iname '*.gif' \
+    -o -iname '*.m4v' -o -iname '*.wmv' -o -iname '*.flv' \) \
+    -not -name '.processing.*' \
+    -print0 | sort -z
 )
 
 TOTAL=${#FILES[@]}
 if [ "$TOTAL" -eq 0 ]; then
-  show_info "Nothing to process" \
-    "No .mp4 or .mov files found in assets/clips/ or assets/overlays/.\n\nDrop your library in those folders, then double-click this again."
+  progress 100 "No video files found in assets/clips"
+  show_info "Process Assets" "No video files found in assets/clips.\n\nLog: $LOG"
   exit 0
 fi
-echo "[VJ] found $TOTAL candidate file(s)" >> "$LOG"
 
-# Returns 0 if the file is already MJPEG at exactly 1280x720 — the
-# canonical "no transcode needed" state.
-is_already_processed() {
-  local f="$1"
-  local info
-  info=$(ffprobe -v error -select_streams v:0 \
-    -show_entries stream=codec_name,width,height \
-    -of csv=p=0 "$f" 2>/dev/null)
-  [ "$info" = "mjpeg,1280,720" ]
-}
+log "Found $TOTAL candidate file(s)"
+errors=0
+for i in "${!FILES[@]}"; do
+  if ! process_file "${FILES[$i]}" "$((i + 1))" "$TOTAL"; then
+    errors=$((errors + 1))
+  fi
+done
 
-# Drive zenity --progress by echoing percentage + "# comment" lines.
-# The body of this subshell is the work loop; piping it to zenity
-# means the GUI advances as the loop progresses.
-(
-  i=0
-  for f in "${FILES[@]}"; do
-    i=$((i + 1))
-    pct=$(( (i - 1) * 100 / TOTAL ))
-    name=$(basename "$f")
-    dir=$(dirname "$f")
-
-    echo "$pct"
-    echo "# [$i/$TOTAL] Inspecting: $name"
-
-    if is_already_processed "$f"; then
-      echo "[VJ] skip (already HEVC 720p): $f" >> "$LOG"
-      continue
-    fi
-
-    echo "# [$i/$TOTAL] Transcoding: $name (this can take a minute or two per clip)"
-
-    orig_dir="$dir/.original"
-    mkdir -p "$orig_dir"
-    # Output container is .mov so the codec→container pairing is
-    # unambiguous (mp4 + mjpeg is technically legal but some
-    # players choke; .mov + mjpeg is the well-trodden path).
-    base="${name%.*}"
-    tmp_out="$dir/.${base}.tmp.mov"
-    final_name="${base}.mov"
-
-    {
-      echo "[VJ] === transcoding $f ==="
-      # -q:v 5 is a good MJPEG quality default (libjpeg-turbo
-      #   scale of 1-31, lower is higher quality). 5 looks
-      #   visually transparent on VJ-style loops while keeping
-      #   file sizes ~2× HEVC at the same resolution.
-      # -pix_fmt yuvj420p is the JPEG-native colour space; using
-      #   yuv420p would force a needless extra colour-range
-      #   conversion at decode time.
-      ffmpeg -y -nostdin -loglevel warning \
-        -i "$f" \
-        -vf scale=1280:720 \
-        -c:v mjpeg -q:v 5 -pix_fmt yuvj420p \
-        -an \
-        "$tmp_out" 2>&1
-      echo "[VJ] === ffmpeg exit $? ==="
-    } >> "$LOG"
-
-    if [ ! -s "$tmp_out" ]; then
-      echo "[VJ] ERROR: empty output for $f — leaving original in place" >> "$LOG"
-      rm -f "$tmp_out"
-      continue
-    fi
-
-    # Atomic-ish swap: original aside, temp into place. The
-    # container is now .mov (MJPEG-in-.mp4 is technically legal
-    # but flaky with some players), so the processed file gets a
-    # new extension. Originals are kept in .original/ either way.
-    mv "$f" "$orig_dir/$name"
-    mv "$tmp_out" "$dir/$final_name"
-    echo "[VJ] ok: $dir/$final_name (original moved to $orig_dir/$name)" >> "$LOG"
-  done
-
-  echo "100"
-  echo "# Done."
-) | zenity --progress \
-    --title="VJ-pi — Process Assets" \
-    --text="Starting…" \
-    --percentage=0 \
-    --width=520 \
-    --auto-close \
-    --no-cancel \
-  2>/dev/null
-
-date '+[VJ] process end: %Y-%m-%d %H:%M:%S' >> "$LOG"
-
-# Tally results from the log so the summary dialog is honest about
-# what actually happened (counts may differ from the loop's
-# expectation if ffmpeg failed mid-way).
-processed=$(grep -c "^\[VJ\] ok:" "$LOG" 2>/dev/null || echo 0)
-skipped=$(grep -c "^\[VJ\] skip" "$LOG" 2>/dev/null || echo 0)
-errors=$(grep -c "^\[VJ\] ERROR" "$LOG" 2>/dev/null || echo 0)
-
+progress 100 "Done. Errors: $errors"
+date '+[VJ] process end: %Y-%m-%d %H:%M:%S' >>"$LOG"
 show_info "Process Assets — done" \
-  "Transcoded: $processed\nSkipped (already HEVC 720p): $skipped\nErrors: $errors\n\nOriginals are preserved in assets/clips/.original/ and assets/overlays/.original/ — delete them by hand once you've confirmed the new versions look right.\n\nFull log: $LOG"
+  "Processed $TOTAL candidate file(s).\nErrors: $errors\n\nOriginals are preserved in assets/clips/_originals/.\n\nFull log: $LOG"

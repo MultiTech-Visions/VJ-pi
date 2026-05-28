@@ -318,10 +318,8 @@ Free libraries (download once, no internet needed at the party):
   [Videezy Spark Overlays](https://www.videezy.com/free-video/spark-overlay),
   [Vecteezy Sparks](https://www.vecteezy.com/free-videos/sparks-overlay)
 
-For overlays: pick footage that's already pre-keyed against a **black**
-background. The compositor uses screen-blend, so anything bright pops
-through and the black drops out. Don't bother with true alpha-channel
-video on Pi — the hardware decoder doesn't like it.
+Overlay code still exists in the engine, but the controls are shelved
+for now because the rig does not currently need overlay clips.
 
 Recommended pre-processing (one-time, on a desktop):
 
@@ -330,14 +328,11 @@ Recommended pre-processing (one-time, on a desktop):
 ffmpeg -i input.mp4 -vf scale=854:480 -c:v libx264 -preset slow -crf 22 -an output.mp4
 ```
 
-…or just drop the raw files into `assets/clips/` and `assets/overlays/`
-and double-click **`assets/Process Assets.sh`** — it scans both folders,
-normalises anything that isn't already H.264 / target resolution /
-audio-free, stashes the originals in a `_originals/` sub-folder, and
-skips files that are already good (so you can re-run it any time).
-Clips are scaled + centre-cropped to fill the frame; overlays are
-scaled and pad-letterboxed with black (which the screen-blend
-compositor treats as transparent).
+…or just drop the raw files into `assets/clips/` and double-click
+**`Process Assets.sh`**. It shows a GUI progress window when available,
+prints progress when run from a terminal, and writes the full log to
+`vj_last_process.log`. Originals are preserved in `assets/clips/_originals/`.
+Clips are scaled + centre-cropped to fill the frame.
 
 ## Architecture
 
@@ -351,7 +346,9 @@ engine.py      Engine class: state, render pipeline, public actions.
 control.py     ControlWindow: preview, state badges, cached key
                cheat sheet. Renders to an offscreen Surface and
                uploads as a Texture each frame.
-effects.py     Generative + transformative numpy/OpenCV effects
+effects.py     Transformative numpy/OpenCV effects + CPU generator fallbacks
+shader_catalog.py / gpu_generator_worker.py
+               GStreamer/GL shader generators in a separate process
 clips.py       ClipPool: lazy MP4 loader keyed by slot index
 keymap.py      Pygame key → engine action dispatch table
 config.py      Config dataclass
@@ -363,8 +360,6 @@ Render pipeline each frame:
 base layer   →  active clip OR active generative OR black
    ↓
 FX chain     →  kaleido, mirror, rgb_split, posterize, edges, invert, feedback
-   ↓
-overlay      →  screen-blend the active overlay clip
    ↓
 hits         →  transient strobe/flash/punch (5 frames)
    ↓
@@ -380,7 +375,7 @@ blit to pygame screen
   so it doesn't look pixelated on a 1080p projector. Clip downsampling
   uses `cv2.INTER_AREA` for clean anti-aliased shrinking and
   `cv2.INTER_LINEAR` for upscaling.
-- **`assets/Process Assets.sh` bakes every clip to the render
+- **`Process Assets.sh` bakes every clip to the render
   resolution** so the per-frame `cv2.resize` is a no-op at playback —
   the only per-frame cost is the unavoidable H.264 decode and a BGR→RGB
   shuffle. The processor reads its target size from `config.py`, so
