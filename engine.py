@@ -35,7 +35,7 @@ GENERATIVE_FNS = {
 
 FX_TOGGLES = [
     "kaleido", "mirror", "feedback",
-    "invert", "posterize", "edges", "rgb_split",
+    "invert", "posterize", "edges", "rgb_split", "melt",
 ]
 
 # How fast the arrow keys move param_x / param_y (units of 0..1 per second).
@@ -74,6 +74,16 @@ class Engine:
         self.freeze = False
         self.frozen_frame = None
         self.prev_frame = None
+
+        # Melt FX: a generator's colour field warps the base layer per-pixel
+        # so a clip ripples and liquefies along the pattern. The single GPU
+        # worker holds one generator at a time, so when the base is itself a
+        # generator we reuse that frame as the field rather than asking the
+        # worker for a second one (which would thrash its pipeline rebuild).
+        self.melt_source = "quasicrystal"
+        self._base_was_generator = False
+        self._last_gen_frame = None
+        self._melt_grid_cache = {}
 
         # Arrow-key driven FX parameters, 0..1. Replaces mouse XY.
         self.param_x = 0.5
@@ -869,15 +879,18 @@ class Engine:
         compose_frame() before overlay/hits paint on top."""
         clip_frame = self.clips.read()
         if clip_frame is not None:
+            self._base_was_generator = False
             return clip_frame
-        fn = GENERATIVE_FNS.get(self.active_generative)
         if self.active_generative is not None:
             gw, gh = self._gen_render_size()
             frame = self._render_generative(
                 self.active_generative, gw, gh, ctx.t, (ctx.px, ctx.py)
             )
             if frame is not None:
+                self._base_was_generator = True
+                self._last_gen_frame = frame
                 return frame
+        self._base_was_generator = False
         return np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
     def _render_generative(self, name, width, height, t, params):
@@ -916,6 +929,39 @@ class Engine:
         if ov is not None:
             frame = screen_blend(frame, ov)
         return frame
+
+    def _melt_grid(self, w, h):
+        g = self._melt_grid_cache.get((w, h))
+        if g is None:
+            yy, xx = np.indices((h, w), dtype=np.float32)
+            g = (yy, xx)
+            self._melt_grid_cache[(w, h)] = g
+        return g
+
+    def _apply_melt(self, frame, ctx):
+        """Warp `frame` per-pixel using a generator's colour as a flow field.
+
+        When the base is a clip we render the melt-source generator (the
+        quasicrystal by default); when the base is already a generator we
+        reuse its frame so the single GPU worker isn't asked for a second
+        pattern. param_x dials the amount, from a shimmer to a full liquefy.
+        """
+        if self._base_was_generator and self._last_gen_frame is not None:
+            field = self._last_gen_frame
+        else:
+            dw, dh = self._gen_render_size()
+            field = self.gpu_generators.render(self.melt_source, dw, dh)
+        if field is None:
+            return frame
+        h, w = frame.shape[:2]
+        if field.shape[:2] != (h, w):
+            field = cv2.resize(field, (w, h), interpolation=cv2.INTER_LINEAR)
+        amp = 8.0 + ctx.px * 80.0
+        off_x = (field[:, :, 0].astype(np.float32) / 255.0 - 0.5) * 2.0 * amp
+        off_y = (field[:, :, 1].astype(np.float32) / 255.0 - 0.5) * 2.0 * amp
+        yy, xx = self._melt_grid(w, h)
+        return cv2.remap(frame, xx + off_x, yy + off_y, cv2.INTER_LINEAR,
+                         borderMode=cv2.BORDER_REFLECT)
 
     def _apply_hits(self, frame):
         if self.hit_frames_left <= 0:
@@ -957,6 +1003,8 @@ class Engine:
             if frame.shape[:2] != (self.h, self.w):
                 frame = cv2.resize(frame, (self.w, self.h),
                                    interpolation=cv2.INTER_LINEAR)
+            if self.fx_state.get("melt"):
+                frame = self._apply_melt(frame, ctx)
             frame = self._apply_overlay(frame)
             frame = self._apply_hits(frame)
 
