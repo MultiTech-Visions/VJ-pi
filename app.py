@@ -986,6 +986,59 @@ def _list_clips():
             + sorted(CLIPS_DIR.glob("*.MOV")))
 
 
+def _detect_projector_output():
+    """Best-guess the Wayland output name of the projector.
+
+    Heuristic: the projector is the physically LARGEST enabled
+    output. Pi VJ rigs typically pair a small operator screen
+    (a 7" Pi display, ~410×260 mm) with a much bigger projector
+    (1100+×600+ mm reported physical size). Both expose their
+    physical size via wlr-randr; picking by area is reliable.
+
+    Returns None if wlr-randr isn't available, only one output
+    is enabled, or sizes aren't parseable. Caller falls back to
+    the env var / hard-coded default.
+    """
+    try:
+        out = subprocess.run(
+            ["wlr-randr"], capture_output=True, text=True, timeout=2.0
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    outputs = []  # list of (name, area_mm2, enabled)
+    current_name = None
+    current_area = 0
+    current_enabled = False
+    def flush():
+        if current_name is not None:
+            outputs.append((current_name, current_area, current_enabled))
+    for line in out.stdout.splitlines():
+        if line and not line.startswith(" ") and not line.startswith("\t"):
+            flush()
+            current_name = line.split()[0]
+            current_area = 0
+            current_enabled = False
+        elif "Enabled: yes" in line:
+            current_enabled = True
+        elif "Physical size:" in line:
+            # "  Physical size: 1150x650 mm"
+            try:
+                spec = line.split(":", 1)[1].strip().split()[0]
+                w_str, h_str = spec.split("x")
+                current_area = int(w_str) * int(h_str)
+            except (ValueError, IndexError):
+                pass
+    flush()
+    enabled = [(n, a) for (n, a, e) in outputs if e]
+    if not enabled:
+        return None
+    # Largest physical area wins. Ties broken by name order.
+    enabled.sort(key=lambda x: (-x[1], x[0]))
+    return enabled[0][0]
+
+
 # ── mpv subprocess backend (clip playback) ───────────────────────────
 #
 # Pi 5 + GStreamer + DMABuf for HEVC is a fight we keep losing.
@@ -1133,8 +1186,13 @@ class VJApp(Gtk.Application):
         # mpv subprocess for clip playback (see MpvBackend
         # docstring for the why). Spawned in do_activate so its
         # IPC socket is ready before the first _install_clip.
-        projector_output = os.environ.get(
-            "VJ_PROJECTOR_OUTPUT", "HDMI-A-1")
+        # The projector output name is auto-detected from
+        # wlr-randr (most-recently-listed enabled output wins,
+        # which on dual-monitor Pi setups is the projector).
+        # Operator can override via VJ_PROJECTOR_OUTPUT env var.
+        projector_output = (os.environ.get("VJ_PROJECTOR_OUTPUT")
+                            or _detect_projector_output()
+                            or "HDMI-A-1")
         self._mpv = MpvBackend(projector_output, hwdec="drm")
 
         # Clip pool state — list of paths + index of the last clip
@@ -1240,13 +1298,19 @@ class VJApp(Gtk.Application):
         self.pipeline.set_state(Gst.State.PLAYING)
         print(f"[vj] pipeline up: {Gst.version_string()}")
 
-        # Fullscreen mpv on the projector if a 2nd monitor exists.
-        # On single-screen it stays windowed so the operator can
-        # see both the clip and the HUD. Deferred 400 ms so mpv
-        # has time to finish creating its window before the
-        # property set takes effect.
-        if not self.single_screen:
+        # Fullscreen mpv on the projector — only if a 2nd monitor
+        # actually exists AND we weren't asked for single-screen
+        # mode. On a one-display Pi (or remote/headless), keep mpv
+        # windowed so the HUD stays visible alongside.
+        display = Gdk.Display.get_default()
+        n_monitors = display.get_n_monitors() if display else 1
+        print(f"[vj] {n_monitors} monitor(s) detected; mpv "
+              f"target={self._mpv.projector_output}")
+        if n_monitors >= 2 and not self.single_screen:
             GLib.timeout_add(400, self._mpv_fullscreen_once)
+        else:
+            print(f"[vj] not fullscreening mpv "
+                  f"(single screen or --single-screen flag)")
 
         # 30Hz snake-sim tick. Runs unconditionally; the callback
         # is a no-op when truchet isn't the active generator, so
