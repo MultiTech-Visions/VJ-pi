@@ -191,6 +191,158 @@ void main() {
 
 DONUT_SHADER = "#version 100\n#ifdef GL_ES\nprecision highp float;\n#endif\nvarying vec2 v_texcoord;\nuniform float time;\nuniform sampler2D tex;\n\nconst float PI = 3.14159265359;\n\nfloat sdTorus(vec3 p, vec2 t) {\n    vec2 q = vec2(length(p.xz) - t.x, p.y);\n    return length(q) - t.y;\n}\n\nvec3 rotY(vec3 p, float a) {\n    float c = cos(a), s = sin(a);\n    return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);\n}\nvec3 rotX(vec3 p, float a) {\n    float c = cos(a), s = sin(a);\n    return vec3(p.x, c * p.y - s * p.z, s * p.y + c * p.z);\n}\n\nfloat map(vec3 p) {\n    p = rotY(p, time * 0.5);\n    p = rotX(p, time * 0.3);\n    return sdTorus(p, vec2(1.0, 0.4));\n}\n\n// Map a 3D point on the torus surface to a (u, v) coordinate\n// suitable for sampling the input texture. Inverts the rotation\n// we applied in `map` so the texture sticks to the torus rather\n// than spinning past it.\nvec2 torusUV(vec3 p_world) {\n    vec3 p = rotX(p_world, -time * 0.3);\n    p = rotY(p, -time * 0.5);\n    float u = atan(p.z, p.x);            // -PI..PI around major\n    vec2 q = vec2(length(p.xz), p.y);\n    vec2 dq = q - vec2(1.0, 0.0);        // R = 1.0\n    float v = atan(dq.y, dq.x);          // -PI..PI around minor\n    return vec2((u + PI) / (2.0 * PI),\n                (v + PI) / (2.0 * PI));\n}\n\nvoid main() {\n    vec2 uv_scr = v_texcoord - 0.5;\n    uv_scr.x *= 1280.0 / 720.0;\n    vec3 ro = vec3(0.0, 0.0, -3.0);\n    vec3 rd = normalize(vec3(uv_scr, 1.0));\n    float t = 0.0;\n    bool hit = false;\n    for (int i = 0; i < 64; i++) {\n        vec3 pos = ro + rd * t;\n        float d = map(pos);\n        if (d < 0.001) { hit = true; break; }\n        t += d;\n        if (t > 10.0) break;\n    }\n    if (!hit) {\n        gl_FragColor = vec4(0.0, 0.0, 0.05, 1.0);\n        return;\n    }\n    vec3 hit_pos = ro + rd * t;\n    vec2 tex_uv = torusUV(hit_pos);\n    // Slow scroll around the major circumference — the image\n    // wraps around the donut like a label on a tin can.\n    tex_uv.x = fract(tex_uv.x + time * 0.05);\n    vec3 col = texture2D(tex, tex_uv).rgb;\n    // Simple depth darken so the back of the donut isn't full\n    // bright — gives it a hint of 3D form.\n    float depth = t / 10.0;\n    col *= 1.0 - depth * 0.4;\n    gl_FragColor = vec4(col, 1.0);\n}\n"
 
+QUASICRYSTAL_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Sum of seven cosine plane waves at evenly spaced angles. Seven is
+// odd so the lattice never repeats — that's the aperiodic shimmer.
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+    float zoom = 16.0 + sin(t * 0.13) * 5.0;     // breathing
+    float ca = cos(t * 0.04), sa = sin(t * 0.04); // slow spin
+    p = vec2(ca * p.x - sa * p.y, sa * p.x + ca * p.y) * zoom;
+
+    float v = 0.0;
+    for (int i = 0; i < 7; i++) {
+        float ang = float(i) * 3.14159265 / 7.0;
+        vec2 dir = vec2(cos(ang), sin(ang));
+        v += cos(dir.x * p.x + dir.y * p.y + t * (0.5 + 0.06 * float(i)));
+    }
+    v /= 7.0;                            // -1..1
+    float s = 0.5 + 0.5 * v;
+    float bands = pow(abs(v), 0.4);      // sharpen into crystal filaments
+    float hue = fract(s * 0.5 + t * 0.04);
+    vec3 col = hsv2rgb(vec3(hue, 0.72, bands));
+    col += vec3(smoothstep(0.9, 1.0, s)) * 0.6;  // bright interference nodes
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+VORTEX_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// A tunnel whose tube twists as it recedes — the spiral tightens
+// toward the vanishing point, so it reads as a Doctor Who time vortex
+// rather than a straight shot.
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+    float r = length(p) + 0.0015;
+    float a = atan(p.y, p.x);
+
+    float depth = 0.45 / r + t * 0.9;     // rush into the vanishing point
+    float ang   = a + 0.7 / r + t * 0.35; // twist grows as r shrinks
+
+    float tube = 0.5 + 0.5 * sin(depth * 9.0) * sin(ang * 7.0);
+    float rings = smoothstep(0.85, 1.0, sin(depth * 9.0) * 0.5 + 0.5);
+
+    float hue = fract(depth * 0.07 + t * 0.03);
+    vec3 col = hsv2rgb(vec3(hue, 0.85, pow(tube, 0.7)));
+    col += rings * vec3(1.0);
+
+    float core = smoothstep(0.30, 0.0, r);  // blinding swirl pulls you in
+    col = mix(col, vec3(1.0, 0.95, 0.85), core);
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+KALEIDO_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Fold the plane into 14 mirrored wedges and stream a plasma through
+// them along a log-radius axis, so the pattern pours outward forever.
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+    float r = length(p);
+    float a = atan(p.y, p.x);
+
+    float SEG = 6.2831853 / 14.0;
+    a = mod(a + t * 0.08, SEG);   // slow spin
+    a = abs(a - SEG * 0.5);       // mirror -> seamless wedge
+
+    float rr = log(r + 0.04) * 2.5 - t * 0.4;   // infinite radial scroll
+    vec2 q = vec2(cos(a), sin(a)) * rr * 2.0;
+
+    float v = sin(q.x + t) + sin(q.y * 1.3 + t * 1.1)
+            + sin((q.x + q.y) * 0.8 + t * 0.7);
+    v *= 0.3333;
+    float hue = fract(0.55 + 0.5 * v + t * 0.04);
+    float val = pow(0.5 + 0.5 * sin(v * 6.2831853 + t), 0.7);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.82, val)), 1.0);
+}
+"""
+
+INFINITEZOOM_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Log-polar mapping turns "zoom" into a scroll, so identical tiles
+// fall toward the centre endlessly. A radius-coupled angle shear adds
+// the Droste spiral so it never feels like a flat target.
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+    float r = length(p) + 0.001;
+    float a = atan(p.y, p.x);
+
+    float lx = log(r);
+    float u = lx * 2.4 - t * 0.7;
+    float w = (a / 6.2831853) * 8.0 + 0.30 * lx * 2.4;   // spiral shear
+
+    vec2 cell = floor(vec2(u, w));
+    vec2 g = fract(vec2(u, w)) - 0.5;
+
+    float d = max(abs(g.x), abs(g.y));
+    float frame = smoothstep(0.50, 0.46, d) - smoothstep(0.40, 0.36, d);
+    float dot_ = smoothstep(0.18, 0.0, length(g));
+
+    float hue = fract((cell.x * 0.11 + cell.y * 0.07) + t * 0.05);
+    float val = clamp(frame + dot_ * 0.9, 0.0, 1.0);
+    gl_FragColor = vec4(hsv2rgb(vec3(hue, 0.8, val)), 1.0);
+}
+"""
+
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
     'tunnel': TUNNEL_SHADER,
@@ -208,6 +360,10 @@ GPU_GENERATORS = {
     'lenia': LENIA_SHADER,
     'grayscott': GRAYSCOTT_SHADER,
     'donut': DONUT_SHADER,
+    'quasicrystal': QUASICRYSTAL_SHADER,
+    'vortex': VORTEX_SHADER,
+    'kaleido': KALEIDO_SHADER,
+    'infinitezoom': INFINITEZOOM_SHADER,
 }
 
 GPU_GENERATOR_ORDER = list(GPU_GENERATORS.keys())
