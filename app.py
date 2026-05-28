@@ -68,8 +68,14 @@ DOWNSTREAM_DESC = (
     "tee name=t allow-not-linked=true "
     "t. ! queue max-size-buffers=2 leaky=downstream ! "
     "  gldownload ! videoconvert ! "
-    "  gtksink name=output_sink sync=false"
+    "  gtksink name=output_sink sync=true"
 )
+# sync=true on the gtksink: render each frame at its PTS instead
+# of as-fast-as-the-decoder-produces. With MJPEG decode now fast
+# enough on Pi 5 (used to be HEVC-bottlenecked), sync=false made
+# a 15-second clip play back in ~2 seconds. Live generator
+# sources also work fine with sync=true since videotestsrc emits
+# at the negotiated 30 fps.
 # Why a CPU videoconvert and not GPU-side glcolorconvert:
 # gtksink only accepts system-memory BGRA/BGRx. The "smart"
 # version (glcolorconvert → caps(GLMemory, BGRA) → gldownload
