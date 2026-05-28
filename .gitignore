@@ -2,3 +2,17 @@ __pycache__/
 *.py[cod]
 venv/
 vj_state.json
+vj_last_run.log
+vj_last_update.log
+
+# Never let git stash / commit grab user media. The clips and
+# overlays folders are operator data — large binaries that have no
+# business in version control or in `git stash push -u`. Earlier
+# Update.sh runs stashed them under "local changes detected" and
+# they disappeared from the working tree. Don't repeat that.
+assets/clips/*
+!assets/clips/.gitkeep
+!assets/clips/README*
+assets/overlays/*
+!assets/overlays/.gitkeep
+!assets/overlays/README*

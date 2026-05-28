@@ -1,3 +1,9 @@
-pygame>=2.5
-opencv-python>=4.8
-numpy>=1.24
+# No pip dependencies in the GStreamer rewrite.
+#
+# PyGObject (the Python binding for GTK3 + GStreamer) is installed
+# system-wide via apt — it ships with `python3-gi` and the
+# `gir1.2-*` introspection packages. See setup.sh for the apt list.
+#
+# If you find yourself wanting to `pip install X` here, stop and
+# check first whether X has an apt counterpart — mixing pip and
+# system PyGObject usually ends badly.
