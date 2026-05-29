@@ -1011,7 +1011,7 @@ class Engine:
         h, w = frame.shape[:2]
         if field.shape[:2] != (h, w):
             field = cv2.resize(field, (w, h), interpolation=cv2.INTER_LINEAR)
-        amp = 8.0 + ctx.px * 80.0
+        amp = 1.5 + ctx.px * 86.5
         off_x = (field[:, :, 0].astype(np.float32) / 255.0 - 0.5) * 2.0 * amp
         off_y = (field[:, :, 1].astype(np.float32) / 255.0 - 0.5) * 2.0 * amp
         yy, xx = self._melt_grid(w, h)

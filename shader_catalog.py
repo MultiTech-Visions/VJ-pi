@@ -322,7 +322,7 @@ void main() {
 }
 """
 
-ANGEL_SHADER = """#version 100
+SERAPHIM_SHADER = """#version 100
 #ifdef GL_ES
 precision highp float;
 #endif
@@ -784,51 +784,6 @@ void main() {
 }
 """
 
-LYAPUNOV_SHADER = """#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
-
-// Markus-Lyapunov fractal. For each pixel (a, b) we run the logistic
-// map, choosing r from a binary A/B sequence and accumulating the
-// Lyapunov exponent. The sequence itself slowly rotates with time, so
-// the whole landscape morphs in place (the flames writhe) rather than
-// sitting static. Negative (stable) -> warm bands, positive -> dark.
-void main() {
-    vec2 uv = v_texcoord;
-    float t = time;
-    // The (a, b) window slowly meanders, so the flame masses drift across
-    // the screen and fresh structure scrolls in from the empty regions —
-    // combined with the time-rotating sequence below, they also writhe.
-    float a = 2.55 + uv.x * 1.4 + 0.22 * sin(t * 0.05) + 0.07 * sin(t * 0.018);
-    float b = 2.55 + uv.y * 1.4 + 0.18 * cos(t * 0.041) + 0.06 * cos(t * 0.023);
-    float x = 0.5;
-    float lyap = 0.0;
-    for (int i = 0; i < 64; i++) {
-        // Aperiodic A/B sequence (golden-ratio step) that drifts with
-        // time -> the Lyapunov structure continuously reshapes.
-        float sel = fract(float(i) * 0.61803 + t * 0.05);
-        float r = mix(a, b, smoothstep(0.47, 0.53, sel));
-        x = r * x * (1.0 - x);
-        x = clamp(x, 0.0001, 0.9999);
-        if (i > 8) { lyap += log(abs(r * (1.0 - 2.0 * x)) + 1e-9); }
-    }
-    lyap /= 55.0;
-    vec3 col;
-    if (lyap < 0.0) {
-        float s = clamp(-lyap * 2.0, 0.0, 1.0);
-        col = mix(vec3(0.02, 0.0, 0.05), vec3(1.0, 0.75, 0.25), s);   // warm stable
-        col = mix(col, vec3(0.2, 1.0, 0.7), smoothstep(0.5, 1.0, s) * 0.5);
-    } else {
-        float s = clamp(lyap * 1.5, 0.0, 1.0);
-        col = mix(vec3(0.0, 0.02, 0.06), vec3(0.1, 0.0, 0.2), s);     // dark chaos
-    }
-    gl_FragColor = vec4(col, 1.0);
-}
-"""
-
 PHYLLOTAXIS_SHADER = """#version 100
 #ifdef GL_ES
 precision highp float;
@@ -870,6 +825,95 @@ void main() {
 }
 """
 
+SUNPLASMA_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+float fbm(vec2 p) {
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++) { v += a * noise(p); p *= 2.0; a *= 0.5; }
+    return v;
+}
+
+// Hot fire ramp: black -> deep red -> orange -> yellow -> white.
+vec3 firePal(float x) {
+    x = clamp(x, 0.0, 1.0);
+    vec3 c = vec3(1.0, 0.18, 0.02) * smoothstep(0.05, 0.45, x);
+    c += vec3(0.9, 0.55, 0.0) * smoothstep(0.35, 0.72, x);
+    c += vec3(0.5, 0.7, 0.2)  * smoothstep(0.6, 0.92, x);    // toward yellow
+    c += vec3(0.6, 0.6, 0.8)  * smoothstep(0.85, 1.0, x);    // white-hot core
+    return c;
+}
+
+// A wandering active region. Position drifts over the disk; brightness
+// pulses through a birth/death cycle so spots fade in and out, which
+// reads as new hot spots spawning.
+vec2 spotPos(float i, float t) {
+    float ph = i * 2.399;
+    float rr = 0.16 + 0.16 * sin(t * 0.23 + ph);
+    float aa = t * (0.10 + 0.018 * i) + ph;
+    vec2 orbit = vec2(cos(aa), sin(aa)) * rr;
+    orbit += 0.10 * vec2(sin(t * 0.5 + ph * 1.7), cos(t * 0.37 + ph));
+    return orbit;
+}
+float spotLife(float i, float t) {
+    return clamp(0.55 + 0.75 * sin(t * 0.3 + i * 2.3), 0.0, 1.0);
+}
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+
+    // Churning photosphere: domain-warped fbm so the surface roils.
+    vec2 warp = vec2(fbm(p * 3.0 + vec2(t * 0.05, -t * 0.04)),
+                     fbm(p * 3.0 + vec2(-t * 0.045, t * 0.05)));
+    float gran = fbm(p * 4.0 + warp * 1.6 + t * 0.03);
+    float heat = 0.18 + gran * 0.5;
+    heat += exp(-dot(p, p) * 2.2) * 0.35;           // central solar glow
+
+    // Hot spots + the coronal arcs that connect them.
+    float arc = 0.0;
+    for (int i = 0; i < 6; i++) {
+        float fi = float(i);
+        vec2 s0 = spotPos(fi, t);
+        float l0 = spotLife(fi, t);
+        float d = length(p - s0);
+        heat += exp(-d * d * 130.0) * l0 * 1.3;       // the spot itself
+
+        float nj = fi + 1.0; if (nj > 5.5) nj = 0.0;  // next spot in the ring
+        vec2 s1 = spotPos(nj, t);
+        float l1 = spotLife(nj, t);
+        vec2 dir = s1 - s0;
+        float len = length(dir) + 1e-4;
+        vec2 nrm = vec2(-dir.y, dir.x) / len;
+        float bulge = 0.10 + 0.08 * sin(t * 0.4 + fi);
+        float best = 1e9;
+        for (int sgi = 0; sgi <= 6; sgi++) {          // sample the bulging loop
+            float u = float(sgi) / 6.0;
+            vec2 cp = s0 + dir * u + nrm * sin(u * 3.14159) * bulge;
+            best = min(best, length(p - cp));
+        }
+        arc += exp(-best * best * 700.0) * min(l0, l1);
+    }
+    heat += arc * 1.1;
+
+    vec3 col = firePal(heat);
+    col *= 1.0 - smoothstep(0.55, 1.15, length(p)) * 0.6;   // float it in space
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
     'tunnel': TUNNEL_SHADER,
@@ -887,7 +931,7 @@ GPU_GENERATORS = {
     'lenia': LENIA_SHADER,
     'grayscott': GRAYSCOTT_SHADER,
     'eyeball': EYEBALL_SHADER,
-    'angel': ANGEL_SHADER,
+    'seraphim': SERAPHIM_SHADER,
     'quasicrystal': QUASICRYSTAL_SHADER,
     'kaliset': KALISET_SHADER,
     'apollonian': APOLLONIAN_SHADER,
@@ -895,8 +939,8 @@ GPU_GENERATORS = {
     'kifs3d': KIFS3D_SHADER,
     'domaincolor': DOMAINCOLOR_SHADER,
     'curlflow': CURLFLOW_SHADER,
-    'lyapunov': LYAPUNOV_SHADER,
     'phyllotaxis': PHYLLOTAXIS_SHADER,
+    'sunplasma': SUNPLASMA_SHADER,
     'donut': DONUT_SHADER,
 }
 
