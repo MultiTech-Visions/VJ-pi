@@ -317,6 +317,135 @@ void main() {
 }
 """
 
+ANGEL_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+float hash(float n) { return fract(sin(n) * 43758.5453); }
+
+// One eye in the swarm. Returns colour in .xyz and coverage in .w so
+// the caller can composite it over the wings/glow behind. Each eye
+// gets a unique `seed`, which drives an independent gaze (saccade +
+// tremor), an independent blink, and its own iris hue — that's what
+// makes the mass feel alive and chaotic rather than a clone army.
+vec4 eye(vec2 p, vec2 c, float r, float seed) {
+    vec2 q = (p - c) / r;
+    float d = length(q);
+    float cover = smoothstep(1.0, 0.94, d);
+    if (cover <= 0.0) return vec4(0.0);
+
+    float spd = 0.4 + hash(seed * 1.7) * 0.25;
+    float seg = floor(time * spd + seed * 7.0);
+    float f = fract(time * spd + seed * 7.0);
+    vec2 gp = vec2(hash(seg + seed * 3.0) - 0.5,
+                   hash(seg + seed * 3.0 + 9.0) - 0.5) * 2.0;
+    vec2 gc = vec2(hash(seg + 1.0 + seed * 3.0) - 0.5,
+                   hash(seg + 1.0 + seed * 3.0 + 9.0) - 0.5) * 2.0;
+    vec2 gaze = mix(gp, gc, smoothstep(0.0, 0.12, f)) * 0.45;
+    gaze += 0.04 * vec2(sin(time * 13.0 + seed), cos(time * 11.0 + seed));
+
+    vec2 iq = q - gaze;
+    float di = length(iq);
+    float ang = atan(iq.y, iq.x);
+
+    vec3 col = vec3(0.93, 0.92, 0.86);
+    col *= 0.8 + 0.2 * smoothstep(1.0, -1.0, q.y - q.x);
+
+    float ri = 0.46;
+    float hue = fract(0.07 + seed * 0.9 + time * 0.02);   // warm, gold-ish, per eye
+    float fib = 0.5 + 0.5 * sin(ang * 34.0 + sin(ang * 7.0) * 2.0);
+    float rad = smoothstep(0.0, ri, di);
+    float val = 0.35 + 0.5 * fib * rad;
+    vec3 iris = hsv2rgb(vec3(hue, 0.8, val));
+    iris *= 1.0 - smoothstep(ri - 0.08, ri, di) * 0.7;     // limbal ring
+    col = mix(col, iris, smoothstep(ri, ri - 0.02, di));
+
+    float rp = 0.17 + 0.04 * sin(time * 0.6 + seed * 5.0); // dilating pupil
+    col = mix(col, vec3(0.02), smoothstep(rp, rp - 0.02, di));
+
+    vec2 hl = q - vec2(-0.18, 0.22);                        // corneal highlight
+    col += exp(-dot(hl, hl) * 9.0) * 0.9;
+
+    // Independent blink: lids of a pale-gold flesh tone sweep shut.
+    float bspd = 0.13 + hash(seed * 4.1) * 0.12;
+    float bp = fract(time * bspd + seed * 2.0);
+    float blink = smoothstep(0.0, 0.04, bp) * smoothstep(0.16, 0.10, bp);
+    float ap = mix(1.15, 0.0, blink);
+    float lid = ap * (1.0 - 0.22 * q.x * q.x);
+    if (abs(q.y) > lid) {
+        col = vec3(0.85, 0.62, 0.40) * (0.6 + 0.4 * smoothstep(1.0, -1.0, q.y));
+    }
+    col = mix(col, vec3(0.4, 0.25, 0.15),
+              smoothstep(0.06, 0.0, abs(abs(q.y) - lid)) * 0.5);   // lid crease
+
+    return vec4(col, cover);
+}
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+
+    vec3 col = vec3(0.01, 0.012, 0.02);
+
+    // Divine backglow — warm halo behind the whole apparition.
+    float halo = exp(-dot(p, p) * 3.0);
+    col += vec3(1.0, 0.85, 0.5) * halo * 0.5;
+
+    // Six wings (three mirrored pairs) as glowing feathered fans,
+    // opening and closing on a slow flap. abs(p.x) mirrors left/right.
+    float wx = abs(p.x);
+    vec2 wp = vec2(wx, p.y);
+    float wrad = length(wp) + 1e-4;
+    float wang = atan(wp.y, wp.x);
+    float flap = sin(time * 1.6) * 0.5 + 0.5;          // 0 closed .. 1 open
+    float spread = mix(0.20, 0.55, flap);              // angular half-width
+    for (int w = 0; w < 3; w++) {
+        float fw = float(w);
+        float wc = 0.35 - fw * 0.55;                   // up / mid / down pair
+        wc += sin(time * 1.6 + fw) * 0.10;             // flap sway, phase-offset
+        float da = wang - wc;
+        float band = exp(-da * da / (2.0 * spread * spread));
+        float reach = (0.62 + 0.12 * fw) * (0.7 + 0.3 * flap);
+        float along = clamp(wrad / reach, 0.0, 1.0);
+        float lenfade = smoothstep(1.0, 0.2, along) * smoothstep(0.04, 0.18, wrad);
+        float fcoord = (da / spread) * 5.0 + fw * 1.3;
+        float feather = pow(abs(sin(fcoord * 3.14159)), 0.4);   // individual feathers
+        float quill = smoothstep(0.12, 0.0, abs(fract(fcoord) - 0.5));
+        float barb = 0.6 + 0.4 * sin(along * 40.0 - time + fcoord * 2.0); // barb striations
+        vec3 wcol = mix(vec3(0.95, 0.80, 0.55), vec3(0.55, 0.40, 0.85), fw / 2.0);
+        wcol = wcol * barb + quill * 0.3;
+        col = mix(col, wcol, clamp(band * lenfade * feather * 0.9, 0.0, 1.0));
+    }
+
+    // The eye mass, in front of the wings. Golden-angle spiral so the
+    // eyes pack like a sunflower head; drawn outer-first so the central
+    // eyes sit on top of the pile.
+    float cluster = 0.26;
+    for (int i = 0; i < 14; i++) {
+        float fi = float(i);
+        float t = (13.0 - fi) / 14.0;                  // 1 outer .. 0 centre
+        float ringr = sqrt(t) * cluster;
+        float a = fi * 2.399963 + time * 0.05;         // golden angle + slow swirl
+        vec2 c = vec2(cos(a), sin(a)) * ringr;
+        c.y *= 0.95;
+        float er = cluster * (0.20 + 0.16 * (1.0 - t)) * (0.85 + 0.3 * hash(fi + 0.5));
+        vec4 e = eye(p, c, er, fi + 1.0);
+        col = mix(col, e.xyz, e.w);
+    }
+
+    col *= 1.0 - smoothstep(0.5, 1.1, length(p)) * 0.5;  // vignette
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
     'tunnel': TUNNEL_SHADER,
@@ -334,6 +463,7 @@ GPU_GENERATORS = {
     'lenia': LENIA_SHADER,
     'grayscott': GRAYSCOTT_SHADER,
     'eyeball': EYEBALL_SHADER,
+    'angel': ANGEL_SHADER,
     'donut': DONUT_SHADER,
 }
 
