@@ -1,223 +1,173 @@
-# CLAUDE.md — handoff context for the VJ-pi rewrite
+# CLAUDE.md — handoff context for VJ-pi
 
-You're picking up a project mid-rewrite. Read this whole file before
-acting. The conversation that led here was long, made expensive
-mistakes, and the operator has a low tolerance for repeats.
+Read this before acting. The project has a long history of expensive
+mistakes; the operator has a low tolerance for repeats. The short
+version: **the working system is the hybrid described below. Build on
+it. Don't try to rebuild it.**
 
 ## What this project is
 
 A manual VJ rig for a Raspberry Pi 5 + projector + tiny wireless
-keyboard. The operator triggers clips, generators, FX, and
+keyboard. The operator triggers clips, generators, FX, hits, and
 projection-mapping warps from the keyboard while watching a control
-HUD on a second screen.
+HUD on a second screen. Full operator-facing docs (keymap, mapping
+mode, autopilot, asset prep) live in `README.md` — that file is
+current; trust it.
 
-Currently being rebuilt from scratch on **GStreamer + GTK3** after
-the previous pygame / cv2 / numpy / moderngl architecture hit
-fundamental limits on Pi 5's V3D driver. Active branch:
-`claude/gstreamer-rewrite`.
+## Architecture — the hybrid (this is what works)
 
-## Hard hardware / platform facts (non-negotiable)
+Two halves, deliberately split across a process boundary:
 
-These are Pi 5 / V3D / Bookworm realities. Design with them; don't
-try to work around them.
+1. **Main app: pygame + OpenCV/numpy.** The proven CPU compositor.
+   Owns clips, the FX chain, hits, favourites, autopilot, and
+   projection mapping. One pygame output window (the projector) plus
+   a second SDL2 window for the control HUD. Render pipeline per
+   frame: base layer (clip / generative / black) → FX chain → hits →
+   blit. This is the original working code path, restored after the
+   rewrite detour.
 
-1. **Pi 5 has no H.264 hardware decode.** The block was deliberately
-   removed by the Pi Foundation. H.264 decodes in software via
-   `avdec_h264`, which eats CPU at 2K+ resolutions. **HEVC has
-   hardware decode** via `v4l2slh265dec`. Practical implication: clips
-   should be transcoded to HEVC 720p before going in `assets/clips/`.
-   The asset processor (phase 2.5) does this in bulk.
+2. **GPU generators: a separate GStreamer/GL worker process.**
+   `shader_catalog.py` holds GLSL fragment shaders; `gpu_generator_
+   worker.py` runs them through `videotestsrc ! glupload ! glshader !
+   gldownload ! appsink` and pipes RGB frames back over a pipe.
+   `gpu_generators.py` is the client/bridge in the main process.
 
-2. **V3D leaks GL state between contexts in the same process.** Any
-   two GL/EGL contexts coexisting (e.g. SDL2 hardware Renderer +
-   moderngl standalone; two GTK GL widgets) corrupt each other —
-   symptom: one window goes solid black while the other still
-   renders. This killed the previous architecture twice. The rewrite
-   uses **ONE GL context**, owned by GStreamer's `gl*` element family.
+   **Why a separate process:** V3D leaks GL state between contexts in
+   the same process — two coexisting GL/EGL contexts corrupt each
+   other (symptom: one surface goes solid black). Isolating all GL in
+   its own process is the structural fix. **Do not merge the GL worker
+   back into the main pygame process** — that reintroduces the exact
+   bug that wasted weeks.
 
-3. **Pi OS Bookworm apt doesn't carry `gst-plugins-rs`.** That's where
-   `gtk4paintablesink` lives. We use GTK3 + `gtksink` (apt package
-   `gstreamer1.0-gtk3`) instead. When Pi OS adopts Trixie, GTK4 +
-   gtk4paintablesink becomes apt-installable; the swap is contained.
+The main app stays on CPU (numpy/cv2); the GPU is reached only through
+the out-of-process worker. That separation is the whole point of the
+hybrid — respect it.
 
-4. **`gtksink` is a CPU sink** — it accepts `video/x-raw` (system
-   memory), not GL memory. GL pipeline branches feeding `gtksink` need
-   `gldownload ! videoconvert` between the GL `tee` and the sink.
+### Adding a generator (the fun part)
 
-5. **`gtkglsink` is NOT a substitute** even though it sounds like one
-   — each gtkglsink widget creates its own GL context, which on V3D
-   means two contexts in one process = HUD goes black. Stay on
-   `gtksink` even though it requires the CPU bridge.
-
-## Architecture (rewrite, current state)
-
-```
-filesrc ─ decodebin ─[dynamic pad]─▶ downstream bin:
-
-videoconvert ─ videoscale ─ glupload ─ tee ─┬─▶ gldownload ─ videoconvert ─ gtksink (output)
-                                            └─▶ gldownload ─ videoconvert ─ gtksink (HUD)
-```
-
-One pipeline. One GL context. Two windows. The tee forks GL textures
-by refcount (zero-copy). Each branch downloads to CPU only at the
-sink stage. Both windows display the same composited frame; the
-HUD's preview IS the projector output, just packed in a smaller
-widget.
+Add a GLSL fragment shader string to the `GPU_GENERATORS` dict in
+`shader_catalog.py`. That's it — it auto-wires into the `[`/`]` cycle,
+the generator favourite slots, and autopilot, because everything reads
+from that dict (`GPU_GENERATOR_ORDER`). Shaders are GLSL ES (`#version
+100`) and get `time`, `width`, `height` uniforms for free. For a
+texture-mapped generator, see `donut`: the worker routes it through a
+`uridecodebin … imagefreeze … glupload ! glshader` path that binds an
+image from `assets/images/` as `sampler2D tex`.
 
 ## Repo layout
 
-- `main.py` — thin entry. Instantiates `VJApp`.
-- `app.py` — GTK3 `Gtk.Application` + GStreamer pipeline. ~300 lines.
-- `assets/clips/` — operator's MP4/MOV library. **Gitignored** (see
-  workflow rules below; this rule is recent, and was added after the
-  library was destroyed once).
-- `assets/overlays/` — overlay MP4s. Also gitignored.
-- `Start VJ.sh` — launcher with log-tee + zenity error dialog.
-- `Test (single screen).sh` — single-monitor variant.
-- `setup.sh` — apt deps (PyGObject + GStreamer + GTK3 + ffmpeg).
-  No pip, no venv — PyGObject is system-managed.
-- `Update.sh` — git pull from main, warns if setup.sh changed.
-- `requirements.txt` — empty stub (no pip deps).
-- `vj_last_run.log` — last launcher run, overwritten each launch.
-- `vj_last_update.log` — last Update.sh run, overwritten each run.
+- `main.py` — argparse + pygame init + window setup + main-loop wiring.
+- `engine.py` — `Engine`: state, per-frame render pipeline, public
+  actions. The big one.
+- `control.py` — `ControlWindow`: HUD preview, state badges, key sheet.
+- `effects.py` — numpy/OpenCV FX + CPU generator fallbacks.
+- `mapping.py` — projection-mapping mode (spaces, groups, warps).
+- `clips.py` — `ClipPool`: lazy MP4 loader, LRU-evicted handles.
+- `keymap.py` — pygame key → engine action dispatch.
+- `shader_catalog.py` — GLSL generator catalogue (`GPU_GENERATORS`).
+- `gpu_generator_worker.py` — out-of-process GStreamer/GL renderer.
+- `gpu_generators.py` — client/bridge that talks to the worker.
+- `config.py`, `state.py`, `display_helpers.py` — config dataclass,
+  `vj_state.json` persistence, display geometry helpers.
+- `assets/clips/` — operator's MP4 library. **Gitignored** (see
+  workflow rules — the library was destroyed once).
+- `assets/images/` — stills for texture generators (donut). Gitignored.
+- `setup.sh` — system libs (SDL2/GL/GStreamer) + a Python venv with
+  pygame + opencv + numpy. Re-runnable.
+- `Process Assets.sh` — bulk-downsamples/re-encodes clips to render
+  resolution; originals preserved in `assets/clips/_originals/`.
+- `Start VJ.sh` / `Test (single screen).sh` — launchers (log-tee +
+  zenity error dialog; see operator note below).
+- `Update.sh` — git pull + setup-change warning.
+- `vj_last_run.log`, `vj_last_update.log`, `vj_last_process.log` —
+  last-run logs, overwritten each run.
 
-## Rewrite plan (phases)
+## Hard hardware / platform facts (non-negotiable)
 
-| Phase | Status   | What it adds                                                |
-|-------|----------|-------------------------------------------------------------|
-| 1     | DONE     | Dual-window GTK3 + GStreamer scaffold via `videotestsrc`   |
-| 2     | DONE     | Real clip decode (`filesrc + decodebin → glupload`)         |
-| 2.5   | NEXT     | Asset processor: bulk transcode to HEVC 720p (immediate)    |
-| 3     | TODO     | Generators as GLSL fragment shaders via `glshader`          |
-| 4     | TODO     | Compositor + clip selection + keymap + favourites           |
-| 5     | TODO     | Mapping mode (groups, spaces, fit modes, edit-mode mouse)   |
-| 6     | TODO     | FX chain, hits, autopilot, HUD status + FPS + polish        |
+1. **V3D leaks GL state between contexts in one process.** This is why
+   GPU generators live in a separate process. Don't co-locate GL
+   contexts. (This killed two earlier GPU attempts — see history.)
 
-Each phase must end in something runnable on real Pi 5 hardware,
-not just "syntax checked locally."
+2. **Pi 5 has no H.264 hardware decode** (the block was removed). Clips
+   decode in software via OpenCV `VideoCapture`. `Process Assets.sh`
+   downsamples + re-encodes the library to render resolution so the
+   only per-frame cost is decode + a BGR→RGB shuffle. Re-run it
+   whenever you change render resolution.
 
-## Verified state on Pi 5
-
-- **Phase 1:** SMPTE bars visible in both windows. No GL state leak,
-  no dual-context conflict. Architecture proven.
-- **Phase 2:** a clip loads via decodebin and plays in both windows.
-  **Performance is poor (~5–15 fps, CPU pegged) with 2K H.264
-  sources** — expected per constraint #1. The fix is the asset
-  processor (phase 2.5), not architecture changes.
-
-## Immediate next thing to do (if just teleported in)
-
-Build the asset processor. ~20 lines of shell. It should:
-
-1. Walk `assets/clips/` and `assets/overlays/`.
-2. For each MP4/MOV that isn't already HEVC at canvas resolution, run:
-   ```
-   ffmpeg -i <input> -vf scale=1280:720 -c:v libx265 -preset fast \
-          -crf 23 -an <input>_h265_720.mp4
-   ```
-3. Move the original to a `.original/` subfolder (don't delete).
-4. Idempotent: skip files already processed.
-
-Then point the operator at it and tell them to run it on their clip
-library. Phase 3 (generators on GPU) can start while they wait.
-
-## Workflow rules — DO NOT VIOLATE
-
-1. **NEVER `git stash push -u` without confirming what's untracked
-   first.** This destroyed the operator's clip library once. The mp4
-   files were untracked, `-u` grabs untracked, the stash later got
-   dropped or got mixed with other state, and the library was lost.
-   Now `assets/clips/*` and `assets/overlays/*` are in `.gitignore`
-   to prevent recurrence, but the principle is general: any
-   destructive git operation needs `git status` + a sanity check
-   first.
-
-2. **NEVER run `git clean`, `git reset --hard`, `rm -rf`, or any
-   destructive operation on the operator's files** without explicit
-   permission AND showing them what will be affected first.
-
-3. **NEVER trust that `git stash` is safe.** Inspect with
-   `git stash show stash@{N} --stat` before dropping.
-
-4. **Do web research before guessing about hardware behaviour.** The
-   previous architecture wasted days because I guessed at V3D quirks
-   instead of looking them up. Use WebSearch / WebFetch tools when
-   the platform is doing something unexpected; don't speculate in a
-   tight loop with the operator.
-
-5. **Plan before coding for anything bigger than a one-line tweak.**
-   Real-hardware deploy loops are expensive — operator has to pull,
-   run, observe, report. Don't ship code that's likely to be wrong.
-   For bigger changes, write the plan in chat first and get sign-off.
-
-6. **Don't break what works.** Phase 1 and phase 2 are verified.
-   Don't refactor them "while you're in there." If a refactor is
-   needed, propose it explicitly and get a yes.
-
-## Compressed post-mortem of the failed attempts
-
-- **Original pygame/cv2 era** (pre-rewrite): worked but bottlenecked
-  on CPU. Generators, compositing, mapping warp all in numpy/cv2.
-  Steady 50% CPU at idle, dropping into single-digit FPS in mapping
-  mode with autopilot.
-- **First GPU attempt** (`claude/rpi5-gpu-acceleration-I85mA`, since
-  reverted): ported the whole pipeline to moderngl. Hit a wall of
-  V3D bugs — silent black FBOs (RGB8 not color-renderable on V3D),
-  `glReadPixels(GL_RGB)` returning zeros, attribute introspection
-  returning wrong locations. Never got pixels on the projector.
-  Reverted in one commit.
-- **Second GPU attempt** (`claude/gpu-offload-strategy-CKXXm`, also
-  reverted): more surgical — Tier 1 moved output to SDL2 Renderer +
-  streaming texture, Tier 3 added one generator (`tunnel`) via a
-  standalone moderngl EGL context. Tier 1 worked. Tier 3 triggered
-  the V3D dual-context state-leak — HUD went solid black the moment
-  the moderngl context initialised. Tried HUD on software renderer,
-  HUD streaming texture, VJ_NO_GPU kill switch. None fixed it. The
-  root cause was structural, not a workaround target. Reverted.
-- **Current rewrite** (`claude/gstreamer-rewrite`): structural fix.
-  Single Gst.Pipeline, single GL context. Dual-context bug can't
-  recur. Performance is now bottlenecked on CPU H.264 decode (Pi 5
-  hardware limit, not architecture) — solved by the asset processor.
-
-## Operator context
-
-- Pi 5 + Pi OS Bookworm + projector + small operator screen.
-- ~100+ MP4 loops, mostly from mantissa.xyz (2K H.264, ~5s loops).
-  **The library was lost once during this work** because of the git
-  stash mistake. The operator is rebuilding it. Treat their data as
-  sacred — assume losing a single file is a serious incident.
-- Frustration tolerance is low. Be honest about uncertainty. When
-  you don't know, say so. When you make a mistake, own it plainly
-  without grovelling. Move forward.
-- The operator runs the launchers (`Start VJ.sh` etc.) on the Pi
-  via the GUI file manager — "Execute" not "Execute in Terminal" —
-  so stdout/stderr go to nowhere unless captured. The log-tee +
-  zenity dialog patterns in the launchers exist for exactly this
-  reason. Don't break them.
+3. **The operator launches via the GUI file manager** ("Execute", not
+   "Execute in Terminal"), so stdout/stderr go nowhere unless captured.
+   The log-tee + zenity dialog in the launchers exist for exactly this.
+   Don't break them.
 
 ## How to test changes
 
 1. Make the edit.
-2. Commit + push to `claude/gstreamer-rewrite`.
-3. Tell the operator to `git pull origin claude/gstreamer-rewrite`
-   on the Pi and run the relevant launcher.
-4. Ask for `vj_last_run.log` output (or the visible behaviour
-   they report).
+2. Commit + push to the active branch.
+3. Operator does `git pull` on the Pi and runs the relevant launcher.
+4. Ask for the matching `vj_last_*.log` (or the observed behaviour).
 5. Iterate.
 
-If the agent and the operator end up on the same Pi via
-`claude --teleport`, this loop collapses to: edit → run → observe —
-which is much faster and the preferred mode.
+GLSL can't be compile-checked in most dev environments (no validator);
+the worker on the Pi is the real test — on failure, grab the
+`[gpu-worker]` line from the log. If agent + operator share the Pi via
+`claude --teleport`, the loop collapses to edit → run → observe.
 
-## Branch state at handoff
+## Workflow rules — DO NOT VIOLATE
 
-Top of `claude/gstreamer-rewrite`:
-- Phase 1: GTK3 + GStreamer scaffold (videotestsrc proof).
-- Phase 1 fix: GL → CPU bridge for `gtksink` link.
-- Phase 2: clip playback via `filesrc + decodebin`.
-- `.gitignore` fix: `assets/clips/*` and `assets/overlays/*`
-  excluded so `git stash -u` can never touch user media again.
+1. **NEVER `git stash push -u` without confirming what's untracked
+   first.** This destroyed the operator's clip library once: the mp4s
+   were untracked, `-u` grabbed them, the stash got dropped, library
+   gone. `assets/clips/*` and `assets/images/*` are gitignored now, but
+   the principle is general: any destructive git op needs `git status`
+   + a sanity check first.
 
-Latest verified test on Pi: phase 2 plays a 2K H.264 clip at low
-FPS, both windows in sync, no errors. Asset processor is the next
-deliverable to make playback usable.
+2. **NEVER run `git clean`, `git reset --hard`, `rm -rf`, or any
+   destructive op on the operator's files** without explicit permission
+   AND showing them what will be affected first.
+
+3. **NEVER trust that `git stash` is safe.** Inspect with
+   `git stash show stash@{N} --stat` before dropping.
+
+4. **Do web research before guessing about hardware behaviour.** Past
+   work wasted days guessing at V3D quirks. Look it up.
+
+5. **Plan before coding for anything bigger than a one-line tweak.**
+   Real-hardware deploy loops are expensive. For bigger changes, write
+   the plan in chat first and get sign-off.
+
+6. **Don't break what works.** The hybrid is verified and live. Don't
+   refactor it "while you're in there"; propose refactors explicitly
+   and get a yes.
+
+## Why the architecture is what it is (compressed history)
+
+- **Original pygame/cv2 app:** worked, CPU-bound. This is the base the
+  current hybrid is built on.
+- **GPU rewrite attempts (moderngl, then single-process GStreamer +
+  GTK/VLC):** tried to move the whole pipeline onto the GPU in one
+  process. All hit the V3D dual-context state-leak (HUD or output goes
+  black the moment a second GL context initialises) or other V3D bugs.
+  All reverted. **Don't resurrect the single-process-GL or VLC/GTK
+  window path.**
+- **The hybrid (current):** keep the working CPU app; reach the GPU
+  only through an isolated worker process for generators. Dual-context
+  bug can't recur because there's only ever one GL context per process.
+  This is the path forward.
+
+## Operator context
+
+- Pi 5 + Pi OS Bookworm + projector + small operator screen.
+- ~100+ MP4 loops, mostly 2K H.264 ~5s. **The library was lost once**
+  during a git stash mistake. Treat operator data as sacred — losing a
+  single file is a serious incident.
+- Frustration tolerance is low. Be honest about uncertainty. Own
+  mistakes plainly without grovelling. Move forward.
+
+## Not yet built (genuine future work, not a rebuild)
+
+- **Auto/beat mode:** aubio beat detection on a USB mic; scenes swap on
+  downbeats, hits on kick onsets, FX intensity tracks RMS.
+- **Hailo person matte:** silhouette the performer from a webcam and
+  composite over the base.
+- **Pre-baked Shadertoy MP4s:** bake favourite shaders offline to H.264
+  loops for playback without live GLSL.
