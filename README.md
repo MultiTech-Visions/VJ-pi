@@ -125,6 +125,7 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `F5`                | FX: posterize (levels = PARAM Y)                   |
 | `F6`                | FX: edge detect                                    |
 | `F7`                | FX: RGB split / chromatic aberration (offset = PARAM X) |
+| `F8`                | FX: melt — warp the base layer with a generator's colour field (quasicrystal by default; PARAM X = shimmer → full liquefy). Live mode only. |
 | `← →`               | Adjust PARAM X (active-FX horizontal control)      |
 | `↑ ↓`               | Adjust PARAM Y (active-FX vertical control)        |
 | `Enter Enter`       | Engage **AUTOPILOT** (double-tap within 600 ms). Any other key takes over again and executes immediately. While engaged, `↑/↓` tune the clip-change rate and `←/→` tune the FX-change rate. |
@@ -359,7 +360,7 @@ Render pipeline each frame:
 ```
 base layer   →  active clip OR active generative OR black
    ↓
-FX chain     →  kaleido, mirror, rgb_split, posterize, edges, invert, feedback
+FX chain     →  kaleido, mirror, rgb_split, posterize, edges, invert, feedback, melt
    ↓
 hits         →  transient strobe/flash/punch (5 frames)
    ↓

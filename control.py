@@ -12,7 +12,7 @@ KEY_CHEAT = [
     ("1 - 0",        "Clip favourites — tap=play, hold ≥½s=assign current"),
     ("A-L ;",        "Generator favourites — tap=play, hold ≥½s=assign current"),
     ("Z X C V B",    "Hits: strobe / black / inv / zoom / RGB"),
-    ("F1 - F7",      "Persistent FX toggles"),
+    ("F1 - F8",      "Persistent FX toggles (F8 = melt)"),
     ("← → ↑ ↓",      "Tune PARAM X/Y  (auto: ←→ FX rate · ↑↓ clip rate)"),
     ("Enter Enter",  "Engage AUTOPILOT (any key hands control back)"),
     ("F11 / F12",    "Cycle output display / APPLY"),
@@ -47,7 +47,7 @@ MAPPING_KEY_CHEAT = [
     ("Ctrl+C",       "Cycle border colour"),
     ("Ctrl+[ / ]",   "Border intensity ±10%"),
     ("Ctrl+; / '",   "Border thickness ±1px"),
-    ("PERFORM — content keys", "1-0/A-L;/[]/F1-F7/←→↑↓ → selected group"),
+    ("PERFORM — content keys", "1-0/A-L;/[]/F1-F8/←→↑↓ → selected group"),
 ]
 
 
