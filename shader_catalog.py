@@ -322,7 +322,7 @@ void main() {
 }
 """
 
-ANGEL_SHADER = """#version 100
+SERAPHIM_SHADER = """#version 100
 #ifdef GL_ES
 precision highp float;
 #endif
@@ -931,7 +931,7 @@ GPU_GENERATORS = {
     'lenia': LENIA_SHADER,
     'grayscott': GRAYSCOTT_SHADER,
     'eyeball': EYEBALL_SHADER,
-    'angel': ANGEL_SHADER,
+    'seraphim': SERAPHIM_SHADER,
     'quasicrystal': QUASICRYSTAL_SHADER,
     'kaliset': KALISET_SHADER,
     'apollonian': APOLLONIAN_SHADER,
