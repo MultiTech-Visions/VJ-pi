@@ -350,10 +350,11 @@ class Engine:
             self.fx_state[name] = not self.fx_state[name]
 
     def kill_all(self):
-        """Panic key: clear FX, hits, overlay, generative, blackout, freeze
-        — but keep the current clip playing so the output doesn't suddenly
-        drop to black mid-set. Use `0` (long-press while playing nothing)
-        or the `-` / `=` cycle keys to change/clear the clip itself.
+        """Panic key: clear FX, hits, overlay, blackout, freeze — but keep
+        the current base layer (clip OR generator) playing so the output
+        doesn't suddenly drop to black mid-set. Use `0` (long-press while
+        playing nothing) or the `-` / `=` cycle keys to change/clear the
+        clip, and `[` / `]` to change/clear the generator.
 
         In mapping mode we only touch the SELECTED group's FX + overlay so
         the operator's symmetric setup isn't blown away — global blackout
@@ -372,7 +373,9 @@ class Engine:
         for k in self.fx_state:
             self.fx_state[k] = False
         self.overlays.deselect()
-        self.active_generative = None
+        # NOTE: deliberately do NOT clear self.active_generative — Esc keeps
+        # the generator playing, same as it keeps a clip. Use [ / ] to change
+        # or clear the generator.
 
     # ── Favourites ────────────────────────────────────────────────────
 

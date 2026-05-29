@@ -236,9 +236,8 @@ float fbm(vec2 p) {
 }
 
 // Where is the eye looking? It snaps to a fresh random target every
-// couple of seconds (a saccade): a quick dart into place, then a
-// hold, plus a tiny tremor so it never sits perfectly still. All
-// derived from `time` — no CPU-side state needed.
+// couple of seconds (a saccade): a quick dart into place, then it
+// holds rock-steady (no tremor). All from `time` — no CPU-side state.
 vec2 gaze() {
     float seg = floor(time * 0.45);
     float f = fract(time * 0.45);
@@ -246,7 +245,6 @@ vec2 gaze() {
     vec2 cur  = (hash2(vec2(seg + 1.0, 1.0)) - 0.5) * 2.0;
     float dart = smoothstep(0.0, 0.12, f);   // fast flick at segment start
     vec2 g = mix(prev, cur, dart);
-    g += 0.03 * vec2(sin(time * 13.0), cos(time * 11.0));  // tremor
     return g * 0.12;                          // keep iris inside the sclera
 }
 
@@ -288,8 +286,15 @@ void main() {
     float irisMask = smoothstep(ri, ri - 0.008, di);
     eye = mix(eye, iris, irisMask);
 
-    // --- pupil (dilates a touch for some life) ------------------
-    float rp = 0.062 + 0.016 * sin(time * 0.6);
+    // --- pupil: holds steady, then snaps to a new size in a fast
+    // (<0.25 s) change at a random moment in each ~2.2 s window ------
+    float pd = time / 2.2;
+    float pseg = floor(pd);
+    float pf = fract(pd);
+    float prevR = mix(0.05, 0.11, hash(vec2(pseg,       7.0)));
+    float curR  = mix(0.05, 0.11, hash(vec2(pseg + 1.0, 7.0)));
+    float trig  = 0.15 + 0.6 * hash(vec2(pseg, 3.0));   // random snap moment
+    float rp = mix(prevR, curR, smoothstep(trig, trig + 0.09, pf));
     float pupilMask = smoothstep(rp, rp - 0.006, di);
     eye = mix(eye, vec3(0.02), pupilMask);
 
@@ -498,7 +503,9 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 // "Kaliset": iterate z = abs(z)/dot(z,z) - c. Folds the plane into a
-// glowing self-similar web; two orbit traps drive a neon look.
+// smooth self-similar field. We keep ONLY the soft length() orbit
+// trap (the "galaxies") plus a wider halo of it. The old thin-filament
+// trap aliased into static, so it's gone — leaving morphing nebulae.
 void main() {
     vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
     float t = time;
@@ -506,17 +513,16 @@ void main() {
     float ca = cos(t * 0.05), sa = sin(t * 0.05);     // slow turn
     z = vec2(ca * z.x - sa * z.y, sa * z.x + ca * z.y);
     vec2 c = vec2(0.65 + 0.22 * sin(t * 0.13), 0.78 + 0.18 * cos(t * 0.11));
-    float trap = 1e9, web = 1e9;
+    float trap = 1e9;
     for (int i = 0; i < 14; i++) {
         z = abs(z) / clamp(dot(z, z), 0.004, 4.0) - c;
         trap = min(trap, length(z));
-        web = min(web, abs(z.x) + abs(z.y) * 0.3);
     }
-    float glow = exp(-trap * 3.5);
-    float fil = exp(-web * 9.0);
+    float glow = exp(-trap * 3.0);
+    float halo = exp(-trap * 1.0);                    // soft outer nebula
     float hue = fract(0.55 + trap * 0.35 + t * 0.03);
-    vec3 col = hsv2rgb(vec3(hue, 0.7, glow));
-    col += fil * vec3(0.5, 0.85, 1.0) * 0.9;
+    float val = clamp(glow + halo * 0.35, 0.0, 1.0);
+    vec3 col = hsv2rgb(vec3(hue, 0.72, val));
     gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
 """
@@ -767,60 +773,6 @@ void main() {
 }
 """
 
-HOPF_SHADER = """#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
-
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-mat3 rotx(float a) { float c = cos(a), s = sin(a); return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c); }
-mat3 roty(float a) { float c = cos(a), s = sin(a); return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c); }
-mat3 rotz(float a) { float c = cos(a), s = sin(a); return mat3(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0); }
-float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz) - t.x, p.y); return length(q) - t.y; }
-
-float gID = 0.0;
-float map(vec3 p) {
-    float t = time * 0.4;
-    float d1 = sdTorus(rotx(t) * p, vec2(1.0, 0.16));
-    float d2 = sdTorus(roty(t * 1.3) * rotx(1.5708) * p, vec2(1.0, 0.16));
-    float d3 = sdTorus(rotz(t * 0.8) * roty(1.5708) * p, vec2(1.0, 0.16));
-    float d = d1; gID = 0.0;
-    if (d2 < d) { d = d2; gID = 1.0; }
-    if (d3 < d) { d = d3; gID = 2.0; }
-    return d;
-}
-
-// Three mutually-orthogonal tori rotating through each other -> the
-// interlocking-rings look of a Hopf fibration / 4D rotation.
-void main() {
-    vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
-    vec3 ro = vec3(0.0, 0.0, -3.2);
-    vec3 rd = normalize(vec3(uv, 1.4));
-    float dist = 0.0; bool hit = false; float idc = 0.0; float steps = 0.0;
-    for (int i = 0; i < 64; i++) {
-        vec3 pos = ro + rd * dist;
-        float d = map(pos);
-        if (d < 0.002) { hit = true; idc = gID; break; }
-        dist += d; steps += 1.0;
-        if (dist > 9.0) break;
-    }
-    vec3 col = vec3(0.01, 0.01, 0.03);
-    if (hit) {
-        float hue = fract(idc / 3.0 + time * 0.03 + dist * 0.04);
-        float shade = 1.0 - steps / 64.0;
-        col = hsv2rgb(vec3(hue, 0.7, 0.35 + 0.65 * shade));
-    }
-    col += hsv2rgb(vec3(fract(time * 0.03), 0.5, 1.0)) * pow(steps / 64.0, 3.0) * 0.25;
-    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
-}
-"""
-
 LYAPUNOV_SHADER = """#version 100
 #ifdef GL_ES
 precision highp float;
@@ -926,7 +878,6 @@ GPU_GENERATORS = {
     'kifs3d': KIFS3D_SHADER,
     'domaincolor': DOMAINCOLOR_SHADER,
     'curlflow': CURLFLOW_SHADER,
-    'hopf': HOPF_SHADER,
     'lyapunov': LYAPUNOV_SHADER,
     'phyllotaxis': PHYLLOTAXIS_SHADER,
     'donut': DONUT_SHADER,
