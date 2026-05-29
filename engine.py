@@ -80,7 +80,7 @@ class Engine:
         # worker holds one generator at a time, so when the base is itself a
         # generator we reuse that frame as the field rather than asking the
         # worker for a second one (which would thrash its pipeline rebuild).
-        self.melt_source = "quasicrystal"
+        self.melt_source = "kaliset"
         self._base_was_generator = False
         self._last_gen_frame = None
         self._melt_grid_cache = {}
@@ -945,7 +945,7 @@ class Engine:
         """Warp `frame` per-pixel using a generator's colour as a flow field.
 
         When the base is a clip we render the melt-source generator (the
-        quasicrystal by default); when the base is already a generator we
+        kaliset by default); when the base is already a generator we
         reuse its frame so the single GPU worker isn't asked for a second
         pattern. param_x dials the amount, from a shimmer to a full liquefy.
         """

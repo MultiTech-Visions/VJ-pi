@@ -510,26 +510,30 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 // "Kaliset": iterate z = abs(z)/dot(z,z) - c. Folds the plane into a
-// smooth self-similar field. We keep ONLY the soft length() orbit
-// trap (the "galaxies") plus a wider halo of it. The old thin-filament
-// trap aliased into static, so it's gone — leaving morphing nebulae.
+// self-similar field. We read it with a SMOOTH accumulated orbit trap
+// (sum of exp(-dist) over the orbit) instead of a hard min() — the min
+// jumps wildly between neighbouring pixels in the chaotic fold regions
+// and aliased into static. A higher inversion floor also tames the
+// chaos. Result: smooth morphing galaxies, no speckle.
 void main() {
     vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
     float t = time;
     vec2 z = uv * 1.3;
     float ca = cos(t * 0.05), sa = sin(t * 0.05);     // slow turn
     z = vec2(ca * z.x - sa * z.y, sa * z.x + ca * z.y);
-    vec2 c = vec2(0.65 + 0.22 * sin(t * 0.13), 0.78 + 0.18 * cos(t * 0.11));
-    float trap = 1e9;
-    for (int i = 0; i < 14; i++) {
-        z = abs(z) / clamp(dot(z, z), 0.004, 4.0) - c;
-        trap = min(trap, length(z));
+    vec2 c = vec2(0.62 + 0.18 * sin(t * 0.13), 0.74 + 0.14 * cos(t * 0.11));
+    float acc = 0.0;     // smooth glow accumulation
+    float warm = 0.0;    // depth-weighted, for colour
+    for (int i = 0; i < 12; i++) {
+        z = abs(z) / clamp(dot(z, z), 0.03, 4.0) - c;   // higher floor = less chaos
+        float w = exp(-length(z) * 4.0);                // smooth trap, no hard min
+        acc += w;
+        warm += w * float(i);
     }
-    float glow = exp(-trap * 3.0);
-    float halo = exp(-trap * 1.0);                    // soft outer nebula
-    float hue = fract(0.55 + trap * 0.35 + t * 0.03);
-    float val = clamp(glow + halo * 0.35, 0.0, 1.0);
-    vec3 col = hsv2rgb(vec3(hue, 0.72, val));
+    float glow = clamp(acc * 0.5, 0.0, 1.0);
+    float depth = (acc > 0.001) ? (warm / acc) / 12.0 : 0.0;   // smooth 0..1
+    float hue = fract(0.55 + depth * 0.5 + t * 0.03);
+    vec3 col = hsv2rgb(vec3(hue, 0.72, glow));
     gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
 """
@@ -795,8 +799,11 @@ uniform float time;
 void main() {
     vec2 uv = v_texcoord;
     float t = time;
-    float a = 2.6 + uv.x * 1.4;
-    float b = 2.6 + uv.y * 1.4;
+    // The (a, b) window slowly meanders, so the flame masses drift across
+    // the screen and fresh structure scrolls in from the empty regions —
+    // combined with the time-rotating sequence below, they also writhe.
+    float a = 2.55 + uv.x * 1.4 + 0.22 * sin(t * 0.05) + 0.07 * sin(t * 0.018);
+    float b = 2.55 + uv.y * 1.4 + 0.18 * cos(t * 0.041) + 0.06 * cos(t * 0.023);
     float x = 0.5;
     float lyap = 0.0;
     for (int i = 0; i < 64; i++) {
