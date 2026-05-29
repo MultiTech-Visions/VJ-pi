@@ -446,6 +446,461 @@ void main() {
 }
 """
 
+QUASICRYSTAL_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Sum of seven cosine plane waves at evenly spaced angles. Seven is
+// odd so the lattice never repeats — that's the aperiodic shimmer.
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+    float zoom = 16.0 + sin(t * 0.13) * 5.0;     // breathing
+    float ca = cos(t * 0.04), sa = sin(t * 0.04); // slow spin
+    p = vec2(ca * p.x - sa * p.y, sa * p.x + ca * p.y) * zoom;
+
+    float v = 0.0;
+    for (int i = 0; i < 7; i++) {
+        float ang = float(i) * 3.14159265 / 7.0;
+        vec2 dir = vec2(cos(ang), sin(ang));
+        v += cos(dir.x * p.x + dir.y * p.y + t * (0.5 + 0.06 * float(i)));
+    }
+    v /= 7.0;                            // -1..1
+    float s = 0.5 + 0.5 * v;
+    float bands = pow(abs(v), 0.4);      // sharpen into crystal filaments
+    float hue = fract(s * 0.5 + t * 0.04);
+    vec3 col = hsv2rgb(vec3(hue, 0.72, bands));
+    col += vec3(smoothstep(0.9, 1.0, s)) * 0.6;  // bright interference nodes
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+KALISET_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// "Kaliset": iterate z = abs(z)/dot(z,z) - c. Folds the plane into a
+// glowing self-similar web; two orbit traps drive a neon look.
+void main() {
+    vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+    vec2 z = uv * 1.3;
+    float ca = cos(t * 0.05), sa = sin(t * 0.05);     // slow turn
+    z = vec2(ca * z.x - sa * z.y, sa * z.x + ca * z.y);
+    vec2 c = vec2(0.65 + 0.22 * sin(t * 0.13), 0.78 + 0.18 * cos(t * 0.11));
+    float trap = 1e9, web = 1e9;
+    for (int i = 0; i < 14; i++) {
+        z = abs(z) / clamp(dot(z, z), 0.004, 4.0) - c;
+        trap = min(trap, length(z));
+        web = min(web, abs(z.x) + abs(z.y) * 0.3);
+    }
+    float glow = exp(-trap * 3.5);
+    float fil = exp(-web * 9.0);
+    float hue = fract(0.55 + trap * 0.35 + t * 0.03);
+    vec3 col = hsv2rgb(vec3(hue, 0.7, glow));
+    col += fil * vec3(0.5, 0.85, 1.0) * 0.9;
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+APOLLONIAN_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Apollonian-style packing: repeatedly fold into the unit cell and
+// invert through the origin. `scale` tracks the accumulated inversion
+// so we recover an approximate distance to the nested circles.
+void main() {
+    vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+    vec2 p = uv * 1.5 + 0.12 * vec2(sin(t * 0.11), cos(t * 0.09));
+    float fold = 1.05 + 0.18 * sin(t * 0.2);     // animates the gasket
+    float scale = 1.0;
+    float trap = 1e9;
+    for (int i = 0; i < 8; i++) {
+        p = -1.0 + 2.0 * fract(0.5 * p + 0.5);   // fold into [-1,1] cell
+        float r2 = dot(p, p);
+        float k = fold / r2;                     // circle inversion
+        p *= k; scale *= k;
+        trap = min(trap, abs(r2 - 0.32));
+    }
+    float d = length(p) / scale;                 // approx distance to structure
+    float edge = smoothstep(0.06, 0.0, d);
+    float hue = fract(0.1 + trap * 1.5 + t * 0.04);
+    float val = edge + exp(-d * 14.0) * 0.6;
+    vec3 col = hsv2rgb(vec3(hue, 0.75, clamp(val, 0.0, 1.0)));
+    gl_FragColor = vec4(col, 1.0);
+}
+"""
+
+HYPERBOLIC_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+const float PI = 3.14159265359;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// {p,q} tiling of the Poincare disk. Fold into a wedge of angle pi/p,
+// then invert through the edge geodesic (a circle orthogonal to the
+// unit circle) until inside the fundamental domain. A Mobius
+// translation drifts us through hyperbolic space so tiles stream in
+// from the rim.
+void main() {
+    vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0) * 1.05;
+    float t = time;
+    vec2 z = uv;                       // point in the disk
+    if (dot(z, z) >= 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.02, 1.0); return; }
+
+    // Mobius translation: z -> (z + b) / (1 + conj(b) z)
+    vec2 b = 0.42 * vec2(sin(t * 0.15), cos(t * 0.11));
+    vec2 num = z + b;
+    vec2 den = vec2(1.0 + (b.x * z.x + b.y * z.y), (b.x * z.y - b.y * z.x));
+    z = vec2(num.x * den.x + num.y * den.y, num.y * den.x - num.x * den.y) / dot(den, den);
+
+    float pP = 6.0, qQ = 4.0;
+    float wedge = PI / pP;
+    float cx = cos(PI / pP) / sin(PI / qQ);        // edge-circle centre on x
+    float cr = sqrt(max(cx * cx - 1.0, 0.0001));   // orthogonal to unit circle
+    float refl = 0.0;
+    for (int i = 0; i < 12; i++) {
+        float a = atan(z.y, z.x);
+        float r = length(z);
+        a = mod(a, 2.0 * wedge);
+        a = abs(a - wedge);
+        z = r * vec2(cos(a), sin(a));
+        vec2 dvec = z - vec2(cx, 0.0);
+        float di = dot(dvec, dvec);
+        if (di < cr * cr) {
+            z = vec2(cx, 0.0) + dvec * (cr * cr / di);   // invert through edge
+            refl += 1.0;
+        } else { break; }
+    }
+    float a = atan(z.y, z.x);
+    float tile = mod(refl, 2.0);
+    float band = 0.5 + 0.5 * sin(a * pP);
+    float hue = fract(refl * 0.12 + t * 0.03);
+    float val = mix(0.35, 0.95, tile) * (0.6 + 0.4 * band);
+    val *= smoothstep(1.0, 0.55, dot(uv, uv));     // fade toward the rim
+    vec3 col = hsv2rgb(vec3(hue, 0.6, val));
+    gl_FragColor = vec4(col, 1.0);
+}
+"""
+
+KIFS3D_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Sierpinski-tetrahedron KIFS distance estimator. The fold offset
+// breathes with time so the fractal morphs while the camera orbits.
+float DE(vec3 z) {
+    float scale = 2.0;
+    vec3 off = vec3(1.0) + 0.18 * vec3(sin(time * 0.2), 0.0, cos(time * 0.17));
+    for (int i = 0; i < 9; i++) {
+        if (z.x + z.y < 0.0) { float tmp = -z.y; z.y = -z.x; z.x = tmp; }
+        if (z.x + z.z < 0.0) { float tmp = -z.z; z.z = -z.x; z.x = tmp; }
+        if (z.y + z.z < 0.0) { float tmp = -z.z; z.z = -z.y; z.y = tmp; }
+        z = z * scale - off * (scale - 1.0);
+    }
+    return length(z) * pow(scale, -9.0);
+}
+
+void main() {
+    vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time * 0.2;
+    vec3 ro = vec3(sin(t) * 2.6, sin(t * 0.5) * 0.8, cos(t) * 2.6);
+    vec3 ww = normalize(-ro);
+    vec3 uu = normalize(cross(vec3(0.0, 1.0, 0.0), ww));
+    vec3 vv = cross(ww, uu);
+    vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.6 * ww);
+    float dist = 0.0; float steps = 0.0; bool hit = false;
+    for (int i = 0; i < 56; i++) {
+        vec3 pos = ro + rd * dist;
+        float d = DE(pos);
+        if (d < 0.0016) { hit = true; break; }
+        dist += d; steps += 1.0;
+        if (dist > 8.0) break;
+    }
+    vec3 col = vec3(0.02, 0.02, 0.05);
+    if (hit) {
+        float ao = 1.0 - steps / 56.0;             // cheap glow/AO from step count
+        float hue = fract(0.6 + dist * 0.12 + time * 0.02);
+        col = hsv2rgb(vec3(hue, 0.65, 0.3 + 0.7 * ao));
+    } else {
+        col += hsv2rgb(vec3(fract(0.6 + time * 0.02), 0.4, 0.1)) * (steps / 56.0);
+    }
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+DOMAINCOLOR_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+const float PI = 3.14159265359;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+vec2 cdiv(vec2 a, vec2 b) { float d = dot(b, b) + 1e-9; return vec2(a.x * b.x + a.y * b.y, a.y * b.x - a.x * b.y) / d; }
+
+// Domain colouring of an animated complex rational function.
+// hue = phase of f(z), brightness banded by log|f| -> contour rings
+// that swirl around orbiting zeros and poles.
+void main() {
+    vec2 z = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0) * 2.4;
+    float t = time;
+    vec2 z1 = 0.9 * vec2(cos(t * 0.3), sin(t * 0.3));
+    vec2 z2 = 0.7 * vec2(cos(t * 0.5 + 2.0), sin(t * 0.5 + 2.0));
+    vec2 p1 = 1.1 * vec2(cos(t * 0.23 + 1.0), sin(t * 0.23 + 1.0));
+    vec2 num = cmul(z - z1, z + z1);
+    num = cmul(num, z - z2);
+    vec2 f = cdiv(num, z - p1);
+    float mag = length(f);
+    float phase = atan(f.y, f.x);
+    float hue = fract(phase / (2.0 * PI) + 0.5 + t * 0.02);
+    float rings = fract(log(mag + 1e-3) * 1.2 - t * 0.1);   // |f| contours
+    float spokes = 0.5 + 0.5 * sin(phase * 6.0);            // phase wedges
+    float val = 0.35 + 0.5 * rings + 0.25 * spokes;
+    vec3 col = hsv2rgb(vec3(hue, 0.85, clamp(val, 0.0, 1.0)));
+    gl_FragColor = vec4(col, 1.0);
+}
+"""
+
+CURLFLOW_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+    vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i), b = hash(i + vec2(1.0, 0.0)), c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+float fbm(vec2 p) {
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 3; i++) { v += a * noise(p); p *= 2.0; a *= 0.5; }
+    return v;
+}
+float pot(vec2 p) { return fbm(p + vec2(0.0, time * 0.15)); }
+vec2 curl(vec2 p) {                          // divergence-free field
+    float e = 0.06;
+    float a = pot(p + vec2(0.0, e)), b = pot(p - vec2(0.0, e));
+    float c = pot(p + vec2(e, 0.0)), d = pot(p - vec2(e, 0.0));
+    return vec2(a - b, d - c) / (2.0 * e);
+}
+
+// Advect each pixel through the curl field and accumulate density
+// along the streamline -> ink-in-water billowing.
+void main() {
+    vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    vec2 start = uv * 2.5;
+    vec2 q = start;
+    float dens = 0.0;
+    for (int i = 0; i < 12; i++) {
+        q += curl(q) * 0.09;
+        dens += fbm(q * 1.5);
+    }
+    dens /= 12.0;
+    float hue = fract(0.55 + length(q - start) * 0.15 + time * 0.02);
+    float val = smoothstep(0.2, 0.8, dens);
+    vec3 col = hsv2rgb(vec3(hue, 0.7, val));
+    col += val * val * vec3(0.2, 0.25, 0.4);
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+HOPF_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+mat3 rotx(float a) { float c = cos(a), s = sin(a); return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c); }
+mat3 roty(float a) { float c = cos(a), s = sin(a); return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c); }
+mat3 rotz(float a) { float c = cos(a), s = sin(a); return mat3(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0); }
+float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz) - t.x, p.y); return length(q) - t.y; }
+
+float gID = 0.0;
+float map(vec3 p) {
+    float t = time * 0.4;
+    float d1 = sdTorus(rotx(t) * p, vec2(1.0, 0.16));
+    float d2 = sdTorus(roty(t * 1.3) * rotx(1.5708) * p, vec2(1.0, 0.16));
+    float d3 = sdTorus(rotz(t * 0.8) * roty(1.5708) * p, vec2(1.0, 0.16));
+    float d = d1; gID = 0.0;
+    if (d2 < d) { d = d2; gID = 1.0; }
+    if (d3 < d) { d = d3; gID = 2.0; }
+    return d;
+}
+
+// Three mutually-orthogonal tori rotating through each other -> the
+// interlocking-rings look of a Hopf fibration / 4D rotation.
+void main() {
+    vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    vec3 ro = vec3(0.0, 0.0, -3.2);
+    vec3 rd = normalize(vec3(uv, 1.4));
+    float dist = 0.0; bool hit = false; float idc = 0.0; float steps = 0.0;
+    for (int i = 0; i < 64; i++) {
+        vec3 pos = ro + rd * dist;
+        float d = map(pos);
+        if (d < 0.002) { hit = true; idc = gID; break; }
+        dist += d; steps += 1.0;
+        if (dist > 9.0) break;
+    }
+    vec3 col = vec3(0.01, 0.01, 0.03);
+    if (hit) {
+        float hue = fract(idc / 3.0 + time * 0.03 + dist * 0.04);
+        float shade = 1.0 - steps / 64.0;
+        col = hsv2rgb(vec3(hue, 0.7, 0.35 + 0.65 * shade));
+    }
+    col += hsv2rgb(vec3(fract(time * 0.03), 0.5, 1.0)) * pow(steps / 64.0, 3.0) * 0.25;
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+LYAPUNOV_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+// Markus-Lyapunov fractal. For each pixel (a, b) we run the logistic
+// map with r alternating along the sequence AABAB and accumulate the
+// Lyapunov exponent. Negative (stable) -> warm bands, positive
+// (chaotic) -> dark. The (a, b) window drifts with time.
+void main() {
+    vec2 uv = v_texcoord;
+    float t = time;
+    float a = 2.7 + uv.x * 1.3 + 0.15 * sin(t * 0.08);
+    float b = 2.7 + uv.y * 1.3 + 0.15 * cos(t * 0.07);
+    float x = 0.5;
+    float lyap = 0.0;
+    for (int i = 0; i < 64; i++) {
+        float m = mod(float(i), 5.0);
+        float r = ((m > 1.5 && m < 2.5) || (m > 3.5)) ? b : a;   // AABAB
+        x = r * x * (1.0 - x);
+        x = clamp(x, 0.0001, 0.9999);
+        if (i > 8) { lyap += log(abs(r * (1.0 - 2.0 * x)) + 1e-9); }
+    }
+    lyap /= 55.0;
+    vec3 col;
+    if (lyap < 0.0) {
+        float s = clamp(-lyap * 2.0, 0.0, 1.0);
+        col = mix(vec3(0.02, 0.0, 0.05), vec3(1.0, 0.75, 0.25), s);   // warm stable
+        col = mix(col, vec3(0.2, 1.0, 0.7), smoothstep(0.5, 1.0, s) * 0.5);
+    } else {
+        float s = clamp(lyap * 1.5, 0.0, 1.0);
+        col = mix(vec3(0.0, 0.02, 0.06), vec3(0.1, 0.0, 0.2), s);     // dark chaos
+    }
+    gl_FragColor = vec4(col, 1.0);
+}
+"""
+
+PHYLLOTAXIS_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Phyllotaxis (sunflower) seed lattice. Each seed sits at angle
+// i*golden and radius sqrt(i). Drifting the divergence angle a hair
+// off 137.5 deg makes the spiral arms dramatically reorganise.
+void main() {
+    vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+    float t = time;
+    float golden = 2.39996323 + 0.025 * sin(t * 0.1);   // parastichy morph
+    float spread = 0.055;                                // seed spacing
+    float glow = 0.0; float hueAcc = 0.0; float wsum = 0.0;
+    for (int i = 1; i <= 96; i++) {
+        float fi = float(i);
+        float ang = fi * golden + t * 0.15;
+        float rad = spread * sqrt(fi);
+        vec2 c = vec2(cos(ang), sin(ang)) * rad;
+        float dotr = 0.018 + 0.012 * sin(t * 1.5 + fi * 0.3);   // pulsing dots
+        vec2 dd = uv - c;
+        float g = exp(-dot(dd, dd) / (dotr * dotr));
+        glow += g;
+        hueAcc += g * fract(fi * 0.013 + t * 0.03);
+        wsum += g;
+    }
+    float hue = (wsum > 0.0) ? hueAcc / wsum : 0.0;
+    float val = smoothstep(0.0, 1.0, glow);
+    vec3 col = hsv2rgb(vec3(fract(hue), 0.65, val));
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
     'tunnel': TUNNEL_SHADER,
@@ -464,6 +919,16 @@ GPU_GENERATORS = {
     'grayscott': GRAYSCOTT_SHADER,
     'eyeball': EYEBALL_SHADER,
     'angel': ANGEL_SHADER,
+    'quasicrystal': QUASICRYSTAL_SHADER,
+    'kaliset': KALISET_SHADER,
+    'apollonian': APOLLONIAN_SHADER,
+    'hyperbolic': HYPERBOLIC_SHADER,
+    'kifs3d': KIFS3D_SHADER,
+    'domaincolor': DOMAINCOLOR_SHADER,
+    'curlflow': CURLFLOW_SHADER,
+    'hopf': HOPF_SHADER,
+    'lyapunov': LYAPUNOV_SHADER,
+    'phyllotaxis': PHYLLOTAXIS_SHADER,
     'donut': DONUT_SHADER,
 }
 
