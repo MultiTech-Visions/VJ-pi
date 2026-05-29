@@ -133,7 +133,7 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `Space`             | Blackout toggle (panic button)                     |
 | `Backspace`         | Freeze frame toggle                                |
 | `M`                 | Toggle **MAPPING mode** (see section below)        |
-| `Esc`               | Panic: clear FX, hits, blackout/freeze. **Keeps the current clip playing** so you never drop to black unexpectedly. |
+| `Esc`               | Panic: clear FX, hits, blackout/freeze. **Keeps the current clip _or_ generator playing** so you never drop to black unexpectedly. |
 | `Shift+Esc`         | Quit                                               |
 
 ## Projection mapping mode (press `M`)
