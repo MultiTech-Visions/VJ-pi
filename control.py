@@ -89,9 +89,6 @@ class ControlWindow:
         # Hit-test rects, populated each frame in render().
         self._display_btn_rects = []  # [(idx, pygame.Rect), ...]
         self._apply_rect = None
-        # Frame panel buttons (per-group zoom / pan / fit / reset).
-        # Each entry: (action_name, *args, pygame.Rect).
-        self._frame_btn_rects = []
         # Preview rect kept current each frame so corner-handle hit tests
         # know where the preview lives.
         self._preview_rect = pygame.Rect(0, 0, self.preview_w, self.preview_h)
@@ -148,30 +145,12 @@ class ControlWindow:
             e._mapping_handle_click(self._preview_to_norm(pos))
             return
 
-        # Frame-panel buttons (per-group zoom / pan / fit / reset).
-        if e.mode == "mapping":
-            for action, args, rect in self._frame_btn_rects:
-                if rect.collidepoint(pos):
-                    self._invoke_frame_action(action, args)
-                    return
-
         for idx, rect in self._display_btn_rects:
             if rect.collidepoint(pos):
                 self.engine.pending_display = idx
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
             self.engine.apply_pending_display()
-
-    def _invoke_frame_action(self, action, args):
-        e = self.engine
-        if action == "cycle_fit":
-            e.mapping_cycle_fit_mode(1)
-        elif action in ("zoom_in", "zoom_out"):
-            e.mapping_adjust_zoom(args[0])
-        elif action == "reset":
-            e.mapping_reset_frame()
-        elif action == "pan":
-            e.mapping_adjust_pan(args[0], args[1])
 
     def _preview_to_norm(self, pos):
         """Convert a preview-window click position into normalized (0..1)
@@ -205,8 +184,10 @@ class ControlWindow:
 
         # ── Top row: preview (left) + status (right) ─────────────
         self._draw_preview(surface, pad, pad, frame)
-        if mapping_mode:
-            self._draw_space_overlay(surface)
+        # The HUD preview is intentionally clean — no space outlines,
+        # corner handles, or hover toolbars. Edit chrome only renders on
+        # the projector (the bigger canvas where buttons are clickable);
+        # the preview is just a preview.
         sx = pad + self.preview_w + 16
         if mapping_mode:
             self._draw_mapping_status(surface, sx, pad, win_w - sx - pad)
@@ -289,102 +270,6 @@ class ControlWindow:
         label = self.font_s.render(label_text, True, (140, 140, 160))
         surface.blit(label, (x + 6, y + 4))
 
-    def _draw_space_overlay(self, surface):
-        """Outline every group's spaces on the preview, highlight the
-        picked-for-edit space, draw corner handles on the picked space,
-        and rubber-band the create-drag rectangle if one is in flight."""
-        e = self.engine
-        m = e.mapping
-        rect = self._preview_rect
-        sel_idx = m.selected
-        for gi, group in enumerate(m.groups):
-            is_selected_group = (gi == sel_idx)
-            outline = (200, 220, 255) if is_selected_group else (90, 100, 130)
-            for si, space in enumerate(group.spaces):
-                pts = [(rect.x + c[0] * rect.w, rect.y + c[1] * rect.h)
-                       for c in space.corners]
-                pygame.draw.polygon(surface, outline, pts, 1)
-                # Tiny group-index tag at the centre so it's clear which
-                # spaces belong together.
-                cx = sum(p[0] for p in pts) / 4
-                cy = sum(p[1] for p in pts) / 4
-                tag = self.font_s.render(f"G{gi + 1}", True, outline)
-                surface.blit(tag, (cx - tag.get_width() / 2,
-                                   cy - tag.get_height() / 2))
-
-        # Picked space + handles.
-        if m.selected_space is not None:
-            gi, si = m.selected_space
-            if 0 <= gi < len(m.groups) and 0 <= si < len(m.groups[gi].spaces):
-                picked = m.groups[gi].spaces[si]
-                pts = [(rect.x + c[0] * rect.w, rect.y + c[1] * rect.h)
-                       for c in picked.corners]
-                pygame.draw.polygon(surface, (255, 240, 120), pts, 2)
-                drag = m.drag
-                for ci, c in enumerate(picked.corners):
-                    hx = int(rect.x + c[0] * rect.w)
-                    hy = int(rect.y + c[1] * rect.h)
-                    is_dragging = (drag is not None
-                                   and drag.get("kind") == "corner"
-                                   and drag.get("space") == (gi, si)
-                                   and drag.get("corner") == ci)
-                    color = (255, 220, 80) if is_dragging else (255, 240, 180)
-                    pygame.draw.circle(surface, (20, 20, 30), (hx, hy), 6)
-                    pygame.draw.circle(surface, color, (hx, hy), 5)
-                    pygame.draw.circle(surface, (40, 40, 60), (hx, hy), 5, 1)
-
-        # Rubber-band rectangle while drag-creating.
-        if m.drag is not None and m.drag.get("kind") == "create":
-            sx, sy = m.drag["start"]
-            cx, cy = m.drag["current"]
-            x0 = int(rect.x + min(sx, cx) * rect.w)
-            x1 = int(rect.x + max(sx, cx) * rect.w)
-            y0 = int(rect.y + min(sy, cy) * rect.h)
-            y1 = int(rect.y + max(sy, cy) * rect.h)
-            pygame.draw.rect(surface, (200, 255, 200),
-                             pygame.Rect(x0, y0, x1 - x0, y1 - y0), 1)
-
-        # Hover toolbars — render on the selected space always, and on the
-        # hovered space when it's a different one. Reuses the manager's
-        # normalized-coord layout so the projector and HUD show the same
-        # buttons in the same relative positions.
-        for cand in {m.selected_space, m.hovered_space} - {None}:
-            self._draw_preview_toolbar(surface, *cand)
-
-    def _draw_preview_toolbar(self, surface, gi, si):
-        m = self.engine.mapping
-        rect = self._preview_rect
-        for kind, (nx, ny, nw, nh) in m.hover_toolbar_buttons(gi, si):
-            x0 = int(rect.x + nx * rect.w)
-            y0 = int(rect.y + ny * rect.h)
-            x1 = int(rect.x + (nx + nw) * rect.w)
-            y1 = int(rect.y + (ny + nh) * rect.h)
-            btn_rect = pygame.Rect(x0, y0, x1 - x0, y1 - y0)
-            pygame.draw.rect(surface, (28, 30, 40), btn_rect, border_radius=3)
-            pygame.draw.rect(surface, (200, 210, 230), btn_rect, 1, border_radius=3)
-            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-            r = max(2, min(x1 - x0, y1 - y0) // 4)
-            if kind == "delete":
-                pygame.draw.line(surface, (255, 90, 90),
-                                 (cx - r, cy - r), (cx + r, cy + r), 2)
-                pygame.draw.line(surface, (255, 90, 90),
-                                 (cx + r, cy - r), (cx - r, cy + r), 2)
-            elif kind == "bind":
-                pygame.draw.line(surface, (140, 230, 140),
-                                 (cx - r, cy), (cx + r, cy), 2)
-                pygame.draw.line(surface, (140, 230, 140),
-                                 (cx, cy - r), (cx, cy + r), 2)
-            elif kind == "unbind":
-                pygame.draw.line(surface, (255, 180, 80),
-                                 (cx - r, cy + r), (cx + r, cy - r), 2)
-                pygame.draw.rect(surface, (28, 30, 40),
-                                 pygame.Rect(cx - 1, cy - 1, 3, 3))
-            elif kind == "group":
-                label = self.font_s.render(f"G{gi + 1}", True, (220, 230, 250))
-                surface.blit(label,
-                             (cx - label.get_width() // 2,
-                              cy - label.get_height() // 2))
-
     def _draw_mapping_status(self, surface, x, y, width):
         e = self.engine
         g = e.mapping.selected_group()
@@ -441,65 +326,6 @@ class ControlWindow:
         )
         surface.blit(bvs, (sw.right + 6,
                            y + (bls.get_height() - bvs.get_height()) // 2))
-        y += 22
-
-        # Frame controls — fit mode, zoom, pan, reset. All clickable so
-        # the operator can compose the per-group video framing without
-        # touching the keyboard.
-        self._draw_frame_panel(surface, g, x, y, width)
-
-    def _draw_frame_panel(self, surface, group, x, y, width):
-        """Per-group video framing controls: fit mode cycler, zoom ± /
-        reset, pan arrows. Rebuilds _frame_btn_rects each frame."""
-        self._frame_btn_rects = []
-        title = self.font_m.render("FRAME", True, (130, 130, 160))
-        surface.blit(title, (x, y))
-        # Fit-mode pill, click-to-cycle.
-        pill_label = f" {group.fit_mode} "
-        pill_txt = self.font_s.render(pill_label, True, (20, 20, 30))
-        pill_rect = pygame.Rect(x + 78, y + 1, pill_txt.get_width() + 8, 16)
-        pygame.draw.rect(surface, (180, 200, 240), pill_rect, border_radius=3)
-        pygame.draw.rect(surface, (90, 110, 160), pill_rect, 1, border_radius=3)
-        surface.blit(pill_txt, (pill_rect.x + 4,
-                                pill_rect.y + (pill_rect.h - pill_txt.get_height()) // 2))
-        self._frame_btn_rects.append(("cycle_fit", (), pill_rect))
-        # Zoom +/- and reset, on the same row.
-        bx = pill_rect.right + 8
-        for label, action, args in (("−", "zoom_out", (1 / 1.15,)),
-                                    ("+", "zoom_in", (1.15,)),
-                                    ("RESET", "reset", ())):
-            txt = self.font_s.render(f" {label} ", True, (240, 240, 250))
-            btn = pygame.Rect(bx, y + 1, txt.get_width() + 8, 16)
-            pygame.draw.rect(surface, (40, 50, 70), btn, border_radius=3)
-            pygame.draw.rect(surface, (90, 110, 140), btn, 1, border_radius=3)
-            surface.blit(txt, (btn.x + 4,
-                               btn.y + (btn.h - txt.get_height()) // 2))
-            self._frame_btn_rects.append((action, args, btn))
-            bx = btn.right + 6
-        y += 20
-
-        # Pan arrows + readout.
-        pan_label = self.font_s.render(
-            f"zoom {group.zoom:.2f} · pan {group.pan_x:+.2f}, {group.pan_y:+.2f}",
-            True, (170, 170, 200),
-        )
-        surface.blit(pan_label, (x, y + 4))
-        # Arrow cluster, right-aligned.
-        ax = x + width - (22 * 3 + 4)
-        ay = y
-        step = 0.1
-        arrows = [("◀", "pan", (-step, 0.0), (ax,        ay + 11)),
-                  ("▲", "pan", (0.0, -step), (ax + 22,   ay)),
-                  ("▼", "pan", (0.0, step),  (ax + 22,   ay + 22)),
-                  ("▶", "pan", (step, 0.0),  (ax + 44,   ay + 11))]
-        for label, action, args, pos in arrows:
-            txt = self.font_s.render(label, True, (240, 240, 250))
-            btn = pygame.Rect(pos[0], pos[1], 18, 18)
-            pygame.draw.rect(surface, (40, 50, 70), btn, border_radius=3)
-            pygame.draw.rect(surface, (90, 110, 140), btn, 1, border_radius=3)
-            surface.blit(txt, (btn.x + (btn.w - txt.get_width()) // 2,
-                               btn.y + (btn.h - txt.get_height()) // 2))
-            self._frame_btn_rects.append((action, args, btn))
 
     def _draw_groups_list(self, surface, x, y, width):
         e = self.engine

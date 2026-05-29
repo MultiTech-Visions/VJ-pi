@@ -309,6 +309,26 @@ class Engine:
     def browse_generatives(self, step):
         if not GENERATIVES:
             return
+        if self._in_mapping():
+            # The group's gen_name is the source of truth in mapping mode —
+            # using active_generative (a non-mapping field) would keep
+            # picking the same starting idx every press, which makes
+            # select_generative's toggle-off path fire every other step.
+            g = self.mapping.selected_group()
+            if g is None:
+                return
+            if g.content_kind == "generative" and g.gen_name in GENERATIVES:
+                idx = GENERATIVES.index(g.gen_name)
+            else:
+                idx = -step  # so (idx + step) lands on 0 / last
+            new_idx = (idx + step) % len(GENERATIVES)
+            new_name = GENERATIVES[new_idx]
+            self.current_generator_idx = new_idx
+            self._generator_activation_token += 1
+            g.content_kind = "generative"
+            g.gen_name = new_name
+            self._persist_mapping()
+            return
         if self.active_generative in GENERATIVES:
             idx = GENERATIVES.index(self.active_generative)
         else:
@@ -759,6 +779,38 @@ class Engine:
                 # Tap the group chip to make this space the picked one.
                 m.select_space(gi, si)
                 self._persist_mapping()
+            elif kind == "fit":
+                m.select_space(gi, si)
+                m.cycle_fit_mode(1)
+                self._persist_mapping()
+            elif kind == "zoom_in":
+                m.select_space(gi, si)
+                m.adjust_zoom(1.15)
+                self._persist_mapping()
+            elif kind == "zoom_out":
+                m.select_space(gi, si)
+                m.adjust_zoom(1 / 1.15)
+                self._persist_mapping()
+            elif kind == "reset":
+                m.select_space(gi, si)
+                m.reset_frame()
+                self._persist_mapping()
+            elif kind == "pan_left":
+                m.select_space(gi, si)
+                m.adjust_pan(-0.1, 0.0)
+                self._persist_mapping()
+            elif kind == "pan_right":
+                m.select_space(gi, si)
+                m.adjust_pan(0.1, 0.0)
+                self._persist_mapping()
+            elif kind == "pan_up":
+                m.select_space(gi, si)
+                m.adjust_pan(0.0, -0.1)
+                self._persist_mapping()
+            elif kind == "pan_down":
+                m.select_space(gi, si)
+                m.adjust_pan(0.0, 0.1)
+                self._persist_mapping()
             return
 
         # 2. Keyboard-fallback Shift+click bind / bind-armed.
@@ -1002,9 +1054,18 @@ class Engine:
         canvas = self._apply_hits(canvas)
         if self.mapping.show_borders:
             self._draw_selection_border(canvas)
-        if self.mapping.edit_mode:
-            self._draw_edit_overlay(canvas)
+        # Edit-mode chrome (outlines, handles, hover toolbars, rubber-band)
+        # is applied later by apply_projector_chrome() so the HUD preview
+        # stays a clean projection of the output.
         return canvas
+
+    def apply_projector_chrome(self, frame):
+        """Mapping-edit chrome that should appear on the PROJECTOR only —
+        not the HUD preview. Mutates `frame` in place when active. Called
+        between compose and projector blit; the HUD render gets the
+        un-chromed frame."""
+        if self.mode == "mapping" and self.mapping.edit_mode:
+            self._draw_edit_overlay(frame)
 
     def _compose_group_source(self, group, now):
         """Build the unwarped source frame for one group (clip / gen / FX).
@@ -1354,6 +1415,45 @@ class Engine:
                 ty = cy + th // 2
                 cv2.putText(canvas, label, (tx, ty), font, scale,
                             (220, 230, 250), 1, cv2.LINE_AA)
+            elif kind == "fit":
+                label = self.mapping.groups[gi].fit_mode
+                scale = max(0.3, (y1 - y0) / 50.0)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
+                tx = cx - tw // 2
+                ty = cy + th // 2
+                cv2.putText(canvas, label, (tx, ty), font, scale,
+                            (180, 200, 240), 1, cv2.LINE_AA)
+            elif kind == "zoom_in":
+                col = (200, 220, 255)
+                cv2.line(canvas, (cx - r, cy), (cx + r, cy), col, 2, cv2.LINE_AA)
+                cv2.line(canvas, (cx, cy - r), (cx, cy + r), col, 2, cv2.LINE_AA)
+            elif kind == "zoom_out":
+                col = (200, 220, 255)
+                cv2.line(canvas, (cx - r, cy), (cx + r, cy), col, 2, cv2.LINE_AA)
+            elif kind == "reset":
+                col = (220, 220, 240)
+                scale = max(0.3, (y1 - y0) / 40.0)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                label = "R"
+                (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
+                cv2.putText(canvas, label, (cx - tw // 2, cy + th // 2),
+                            font, scale, col, 1, cv2.LINE_AA)
+            elif kind in ("pan_left", "pan_right", "pan_up", "pan_down"):
+                col = (180, 220, 180)
+                if kind == "pan_left":
+                    pts = np.array([[cx + r, cy - r], [cx - r, cy],
+                                    [cx + r, cy + r]], dtype=np.int32)
+                elif kind == "pan_right":
+                    pts = np.array([[cx - r, cy - r], [cx + r, cy],
+                                    [cx - r, cy + r]], dtype=np.int32)
+                elif kind == "pan_up":
+                    pts = np.array([[cx - r, cy + r], [cx, cy - r],
+                                    [cx + r, cy + r]], dtype=np.int32)
+                else:  # pan_down
+                    pts = np.array([[cx - r, cy - r], [cx + r, cy - r],
+                                    [cx, cy + r]], dtype=np.int32)
+                cv2.fillPoly(canvas, [pts], col, cv2.LINE_AA)
 
     def blit_to_output(self, frame):
         surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
@@ -1373,7 +1473,10 @@ class Engine:
     def render(self):
         """Convenience: compose + blit (used when there is no control window)."""
         frame = self.compose_frame()
-        self.blit_to_output(frame)
+        proj = frame.copy() if (self.mode == "mapping"
+                                and self.mapping.edit_mode) else frame
+        self.apply_projector_chrome(proj)
+        self.blit_to_output(proj)
         return frame
 
     def run(self, control=None):
@@ -1493,7 +1596,10 @@ class Engine:
             self.update_params_from_keys(dt)
             self.update_held_hits(HIT_KEYS)
             frame = self.compose_frame()
-            self.blit_to_output(frame)
+            proj = frame.copy() if (self.mode == "mapping"
+                                    and self.mapping.edit_mode) else frame
+            self.apply_projector_chrome(proj)
+            self.blit_to_output(proj)
             if control is not None:
                 control.render(frame)
             self._flush_mapping_persist()
