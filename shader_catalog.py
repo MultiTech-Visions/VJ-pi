@@ -355,8 +355,7 @@ vec4 eye(vec2 p, vec2 c, float r, float seed) {
                    hash(seg + seed * 3.0 + 9.0) - 0.5) * 2.0;
     vec2 gc = vec2(hash(seg + 1.0 + seed * 3.0) - 0.5,
                    hash(seg + 1.0 + seed * 3.0 + 9.0) - 0.5) * 2.0;
-    vec2 gaze = mix(gp, gc, smoothstep(0.0, 0.12, f)) * 0.45;
-    gaze += 0.04 * vec2(sin(time * 13.0 + seed), cos(time * 11.0 + seed));
+    vec2 gaze = mix(gp, gc, smoothstep(0.0, 0.12, f)) * 0.45;   // hold steady, no tremor
 
     vec2 iq = q - gaze;
     float di = length(iq);
@@ -374,7 +373,15 @@ vec4 eye(vec2 p, vec2 c, float r, float seed) {
     iris *= 1.0 - smoothstep(ri - 0.08, ri, di) * 0.7;     // limbal ring
     col = mix(col, iris, smoothstep(ri, ri - 0.02, di));
 
-    float rp = 0.17 + 0.04 * sin(time * 0.6 + seed * 5.0); // dilating pupil
+    // pupil holds, then snaps to a new size (<0.25 s) at a random moment,
+    // independently per eye (seed-driven) — no steady gradient.
+    float pd = time * 0.45 + seed * 3.0;
+    float pseg = floor(pd);
+    float pf = fract(pd);
+    float prevR = mix(0.12, 0.26, hash(pseg + seed));
+    float curR  = mix(0.12, 0.26, hash(pseg + 1.0 + seed));
+    float ptrig = 0.15 + 0.6 * hash(pseg + seed * 2.0);
+    float rp = mix(prevR, curR, smoothstep(ptrig, ptrig + 0.10, pf));
     col = mix(col, vec3(0.02), smoothstep(rp, rp - 0.02, di));
 
     vec2 hl = q - vec2(-0.18, 0.22);                        // corneal highlight
@@ -781,19 +788,22 @@ varying vec2 v_texcoord;
 uniform float time;
 
 // Markus-Lyapunov fractal. For each pixel (a, b) we run the logistic
-// map with r alternating along the sequence AABAB and accumulate the
-// Lyapunov exponent. Negative (stable) -> warm bands, positive
-// (chaotic) -> dark. The (a, b) window drifts with time.
+// map, choosing r from a binary A/B sequence and accumulating the
+// Lyapunov exponent. The sequence itself slowly rotates with time, so
+// the whole landscape morphs in place (the flames writhe) rather than
+// sitting static. Negative (stable) -> warm bands, positive -> dark.
 void main() {
     vec2 uv = v_texcoord;
     float t = time;
-    float a = 2.7 + uv.x * 1.3 + 0.15 * sin(t * 0.08);
-    float b = 2.7 + uv.y * 1.3 + 0.15 * cos(t * 0.07);
+    float a = 2.6 + uv.x * 1.4;
+    float b = 2.6 + uv.y * 1.4;
     float x = 0.5;
     float lyap = 0.0;
     for (int i = 0; i < 64; i++) {
-        float m = mod(float(i), 5.0);
-        float r = ((m > 1.5 && m < 2.5) || (m > 3.5)) ? b : a;   // AABAB
+        // Aperiodic A/B sequence (golden-ratio step) that drifts with
+        // time -> the Lyapunov structure continuously reshapes.
+        float sel = fract(float(i) * 0.61803 + t * 0.05);
+        float r = mix(a, b, smoothstep(0.47, 0.53, sel));
         x = r * x * (1.0 - x);
         x = clamp(x, 0.0001, 0.9999);
         if (i > 8) { lyap += log(abs(r * (1.0 - 2.0 * x)) + 1e-9); }

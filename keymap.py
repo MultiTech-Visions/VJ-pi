@@ -74,6 +74,7 @@ FX_KEYS = {
     pygame.K_F5: "posterize",
     pygame.K_F6: "edges",
     pygame.K_F7: "rgb_split",
+    pygame.K_F8: "melt",
 }
 
 
