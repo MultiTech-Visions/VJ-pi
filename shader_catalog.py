@@ -191,6 +191,132 @@ void main() {
 
 DONUT_SHADER = "#version 100\n#ifdef GL_ES\nprecision highp float;\n#endif\nvarying vec2 v_texcoord;\nuniform float time;\nuniform sampler2D tex;\n\nconst float PI = 3.14159265359;\n\nfloat sdTorus(vec3 p, vec2 t) {\n    vec2 q = vec2(length(p.xz) - t.x, p.y);\n    return length(q) - t.y;\n}\n\nvec3 rotY(vec3 p, float a) {\n    float c = cos(a), s = sin(a);\n    return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);\n}\nvec3 rotX(vec3 p, float a) {\n    float c = cos(a), s = sin(a);\n    return vec3(p.x, c * p.y - s * p.z, s * p.y + c * p.z);\n}\n\nfloat map(vec3 p) {\n    p = rotY(p, time * 0.5);\n    p = rotX(p, time * 0.3);\n    return sdTorus(p, vec2(1.0, 0.4));\n}\n\n// Map a 3D point on the torus surface to a (u, v) coordinate\n// suitable for sampling the input texture. Inverts the rotation\n// we applied in `map` so the texture sticks to the torus rather\n// than spinning past it.\nvec2 torusUV(vec3 p_world) {\n    vec3 p = rotX(p_world, -time * 0.3);\n    p = rotY(p, -time * 0.5);\n    float u = atan(p.z, p.x);            // -PI..PI around major\n    vec2 q = vec2(length(p.xz), p.y);\n    vec2 dq = q - vec2(1.0, 0.0);        // R = 1.0\n    float v = atan(dq.y, dq.x);          // -PI..PI around minor\n    return vec2((u + PI) / (2.0 * PI),\n                (v + PI) / (2.0 * PI));\n}\n\nvoid main() {\n    vec2 uv_scr = v_texcoord - 0.5;\n    uv_scr.x *= 1280.0 / 720.0;\n    vec3 ro = vec3(0.0, 0.0, -3.0);\n    vec3 rd = normalize(vec3(uv_scr, 1.0));\n    float t = 0.0;\n    bool hit = false;\n    for (int i = 0; i < 64; i++) {\n        vec3 pos = ro + rd * t;\n        float d = map(pos);\n        if (d < 0.001) { hit = true; break; }\n        t += d;\n        if (t > 10.0) break;\n    }\n    if (!hit) {\n        gl_FragColor = vec4(0.0, 0.0, 0.05, 1.0);\n        return;\n    }\n    vec3 hit_pos = ro + rd * t;\n    vec2 tex_uv = torusUV(hit_pos);\n    // Slow scroll around the major circumference — the image\n    // wraps around the donut like a label on a tin can.\n    tex_uv.x = fract(tex_uv.x + time * 0.05);\n    vec3 col = texture2D(tex, tex_uv).rgb;\n    // Simple depth darken so the back of the donut isn't full\n    // bright — gives it a hint of 3D form.\n    float depth = t / 10.0;\n    col *= 1.0 - depth * 0.4;\n    gl_FragColor = vec4(col, 1.0);\n}\n"
 
+EYEBALL_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+vec2 hash2(vec2 p) {
+    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)),
+                          dot(p, vec2(269.5, 183.3)))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+    float v = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 4; i++) {
+        v += amp * noise(p);
+        p *= 2.0;
+        amp *= 0.5;
+    }
+    return v;
+}
+
+// Where is the eye looking? It snaps to a fresh random target every
+// couple of seconds (a saccade): a quick dart into place, then a
+// hold, plus a tiny tremor so it never sits perfectly still. All
+// derived from `time` — no CPU-side state needed.
+vec2 gaze() {
+    float seg = floor(time * 0.45);
+    float f = fract(time * 0.45);
+    vec2 prev = (hash2(vec2(seg,       1.0)) - 0.5) * 2.0;
+    vec2 cur  = (hash2(vec2(seg + 1.0, 1.0)) - 0.5) * 2.0;
+    float dart = smoothstep(0.0, 0.12, f);   // fast flick at segment start
+    vec2 g = mix(prev, cur, dart);
+    g += 0.03 * vec2(sin(time * 13.0), cos(time * 11.0));  // tremor
+    return g * 0.12;                          // keep iris inside the sclera
+}
+
+void main() {
+    vec2 p = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
+
+    vec3 bg = vec3(0.015, 0.02, 0.03);
+    vec3 col = bg;
+
+    float R = 0.42;                 // eyeball radius
+    float d = length(p);
+    float eyeMask = smoothstep(R, R - 0.01, d);
+
+    // --- sclera (white of the eye) with faint red veins ---------
+    vec3 sclera = vec3(0.95, 0.95, 0.93);
+    float veins = fbm(p * 9.0 + 5.0);
+    veins = smoothstep(0.55, 0.75, veins);
+    veins *= smoothstep(0.10, R, d);        // sparse near the iris, more at the rim
+    sclera = mix(sclera, vec3(0.85, 0.25, 0.22), veins * 0.45);
+    sclera *= 0.82 + 0.18 * smoothstep(R, -R, p.y - p.x);  // soft top-left lighting
+
+    vec3 eye = sclera;
+
+    // --- iris ---------------------------------------------------
+    vec2 g = gaze();
+    vec2 q = p - g;
+    float di = length(q);
+    float ang = atan(q.y, q.x);
+    float ri = 0.17;                // iris radius
+
+    float irisHue = fract(0.58 + time * 0.02);     // slow cool-tone drift
+    float fib  = 0.5 + 0.5 * sin(ang * 38.0 + sin(ang * 7.0) * 2.0);
+    float fib2 = 0.5 + 0.5 * sin(ang * 90.0 - di * 30.0);
+    float fiber = mix(fib, fib2, 0.4);             // radial fibres
+    float radial = smoothstep(0.0, ri, di);        // darker centre → bright edge
+    float irisVal = 0.35 + 0.5 * fiber * radial;
+    vec3 iris = hsv2rgb(vec3(irisHue + fiber * 0.04, 0.75, irisVal));
+    iris *= 1.0 - smoothstep(ri - 0.03, ri, di) * 0.7;   // dark limbal ring
+    float irisMask = smoothstep(ri, ri - 0.008, di);
+    eye = mix(eye, iris, irisMask);
+
+    // --- pupil (dilates a touch for some life) ------------------
+    float rp = 0.062 + 0.016 * sin(time * 0.6);
+    float pupilMask = smoothstep(rp, rp - 0.006, di);
+    eye = mix(eye, vec3(0.02), pupilMask);
+
+    // --- corneal highlights (fixed, like real reflections) ------
+    vec2 hl = p - vec2(-0.07, 0.09);
+    eye += exp(-dot(hl, hl) * 240.0) * 0.9;
+    vec2 hl2 = p - vec2(0.05, -0.04);
+    eye += exp(-dot(hl2, hl2) * 900.0) * 0.3;
+
+    col = mix(bg, eye, eyeMask);
+
+    // --- blink: lids sweep shut briefly every ~6s ---------------
+    float bp = fract(time * 0.16);
+    float blink = smoothstep(0.0, 0.03, bp) * smoothstep(0.11, 0.07, bp);
+    float ap = mix(R + 0.05, 0.0, blink);          // vertical aperture
+    float lidCurve = ap * (1.0 - 0.25 * (p.x / R) * (p.x / R));
+    float lidMask = (abs(p.y) > lidCurve) ? eyeMask : 0.0;
+    vec3 lid = vec3(0.45, 0.30, 0.26);
+    lid *= 0.7 + 0.3 * smoothstep(R, -R, p.y);
+    float crease = smoothstep(0.02, 0.0, abs(abs(p.y) - lidCurve)) * eyeMask;
+    col = mix(col, lid, lidMask);
+    col = mix(col, lid * 0.5, crease * 0.6);
+
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
     'tunnel': TUNNEL_SHADER,
@@ -207,6 +333,7 @@ GPU_GENERATORS = {
     'linea': LINEA_SHADER,
     'lenia': LENIA_SHADER,
     'grayscott': GRAYSCOTT_SHADER,
+    'eyeball': EYEBALL_SHADER,
     'donut': DONUT_SHADER,
 }
 
