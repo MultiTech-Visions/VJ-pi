@@ -205,6 +205,15 @@ class ControlWindow:
 
         # ── Top row: preview (left) + status (right) ─────────────
         self._draw_preview(surface, pad, pad, frame)
+        # FPS readout overlaid on the preview (top-left), colour-coded so
+        # performance is visible at a glance: green ≥25, amber ≥15, red below.
+        fps = getattr(e, "fps_measured", 0.0)
+        fcol = (120, 230, 140) if fps >= 25.0 else (240, 220, 120) if fps >= 15.0 else (240, 120, 120)
+        fps_txt = "%.0f FPS" % fps
+        shadow = self.font_m.render(fps_txt, True, (0, 0, 0))
+        label = self.font_m.render(fps_txt, True, fcol)
+        surface.blit(shadow, (pad + 5, pad + 5))
+        surface.blit(label, (pad + 4, pad + 4))
         if mapping_mode:
             self._draw_space_overlay(surface)
         sx = pad + self.preview_w + 16

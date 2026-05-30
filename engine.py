@@ -66,6 +66,7 @@ class Engine:
         self.w, self.h = cfg.width, cfg.height
         self.clock = pygame.time.Clock()
         self.start_time = time.time()
+        self.fps_measured = 0.0   # smoothed achieved frame rate, shown on the HUD
 
         self.clips = ClipPool(cfg.clips_dir, (self.w, self.h))
         self.overlays = ClipPool(cfg.overlays_dir, (self.w, self.h))
@@ -1559,6 +1560,10 @@ class Engine:
 
             dt = now - last_t
             last_t = now
+            if dt > 1e-6:
+                # Smoothed achieved fps (dt includes the clock.tick cap, so
+                # this reads the real rate, capped at cfg.fps).
+                self.fps_measured += (1.0 / dt - self.fps_measured) * 0.15
             self.update_auto(now)
             self.update_params_from_keys(dt)
             self.update_held_hits(HIT_KEYS)
