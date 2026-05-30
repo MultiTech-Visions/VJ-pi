@@ -1144,6 +1144,17 @@ class Engine:
         # all are shape-agnostic.
         if any(group.fx_state.values()):
             _tf = time.perf_counter()
+            # Heavy FX (kaleidoscope especially) cost per output pixel, so
+            # drop the source to fx_render_scale before running them — the
+            # group gets warped onto a quad anyway, so the detail loss is
+            # minor. Clips render at full canvas res, so this is where it
+            # pays off; generators are already small (no-op for them).
+            fxs = getattr(self.cfg, "fx_render_scale", 1.0)
+            _tw2, _th2 = max(64, int(self.w * fxs)), max(36, int(self.h * fxs))
+            if fw > _tw2 or fh > _th2:
+                frame = cv2.resize(frame, (_tw2, _th2),
+                                   interpolation=cv2.INTER_AREA)
+                fh, fw = frame.shape[:2]
             ctx = EffectContext(fw, fh,
                                 now - self.start_time + group._time_offset,
                                 (group.param_x, group.param_y))

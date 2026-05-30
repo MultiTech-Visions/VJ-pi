@@ -32,6 +32,11 @@ def parse_args():
                         "resolution and upscale on the way out (0.1..1.0, "
                         "default 0.5). 0.33 is great for smooth patterns; "
                         "1.0 disables the optimisation. Clips are unaffected.")
+    p.add_argument("--fx-render-scale", type=float, default=0.5,
+                   help="Run per-group FX at this fraction of canvas "
+                        "(0.1..1.0, default 0.5). Big speedup for heavy FX "
+                        "like kaleidoscope in mapping mode (the result is "
+                        "warped onto a quad anyway); 1.0 = full-res FX.")
     return p.parse_args()
 
 
@@ -142,6 +147,7 @@ def main():
         width=args.width, height=args.height, fps=args.fps,
         fullscreen=args.fullscreen, display=display,
         gen_render_scale=max(0.1, min(1.0, args.gen_render_scale)),
+        fx_render_scale=max(0.1, min(1.0, args.fx_render_scale)),
     )
 
     output_screen = _open_output_window(cfg)

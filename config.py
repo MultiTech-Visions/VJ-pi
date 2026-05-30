@@ -23,6 +23,13 @@ class Config:
     # the heavy ones (waves / moire / metaballs). 1.0 = no scaling.
     gen_render_scale: float = 0.5
 
+    # Per-group FX (kaleidoscope, edges, rgb_split…) cost the same per
+    # output pixel regardless of source detail, and in mapping mode the
+    # result is warped onto a quad anyway. Run FX-bearing group sources at
+    # this fraction of canvas first — 0.5 is ~4× cheaper on kaleidoscope,
+    # the heaviest effect. 1.0 = run FX at full source resolution (sharper).
+    fx_render_scale: float = 0.5
+
     @property
     def clips_dir(self) -> Path:
         return self.assets_dir / "clips"
