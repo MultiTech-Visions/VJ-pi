@@ -167,6 +167,7 @@ def main():
         mapping_threads=(args.mapping_threads if args.mapping_threads >= 1
                          else min(4, os.cpu_count() or 1)),
         display_filter=args.display_filter,
+        gpu_scale=args.gpu_scale,
     )
 
     # Two window layouts, both with exactly ONE GL context (the V3D rule):
