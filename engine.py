@@ -1052,6 +1052,12 @@ class Engine:
             frame = self._apply_overlay(frame)
             frame = self._apply_hits(frame)
 
+        # Pause any GPU generator worker that wasn't drawn this frame so
+        # off-screen generators stop churning V3D. Edge-triggered inside the
+        # bridge — only acts on the transition to idle — so this is a couple
+        # of set checks in steady state, not per-frame work.
+        self.gpu_generators.pause_idle()
+
         if not self.freeze:
             self.prev_frame = frame
         return frame
