@@ -85,7 +85,6 @@ class ControlWindow:
         self.font_h = pygame.font.SysFont("Sans,Arial,DejaVuSans", 18, bold=True)
         self.font_m = pygame.font.SysFont("Sans,Arial,DejaVuSans", 14)
         self.font_s = pygame.font.SysFont("Sans,Arial,DejaVuSans", 12)
-        self.font_fps = pygame.font.SysFont("Sans,Arial,DejaVuSans", 30, bold=True)
 
         # Hit-test rects, populated each frame in render().
         self._display_btn_rects = []  # [(idx, pygame.Rect), ...]
@@ -220,7 +219,7 @@ class ControlWindow:
         y = pad + self.preview_h + 6
         fps = getattr(e, "fps_measured", 0.0)
         fcol = (110, 230, 130) if fps >= 25.0 else (245, 215, 110) if fps >= 15.0 else (240, 90, 90)
-        fps_surf = self.font_fps.render("%.0f FPS" % fps, True, fcol)
+        fps_surf = self.font_h.render("%.0f FPS" % fps, True, fcol)
         surface.blit(fps_surf, (pad, y))
         y += fps_surf.get_height() + 8
 
