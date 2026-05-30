@@ -26,6 +26,12 @@ class EffectContext:
 
 _GRID_CACHE = {}
 
+# kaleidoscope's remap maps depend only on (w, h, segments) — never on the
+# pixels — so cache them. The trig (sqrt/arctan2/cos/sin over a full grid) is
+# the expensive, GIL-bound part; caching reduces each frame to a single
+# cv2.remap (GIL-free, so it also parallelises in threaded mapping mode).
+_KALEIDO_CACHE = {}
+
 
 def _grid(w, h):
     key = (w, h)
@@ -250,15 +256,26 @@ def metaballs(ctx, n=6):
 
 def kaleidoscope(src, segments=6):
     h, w = src.shape[:2]
-    cx, cy = w * 0.5, h * 0.5
-    y, x = _grid(w, h)
-    dx, dy = x - cx, y - cy
-    r = np.sqrt(dx * dx + dy * dy)
-    a = np.arctan2(dy, dx)
-    seg_a = 2 * np.pi / max(1, segments)
-    a = np.abs((a % seg_a) - seg_a * 0.5)
-    nx = (cx + r * np.cos(a)).astype(np.float32)
-    ny = (cy + r * np.sin(a)).astype(np.float32)
+    segments = int(segments)
+    key = (w, h, segments)
+    maps = _KALEIDO_CACHE.get(key)
+    if maps is None:
+        cx, cy = w * 0.5, h * 0.5
+        y, x = _grid(w, h)
+        dx, dy = x - cx, y - cy
+        r = np.sqrt(dx * dx + dy * dy)
+        a = np.arctan2(dy, dx)
+        seg_a = 2 * np.pi / max(1, segments)
+        a = np.abs((a % seg_a) - seg_a * 0.5)
+        nx = (cx + r * np.cos(a)).astype(np.float32)
+        ny = (cy + r * np.sin(a)).astype(np.float32)
+        # Bound the cache — segments animates with param_x, so a handful of
+        # (size × segments) combos can accumulate over a long set.
+        if len(_KALEIDO_CACHE) > 64:
+            _KALEIDO_CACHE.clear()
+        maps = (nx, ny)
+        _KALEIDO_CACHE[key] = maps
+    nx, ny = maps
     return cv2.remap(src, nx, ny, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
 
 
