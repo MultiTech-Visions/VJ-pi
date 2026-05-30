@@ -1057,7 +1057,7 @@ class Engine:
             # and hits — those expect canvas-sized buffers.
             if frame.shape[:2] != (self.h, self.w):
                 frame = cv2.resize(frame, (self.w, self.h),
-                                   interpolation=cv2.INTER_LINEAR)
+                                   interpolation=cv2.INTER_CUBIC)
             if self.fx_state.get("melt"):
                 frame = self._apply_melt(frame, ctx)
             frame = self._apply_overlay(frame)
@@ -1324,7 +1324,7 @@ class Engine:
         if x1 <= x0 or y1 <= y0:
             return  # Mask and video don't overlap.
 
-        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
         resized = cv2.resize(source, (dw, dh), interpolation=interp)
 
         sx0, sy0 = x0 - dx, y0 - dy
@@ -1499,17 +1499,17 @@ class Engine:
                 cv2.fillPoly(canvas, [pts], col, cv2.LINE_AA)
 
     def blit_to_output(self, frame):
-        surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
-        target_size = self.screen.get_size()
-        if target_size != (self.w, self.h):
-            # smoothscale (bilinear) instead of scale (nearest-neighbour)
-            # — looks dramatically less pixelated when the render res
-            # doesn't match the display res. smoothscale only supports
-            # 24/32-bit surfaces, hence the fallback.
-            try:
-                surface = pygame.transform.smoothscale(surface, target_size)
-            except (ValueError, pygame.error):
-                surface = pygame.transform.scale(surface, target_size)
+        tw, th = self.screen.get_size()
+        if (tw, th) != (self.w, self.h):
+            # Bicubic (cv2) for the final upscale to the display — sharper
+            # and less blocky than pygame's bilinear smoothscale, especially
+            # for generators that started below canvas resolution. cv2 takes
+            # (width, height); frame is (h, w, 3). Cubic on uint8 is
+            # saturate-clamped internally, so no overshoot wrap-around.
+            frame = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_CUBIC)
+            surface = pygame.image.frombuffer(frame.tobytes(), (tw, th), "RGB")
+        else:
+            surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
         self.screen.blit(surface, (0, 0))
         pygame.display.flip()
 
