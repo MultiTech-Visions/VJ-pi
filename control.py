@@ -57,7 +57,8 @@ class ControlWindow:
 
     PREVIEW_TARGET_H = 180  # tall enough to read, narrow enough to share the row
 
-    def __init__(self, engine, window, renderer, size, preview_size):
+    def __init__(self, engine, window, renderer, size, preview_size,
+                 software_surface=None):
         # Texture is only needed for the GPU present path (renderer set).
         Texture = None
         if renderer is not None:
@@ -65,6 +66,9 @@ class ControlWindow:
         self.engine = engine
         self.window = window
         self.renderer = renderer  # None when the output owns the GL renderer
+        # software_surface set (under --gpu-scale): the HUD is the
+        # pygame.display window and we present by blitting to it + flip().
+        self.software_surface = software_surface
         self.size = size  # (w, h)
         self.surface = pygame.Surface(size)
 
@@ -261,24 +265,18 @@ class ControlWindow:
             )
             surface.blit(src, (pad, y))
 
-        # Present the composed surface. With a renderer (HUD owns the single
-        # GL context) upload as a texture; without one (the OUTPUT owns the
-        # renderer under --gpu-scale) blit to the window's software surface,
-        # so the process still has exactly one GL context.
+        # Present the composed surface. Either the HUD owns the single GL
+        # context (renderer set → texture upload), or — under --gpu-scale —
+        # the HUD is the pygame.display software window (blit + flip). One GL
+        # context in the process either way.
         if self.renderer is not None:
             tex = self._Texture.from_surface(self.renderer, surface)
             self.renderer.clear()
             tex.draw()
             self.renderer.present()
-        else:
-            try:
-                win_surf = self.window.get_surface()
-                win_surf.blit(surface, (0, 0))
-                self.window.flip()
-            except Exception:
-                # If this SDL build lacks the software window-surface API the
-                # HUD simply won't update; the projector output is unaffected.
-                pass
+        elif self.software_surface is not None:
+            self.software_surface.blit(surface, (0, 0))
+            pygame.display.flip()
 
     # ── Panel parts ──────────────────────────────────────────────────
 

@@ -47,7 +47,7 @@ fi
 # Only pass --output-display when no saved choice exists; that way the
 # HUD picker's persistent selection always wins. Uncomment the second
 # block instead if you want this script to override the saved state.
-ARGS=( --fullscreen --control --control-display "$CONTROL_DISPLAY" --control-size "$CONTROL_SIZE" )
+ARGS=( --fullscreen --gpu-scale --control --control-display "$CONTROL_DISPLAY" --control-size "$CONTROL_SIZE" )
 if [ ! -f vj_state.json ]; then
   ARGS+=( --output-display "$OUTPUT_DISPLAY" )
 fi

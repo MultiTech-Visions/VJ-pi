@@ -60,6 +60,12 @@ def _coerce_favs(value):
     return [v if isinstance(v, str) else None for v in padded]
 
 
+def _window_pos_for(display_idx):
+    """SDL 'centered on display N' magic position, used for _sdl2 Windows."""
+    centered = 0x2FFF0000 | (display_idx & 0xFFFF)
+    return (centered, centered)
+
+
 class Engine:
     def __init__(self, cfg, screen):
         self.cfg = cfg
@@ -620,6 +626,24 @@ class Engine:
         state["output_display"] = new_idx
         save_state(state)
 
+        # GPU output owns an _sdl2 Window — move/resize IT rather than
+        # set_mode (which is for the plain display-module window). Rebuild the
+        # renderer on the moved window so the GL context follows the projector.
+        if self._gpu_out is not None:
+            try:
+                win = self._gpu_out["win"]
+                if self.cfg.fullscreen:
+                    try:
+                        dw, dh = pygame.display.get_desktop_sizes()[new_idx]
+                    except (pygame.error, IndexError, AttributeError):
+                        dw, dh = self.w, self.h
+                    win.size = (dw, dh)
+                win.position = _window_pos_for(new_idx)
+                print(f"[vj] output → display {new_idx} (gpu-scale)")
+            except Exception as exc:
+                print(f"[vj] gpu-scale display move failed: {exc!r}")
+            return
+
         if self.cfg.fullscreen:
             try:
                 sizes = pygame.display.get_desktop_sizes()
@@ -777,7 +801,7 @@ class Engine:
         cfg.width/height."""
         if not (self.mode == "mapping" and self.mapping.edit_mode):
             return
-        sw, sh = self.screen.get_size()
+        sw, sh = self._output_size()
         m = self.mapping
 
         if event.type == pygame.MOUSEMOTION:
@@ -1572,57 +1596,71 @@ class Engine:
                 cv2.putText(canvas, label, (tx, ty), font, scale,
                             (220, 230, 250), 1, cv2.LINE_AA)
 
-    def init_gpu_output(self):
-        """Attach a single SDL Renderer to the OUTPUT window so the canvas is
-        scaled to the display on the GPU. Only one renderer exists in the
-        process (the V3D rule); when this is active the HUD runs in software.
+    def _output_size(self):
+        """Output window pixel size — works for both the pygame.display
+        Surface (.get_size()) and the _sdl2 GPU Window (.size)."""
+        scr = self.screen
+        if hasattr(scr, "get_size"):
+            return scr.get_size()
+        return scr.size
 
-        Returns True on success. On ANY failure it leaves _gpu_out = None and
-        returns False, so blit_to_output transparently uses the proven CPU
-        path — this can never break the default launch.
+    def init_gpu_output(self):
+        """Build the OUTPUT as an _sdl2 GPU window: the process's single GL
+        renderer lives here and stretches the render canvas to the display in
+        hardware, so 'disp' is ~free at any projector resolution. The HUD then
+        uses the plain pygame.display software window (it's small, CPU is
+        fine). Exactly one GL context, on the projector — the V3D rule holds.
+
+        Returns True on success. On any failure leaves _gpu_out = None and
+        returns False so blit_to_output uses the CPU path.
         """
         if not getattr(self.cfg, "gpu_scale", False):
-            print("[vj] gpu-scale: OFF (CPU output scaling)")
             return False
         try:
             from pygame._sdl2.video import Window, Renderer, Texture
-            # Wrap the existing display-module window (the one set_mode made),
-            # so F11/F12 switching, caption, events etc. stay on the proven
-            # plumbing — we only add a renderer for presenting.
-            win = Window.from_display_module()
+            if self.cfg.fullscreen:
+                try:
+                    dw, dh = pygame.display.get_desktop_sizes()[self.cfg.display]
+                except (pygame.error, IndexError, AttributeError):
+                    dw, dh = self.w, self.h
+                win = Window("pi-paint VJ — Output", size=(dw, dh),
+                             position=_window_pos_for(self.cfg.display),
+                             borderless=True)
+            else:
+                win = Window("pi-paint VJ — Output", size=(self.w, self.h),
+                             position=_window_pos_for(self.cfg.display))
+            win.show()
             renderer = Renderer(win)
-            self._gpu_out = {
-                "win": win, "renderer": renderer, "Texture": Texture,
-                "tex": None,
-            }
-            print("[vj] GPU output scaling enabled (renderer on output window)")
+            # logical_size makes the renderer present the canvas-sized texture
+            # stretched to the window — the GPU does the scale, every frame.
+            try:
+                renderer.logical_size = (self.w, self.h)
+            except Exception:
+                pass
+            self._gpu_out = {"win": win, "renderer": renderer,
+                             "Texture": Texture, "tex": None}
+            self.screen = win   # so get_size()/mouse-norm use the output window
+            print(f"[vj] gpu-scale: ACTIVE — GPU output renderer "
+                  f"(canvas {self.w}x{self.h} → display)")
             return True
         except Exception as exc:
-            print(f"[vj] --gpu-scale init failed ({exc!r}); "
-                  f"using CPU output scaling")
+            print(f"[vj] gpu-scale: init FAILED ({exc!r}); CPU output scaling")
             self._gpu_out = None
             return False
 
     def _blit_gpu(self, frame):
-        """Present `frame` via the output renderer, GPU-scaled to the window.
-        Raises on failure so blit_to_output can fall back to the CPU path and
-        disable the GPU path permanently for the session."""
+        """Present `frame` GPU-scaled to the output window. Raises on failure
+        so blit_to_output falls back to the CPU path for the session."""
         g = self._gpu_out
         renderer = g["renderer"]
-        # Reuse one streaming texture sized to the canvas; the renderer
-        # stretches it to the window on draw(). frombuffer needs a contiguous
-        # buffer (mapping/clip frames already are; be safe for views).
         if g["tex"] is None or self._gpu_tex_size != (self.w, self.h):
-            g["tex"] = g["Texture"](
-                renderer, (self.w, self.h),
-                streaming=True,
-            )
+            g["tex"] = g["Texture"](renderer, (self.w, self.h), streaming=True)
             self._gpu_tex_size = (self.w, self.h)
         surface = pygame.image.frombuffer(
             np.ascontiguousarray(frame), (self.w, self.h), "RGB")
         g["tex"].update(surface)
         renderer.clear()
-        g["tex"].draw()           # no dstrect → fills the window (GPU scale)
+        g["tex"].draw()           # logical_size → fills the window (GPU scale)
         renderer.present()
 
     def blit_to_output(self, frame):

@@ -106,9 +106,10 @@ def _open_output_window(cfg):
         return pygame.display.set_mode(size, flags)
 
 
-def _open_control_window_bare(size, display_idx):
-    """Create the control HUD window WITHOUT a renderer (decided later)."""
-    from pygame._sdl2.video import Window
+def _open_control_window(size, display_idx):
+    """Create the _sdl2 GPU window + renderer for the control HUD (used in the
+    default CPU-output layout, where the HUD owns the single GL context)."""
+    from pygame._sdl2.video import Window, Renderer
     centered_on_display = 0x2FFF0000 | (display_idx & 0xFFFF)
     win = Window(
         "VJ Control",
@@ -117,25 +118,8 @@ def _open_control_window_bare(size, display_idx):
         resizable=True,
     )
     win.show()
-    return win
-
-
-def _window_software_surface_works(win):
-    """True if this pygame build can present `win` via a software surface
-    (get_surface + flip) — the path the HUD needs when the OUTPUT owns the
-    single GL renderer under --gpu-scale.
-
-    The repo historically notes SDL2 Window has no get_surface(); newer
-    pygame-ce builds added it. Rather than guess, probe once at startup so
-    --gpu-scale only takes the software-HUD path when it genuinely works,
-    and otherwise falls back to the proven renderer-on-HUD path.
-    """
-    try:
-        surf = win.get_surface()
-        win.flip()
-        return surf is not None
-    except Exception:
-        return False
+    renderer = Renderer(win)
+    return win, renderer
 
 
 def _resolve_output_display(args):
@@ -185,58 +169,83 @@ def main():
         display_filter=args.display_filter,
     )
 
-    output_screen = _open_output_window(cfg)
-    pygame.display.set_caption("pi-paint VJ — Output")
-    pygame.mouse.set_visible(True)  # always show cursor
-
-    # NOTE: we *don't* try to move the window to the target display at
-    # launch any more — the SDL pump loop took long enough that X11
-    # marked the window as unresponsive and the WM force-closed it on
-    # first click. If pygame opened the window on the wrong monitor,
-    # the operator can press F12 to move it after launch.
-
-    engine = Engine(cfg, output_screen)
-
-    # --gpu-scale wants the single SDL renderer (one GL context — the V3D
-    # rule) on the OUTPUT window. With a HUD too, that only works if this
-    # pygame build can present the HUD window via a software surface; some
-    # builds have no Window.get_surface(). So when both are requested we
-    # PROBE the HUD's software path first and only commit to GPU output if it
-    # works — otherwise we fall back to the proven path (renderer on HUD,
-    # CPU-scaled output) so the HUD is never left blank.
-    from pygame._sdl2.video import Renderer
-
-    control = None
+    # Two window layouts, both with exactly ONE GL context (the V3D rule):
+    #
+    #  • default (CPU output): output is the pygame.display software window
+    #    (CPU upscales the canvas to it); the HUD is the _sdl2 GPU window.
+    #    This is the long-proven arrangement.
+    #
+    #  • --gpu-scale: SWAP roles. The output is the _sdl2 GPU window (its
+    #    renderer stretches the canvas to the projector in hardware, so the
+    #    per-frame 'disp' cost is ~independent of projector resolution); the
+    #    HUD becomes the pygame.display software window. The GL context lives
+    #    on the projector, where the heavy scaling is.
     gpu_out_ok = False
-    if args.control:
-        from control import ControlWindow
-        try:
-            ctrl_w, ctrl_h = (int(x) for x in args.control_size.lower().split("x"))
-        except ValueError:
-            print(f"[vj] bad --control-size {args.control_size!r}, using 680x720")
-            ctrl_w, ctrl_h = 680, 720
-        ctrl_win = _open_control_window_bare((ctrl_w, ctrl_h), args.control_display)
+    control = None
 
-        ctrl_renderer = None
-        if args.gpu_scale and _window_software_surface_works(ctrl_win):
-            # HUD can run in software → give the renderer to the output.
-            gpu_out_ok = engine.init_gpu_output()
-        if args.gpu_scale and not gpu_out_ok:
-            print("[vj] --gpu-scale: HUD has no software-surface path on this "
-                  "build; keeping renderer on the HUD (CPU-scaled output)")
-        if not gpu_out_ok:
-            ctrl_renderer = Renderer(ctrl_win)   # proven path: HUD owns the GL
+    if args.gpu_scale:
+        # HUD (if any) takes the software display window FIRST so the output's
+        # _sdl2 renderer is the only GL context. Engine.init_gpu_output builds
+        # the GPU output window itself.
+        ctrl_screen = None
+        if args.control:
+            try:
+                ctrl_w, ctrl_h = (int(x) for x in args.control_size.lower().split("x"))
+            except ValueError:
+                print(f"[vj] bad --control-size {args.control_size!r}, using 680x720")
+                ctrl_w, ctrl_h = 680, 720
+            ctrl_screen = pygame.display.set_mode(
+                (ctrl_w, ctrl_h), 0, display=args.control_display)
+            pygame.display.set_caption("VJ Control")
 
-        preview_w = ctrl_w - 24
-        preview_h = int(preview_w * cfg.height / cfg.width)
-        control = ControlWindow(
-            engine, ctrl_win, ctrl_renderer,
-            size=(ctrl_w, ctrl_h),
-            preview_size=(preview_w, preview_h),
-        )
-    elif args.gpu_scale:
-        # Output only, no HUD → no second window, always safe.
+        engine = Engine(cfg, None)   # screen set by init_gpu_output
         gpu_out_ok = engine.init_gpu_output()
+
+        if not gpu_out_ok:
+            # GPU output failed — fall back to the proven CPU layout below.
+            print("[vj] gpu-scale: FAILED to init; using CPU output")
+            output_screen = _open_output_window(cfg)
+            pygame.display.set_caption("pi-paint VJ — Output")
+            engine.screen = output_screen
+        pygame.mouse.set_visible(True)
+
+        if args.control and gpu_out_ok and ctrl_screen is not None:
+            from control import ControlWindow
+            preview_w = ctrl_w - 24
+            preview_h = int(preview_w * cfg.height / cfg.width)
+            # renderer=None → HUD presents to its software display surface.
+            control = ControlWindow(
+                engine, None, None,
+                size=(ctrl_w, ctrl_h),
+                preview_size=(preview_w, preview_h),
+                software_surface=ctrl_screen,
+            )
+
+    if not args.gpu_scale or not gpu_out_ok:
+        # Proven CPU-output layout: output = software display window,
+        # HUD = _sdl2 GPU window.
+        if not args.gpu_scale:
+            output_screen = _open_output_window(cfg)
+            pygame.display.set_caption("pi-paint VJ — Output")
+            pygame.mouse.set_visible(True)
+            engine = Engine(cfg, output_screen)
+
+        if args.control and control is None:
+            from control import ControlWindow
+            try:
+                ctrl_w, ctrl_h = (int(x) for x in args.control_size.lower().split("x"))
+            except ValueError:
+                print(f"[vj] bad --control-size {args.control_size!r}, using 680x720")
+                ctrl_w, ctrl_h = 680, 720
+            ctrl_win, ctrl_renderer = _open_control_window(
+                (ctrl_w, ctrl_h), args.control_display)
+            preview_w = ctrl_w - 24
+            preview_h = int(preview_w * cfg.height / cfg.width)
+            control = ControlWindow(
+                engine, ctrl_win, ctrl_renderer,
+                size=(ctrl_w, ctrl_h),
+                preview_size=(preview_w, preview_h),
+            )
 
     print(f"[vj] output:      {cfg.width}x{cfg.height} fullscreen={cfg.fullscreen} display={cfg.display}")
     print(f"[vj] gpu-scale:   requested={args.gpu_scale} active={gpu_out_ok}")
