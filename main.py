@@ -38,9 +38,13 @@ def parse_args():
                         "like kaleidoscope in mapping mode (the result is "
                         "warped onto a quad anyway); 1.0 = full-res FX.")
     p.add_argument("--mapping-threads", type=int, default=1,
-                   help="Parallelise per-group warp/resize in mapping mode "
+                   help="Parallelise per-group FX + warp in mapping mode "
                         "across this many threads (default 1 = serial). "
                         "Try 3-4 on a 4-core Pi 5 for multi-group scenes.")
+    p.add_argument("--display-filter", choices=("linear", "cubic"),
+                   default="linear",
+                   help="Interpolation for the final upscale to the display "
+                        "(default linear = faster; cubic = sharper, slower).")
     return p.parse_args()
 
 
@@ -153,6 +157,7 @@ def main():
         gen_render_scale=max(0.1, min(1.0, args.gen_render_scale)),
         fx_render_scale=max(0.1, min(1.0, args.fx_render_scale)),
         mapping_threads=max(1, args.mapping_threads),
+        display_filter=args.display_filter,
     )
 
     output_screen = _open_output_window(cfg)
