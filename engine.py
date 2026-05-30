@@ -1623,12 +1623,27 @@ class Engine:
                     dw, dh = pygame.display.get_desktop_sizes()[self.cfg.display]
                 except (pygame.error, IndexError, AttributeError):
                     dw, dh = self.w, self.h
-                win = Window("pi-paint VJ — Output", size=(dw, dh),
-                             position=_window_pos_for(self.cfg.display),
-                             borderless=True)
+                size = (dw, dh)
             else:
-                win = Window("pi-paint VJ — Output", size=(self.w, self.h),
-                             position=_window_pos_for(self.cfg.display))
+                size = (self.w, self.h)
+
+            # Window kwargs vary across pygame-ce builds (borderless=, position=
+            # may be unsupported). Try the rich form, then fall back to the
+            # bare minimum so a kwarg mismatch alone can't kill gpu-scale.
+            win = None
+            for kwargs in (
+                {"size": size, "position": _window_pos_for(self.cfg.display),
+                 "borderless": bool(self.cfg.fullscreen)},
+                {"size": size, "position": _window_pos_for(self.cfg.display)},
+                {"size": size},
+            ):
+                try:
+                    win = Window("pi-paint VJ — Output", **kwargs)
+                    break
+                except TypeError:
+                    continue
+            if win is None:
+                raise RuntimeError("could not construct _sdl2 Window")
             win.show()
             renderer = Renderer(win)
             # logical_size makes the renderer present the canvas-sized texture
@@ -1644,7 +1659,9 @@ class Engine:
                   f"(canvas {self.w}x{self.h} → display)")
             return True
         except Exception as exc:
+            import traceback
             print(f"[vj] gpu-scale: init FAILED ({exc!r}); CPU output scaling")
+            traceback.print_exc()
             self._gpu_out = None
             return False
 
