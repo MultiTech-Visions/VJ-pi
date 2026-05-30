@@ -1,9 +1,13 @@
 """Control HUD window — runs on the second display (small screen).
 Live preview, status panel, favourite-slot grids, output-display picker,
-and a key cheat sheet — laid out top-to-bottom with the preview and
-status sharing the top row to claim back horizontal space.
+and a tabbed bottom panel (clips / generators / scenes / settings / stats)
+— laid out top-to-bottom with the preview and status sharing the top row to
+claim back horizontal space. The key cheat sheet now lives behind a clickable
+Help (?) popup instead of permanently occupying the bottom half.
 """
 import pygame
+
+from shader_catalog import GPU_GENERATOR_ORDER
 
 
 KEY_CHEAT = [
@@ -102,11 +106,31 @@ class ControlWindow:
         self._cheat_panel = self._build_cheat_panel(KEY_CHEAT)
         self._mapping_cheat_panel = self._build_cheat_panel(MAPPING_KEY_CHEAT)
 
+        # ── Tabbed bottom panel state ────────────────────────────────
+        # Tabs replace the always-on cheat sheet. The keys list now lives
+        # behind the Help (?) popup.
+        self.active_tab = "clips"
+        self._tab_rects = []          # [(tab_id, pygame.Rect), ...]
+        self._help_btn_rect = None
+        self._help_open = False
+        # Per-list scroll offset (in rows), keyed by tab id.
+        self._scroll = {"clips": 0, "gens": 0, "scenes": 0}
+        # Clickable list rows for the active tab: [(idx, pygame.Rect), ...]
+        self._list_row_rects = []
+
     # ── Event handling ───────────────────────────────────────────────
 
     def handle_event(self, event):
-        """Forward mouse activity from the control window to its buttons
-        and (in mapping/edit mode) to the spaces editor."""
+        """Forward mouse activity from the control window to its buttons,
+        the tabbed picker panel, and (in mapping/edit mode) the spaces
+        editor."""
+        # Wheel scrolls the active picker list. The engine forwards wheel
+        # events to the HUD only, and they don't reliably carry a source
+        # window id, so handle them before the per-window filter.
+        if event.type == pygame.MOUSEWHEEL:
+            self._scroll_active(-getattr(event, "y", 0))
+            return
+
         if not self._event_is_ours(event):
             return
         e = self.engine
@@ -140,6 +164,12 @@ class ControlWindow:
         if pos is None:
             return
 
+        # Help popup is modal — any click dismisses it and is consumed so it
+        # can't fall through to whatever sits underneath.
+        if self._help_open:
+            self._help_open = False
+            return
+
         if (e.mode == "mapping" and e.mapping.edit_mode
                 and self._preview_rect.collidepoint(pos)):
             # Delegate to the engine's shared click handler so the HUD
@@ -154,6 +184,76 @@ class ControlWindow:
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
             self.engine.apply_pending_display()
+            return
+
+        # Tabbed bottom panel — tab bar, Help button, and list rows.
+        self._handle_panel_click(pos)
+
+    def _scroll_active(self, delta):
+        """Scroll the active tab's list by `delta` rows (clamped to >= 0;
+        the upper bound is clamped at draw time once row counts are known)."""
+        if self.active_tab in self._scroll:
+            self._scroll[self.active_tab] = max(
+                0, self._scroll[self.active_tab] + delta)
+
+    def _handle_panel_click(self, pos):
+        """Route a click within the tabbed bottom panel. Returns True if the
+        click hit something."""
+        if self._help_btn_rect is not None and self._help_btn_rect.collidepoint(pos):
+            self._help_open = not self._help_open
+            return True
+        for tab_id, rect in self._tab_rects:
+            if rect.collidepoint(pos):
+                if tab_id != self.active_tab:
+                    self.active_tab = tab_id
+                    self._scroll_to_active(tab_id)
+                return True
+        for idx, rect in self._list_row_rects:
+            if rect.collidepoint(pos):
+                self._activate_list_item(idx)
+                return True
+        return False
+
+    def _activate_list_item(self, idx):
+        """A picker row was clicked. Clips/generators route through the same
+        engine entry points the keyboard uses, so in mapping mode they target
+        the selected group automatically."""
+        if self.active_tab == "clips":
+            self.engine.select_clip(idx)
+        elif self.active_tab == "gens":
+            self.engine.select_generative(idx)
+        # scenes / settings / stats: no row actions yet (later phases).
+
+    def _scroll_to_active(self, tab_id):
+        """When a tab is opened, scroll its list so the current selection is
+        roughly centred — so the clips tab opens on the playing clip."""
+        active = self._active_index_for(tab_id)
+        if active is None or active < 0:
+            return
+        # ~6 rows of context above; draw-time clamping keeps it in range.
+        self._scroll[tab_id] = max(0, active - 6)
+
+    def _active_index_for(self, tab_id):
+        """Index of the currently-selected item for a picker tab, accounting
+        for mapping mode (where the selected group's content is what's live).
+        Returns None/-1 when nothing matches."""
+        e = self.engine
+        group = (e.mapping.selected_group()
+                 if e.mode == "mapping" else None)
+        if tab_id == "clips":
+            if group is not None:
+                if group.content_kind == "clip" and group.clip_stem:
+                    return e.clips.find_by_stem(group.clip_stem)
+                return -1
+            return e.clips.active_idx if e.clips.active_idx is not None else -1
+        if tab_id == "gens":
+            name = (group.gen_name if (group is not None
+                    and group.content_kind == "generative")
+                    else (e.active_generative if group is None else None))
+            if name in GPU_GENERATOR_ORDER:
+                return GPU_GENERATOR_ORDER.index(name)
+            return -1
+        return None
 
     def _preview_to_norm(self, pos):
         """Convert a preview-window click position into normalized (0..1)
@@ -254,16 +354,15 @@ class ControlWindow:
         y = self._draw_display_selector(surface, pad, y, win_w - pad * 2)
         y += 10
 
-        # Key cheat sheet — flows naturally after the display selector.
-        # If room runs out we just clip at the window bottom (still useful
-        # since the top rows are the more important ones).
-        panel = self._mapping_cheat_panel if mapping_mode else self._cheat_panel
-        avail = max(0, win_h - pad - y)
-        if avail > 0:
-            src = panel.subsurface(
-                pygame.Rect(0, 0, panel.get_width(), min(panel.get_height(), avail))
-            )
-            surface.blit(src, (pad, y))
+        # Tabbed bottom panel (clips / generators / scenes / settings /
+        # stats) — replaces the old always-on cheat sheet, which now lives
+        # behind the Help (?) popup.
+        panel_h = max(0, win_h - pad - y)
+        self._draw_tab_panel(surface, pad, y, win_w - pad * 2, panel_h)
+
+        # Help popup draws last so it sits above everything else.
+        if self._help_open:
+            self._draw_help_overlay(surface)
 
         # Present the composed surface. Either the HUD owns the single GL
         # context (renderer set → texture upload), or — under --gpu-scale —
@@ -601,6 +700,182 @@ class ControlWindow:
         self._apply_rect = apply_rect
 
         return y + btn_h + 8
+
+    # ── Tabbed bottom panel ──────────────────────────────────────────
+
+    def _draw_tab_panel(self, surface, x, y, w, h):
+        """Tab bar + the selected tab's content (replaces the cheat sheet).
+        Repopulates _tab_rects / _help_btn_rect / _list_row_rects each frame."""
+        pygame.draw.line(surface, (60, 60, 80), (x, y), (x + w, y), 1)
+        ty = y + 6
+        chip_h = 22
+        tabs = [("clips", "CLIPS"), ("gens", "GENS"), ("scenes", "SCENES"),
+                ("settings", "SETTINGS"), ("stats", "STATS")]
+
+        self._tab_rects = []
+        bx = x
+        for tab_id, label in tabs:
+            is_sel = self.active_tab == tab_id
+            ls = self.font_m.render(
+                f" {label} ", True,
+                (255, 255, 255) if is_sel else (200, 210, 230))
+            rect = pygame.Rect(bx, ty, ls.get_width() + 6, chip_h)
+            bg = (70, 130, 200) if is_sel else (38, 42, 58)
+            border = (160, 220, 255) if is_sel else (90, 110, 140)
+            pygame.draw.rect(surface, bg, rect, border_radius=4)
+            pygame.draw.rect(surface, border, rect, 1, border_radius=4)
+            surface.blit(ls, (rect.x + 3,
+                              rect.y + (chip_h - ls.get_height()) // 2))
+            self._tab_rects.append((tab_id, rect))
+            bx = rect.right + 5
+
+        # Help (?) button, right-aligned in the tab bar.
+        help_label = self.font_m.render(" ? ", True, (20, 22, 30))
+        hrect = pygame.Rect(0, ty, help_label.get_width() + 12, chip_h)
+        hrect.right = x + w
+        pygame.draw.rect(surface,
+                         (200, 200, 120) if self._help_open else (90, 150, 200),
+                         hrect, border_radius=4)
+        surface.blit(help_label, (hrect.x + 6,
+                                  hrect.y + (chip_h - help_label.get_height()) // 2))
+        self._help_btn_rect = hrect
+
+        # Content area below the tab bar.
+        cy = ty + chip_h + 8
+        area = pygame.Rect(x, cy, w, max(0, y + h - cy))
+        self._list_row_rects = []
+        if self.active_tab == "clips":
+            self._draw_tab_clips(surface, area)
+        elif self.active_tab == "gens":
+            self._draw_tab_gens(surface, area)
+        elif self.active_tab == "scenes":
+            self._draw_tab_scenes(surface, area)
+        elif self.active_tab == "settings":
+            self._draw_tab_settings(surface, area)
+        elif self.active_tab == "stats":
+            self._draw_tab_stats(surface, area)
+
+    def _draw_list(self, surface, area, items, active_idx, scroll_key,
+                   empty_msg="(empty)"):
+        """Scrollable, clickable vertical list. Populates _list_row_rects
+        with (item_index, rect) for the rows currently on screen."""
+        row_h = 19
+        n = len(items)
+        if n == 0:
+            msg = self.font_m.render(empty_msg, True, (150, 150, 175))
+            surface.blit(msg, (area.x + 2, area.y + 2))
+            return
+        visible = max(1, area.h // row_h)
+        max_scroll = max(0, n - visible)
+        scroll = max(0, min(self._scroll.get(scroll_key, 0), max_scroll))
+        self._scroll[scroll_key] = scroll
+        has_bar = n > visible
+        list_w = area.w - (10 if has_bar else 0)
+        for row in range(visible):
+            idx = scroll + row
+            if idx >= n:
+                break
+            rect = pygame.Rect(area.x, area.y + row * row_h, list_w, row_h - 2)
+            is_active = (idx == active_idx)
+            if is_active:
+                pygame.draw.rect(surface, (70, 130, 200), rect, border_radius=3)
+                pygame.draw.rect(surface, (160, 220, 255), rect, 1, border_radius=3)
+                fg = (255, 255, 255)
+            else:
+                pygame.draw.rect(surface, (30, 33, 44), rect, border_radius=3)
+                fg = (210, 220, 240)
+            txt = f"{idx + 1:>3}  {items[idx]}"
+            max_chars = max(4, (rect.w - 14) // 7)
+            if len(txt) > max_chars:
+                txt = txt[:max_chars - 1] + "…"
+            s = self.font_m.render(txt, True, fg)
+            surface.blit(s, (rect.x + 6,
+                             rect.y + (rect.height - s.get_height()) // 2))
+            self._list_row_rects.append((idx, rect))
+        if has_bar:
+            track = pygame.Rect(area.right - 6, area.y, 4, visible * row_h)
+            pygame.draw.rect(surface, (40, 44, 60), track, border_radius=2)
+            thumb_h = max(12, int(track.h * visible / n))
+            thumb_y = track.y + int(track.h * scroll / n)
+            pygame.draw.rect(surface, (110, 140, 180),
+                             pygame.Rect(track.x, thumb_y, track.w, thumb_h),
+                             border_radius=2)
+
+    def _draw_text_block(self, surface, area, lines):
+        yy = area.y
+        for ln in lines:
+            s = self.font_m.render(ln, True, (200, 210, 230))
+            surface.blit(s, (area.x + 2, yy))
+            yy += s.get_height() + 4
+
+    def _draw_tab_clips(self, surface, area):
+        e = self.engine
+        items = [e.clips.name(i) or "—" for i in range(len(e.clips))]
+        active = self._active_index_for("clips")
+        self._draw_list(surface, area, items,
+                        active if active is not None else -1,
+                        "clips", empty_msg="No clips in assets/clips/")
+
+    def _draw_tab_gens(self, surface, area):
+        items = list(GPU_GENERATOR_ORDER)
+        active = self._active_index_for("gens")
+        self._draw_list(surface, area, items,
+                        active if active is not None else -1,
+                        "gens", empty_msg="No generators")
+
+    def _draw_tab_scenes(self, surface, area):
+        self._draw_text_block(surface, area, [
+            "Scenes — save & recall a projection-mapping setup,",
+            "so a known-good mapping can be kept for comparison.",
+            "Coming in the next update.",
+        ])
+
+    def _draw_tab_settings(self, surface, area):
+        self._draw_text_block(surface, area, [
+            "Settings — global brightness, display filter, render",
+            "scales, HUD rotation / fullscreen.",
+            "Coming in upcoming updates.",
+        ])
+
+    def _draw_tab_stats(self, surface, area):
+        e = self.engine
+        p = getattr(e, "_perf_ms", None) or {}
+        disp = getattr(e, "_disp_ms", 0.0)
+        lines = [
+            "FPS: %.0f   (cap %d)" % (getattr(e, "fps_measured", 0.0), e.cfg.fps),
+            "canvas: %dx%d   gen x%.2f  fx x%.2f" % (
+                e.cfg.width, e.cfg.height,
+                e.cfg.gen_render_scale, e.cfg.fx_render_scale),
+        ]
+        if p:
+            lines.append(
+                "pipeline: clip %.0f  gen %.0f  fx %.0f  warp %.0f  disp %.0f ms"
+                % (p.get("clip", 0), p.get("gen", 0), p.get("fx", 0),
+                   p.get("warp", 0), disp))
+        lines.append("library: %d clips · %d generators" % (
+            len(e.clips), len(GPU_GENERATOR_ORDER)))
+        lines.append("CPU / GPU / per-thread stats: coming in a later update.")
+        self._draw_text_block(surface, area, lines)
+
+    def _draw_help_overlay(self, surface):
+        """Modal cheat-sheet popup over the whole HUD. Click to dismiss."""
+        win_w, win_h = self.size
+        overlay = pygame.Surface((win_w, win_h), pygame.SRCALPHA)
+        overlay.fill((8, 10, 16, 236))
+        surface.blit(overlay, (0, 0))
+        pad = 16
+        title = self.font_h.render(
+            "KEYBOARD / MOUSE  —  click anywhere to close",
+            True, (230, 235, 255))
+        surface.blit(title, (pad, pad))
+        panel = (self._mapping_cheat_panel if self.engine.mode == "mapping"
+                 else self._cheat_panel)
+        top = pad + title.get_height() + 8
+        avail = max(0, win_h - top - pad)
+        src = panel.subsurface(
+            pygame.Rect(0, 0, panel.get_width(),
+                        min(panel.get_height(), avail)))
+        surface.blit(src, (pad, top))
 
     def _build_cheat_panel(self, rows):
         """Pre-render a static key cheat sheet to a Surface."""
