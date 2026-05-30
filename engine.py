@@ -533,11 +533,17 @@ class Engine:
 
     def toggle_blackout(self):
         self.blackout = not self.blackout
+        if self.blackout:
+            # Nothing is shown — stop the GPU generator worker from churning
+            # V3D in the background. The next non-blackout frame resumes it.
+            self.gpu_generators.pause()
 
     def toggle_freeze(self):
         self.freeze = not self.freeze
         if self.freeze:
             self.frozen_frame = self.prev_frame.copy() if self.prev_frame is not None else None
+            # We're showing a static frame; idle the GPU worker until thawed.
+            self.gpu_generators.pause()
 
     def quit(self):
         self.running = False

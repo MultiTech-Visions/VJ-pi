@@ -53,6 +53,13 @@ class Renderer:
         self.sink = None
         self.current = None
 
+    def pause(self):
+        # Stop the GL pipeline from churning V3D while nobody is pulling
+        # frames (e.g. during blackout / freeze). PAUSED keeps the built
+        # pipeline so render() can resume instantly without a rebuild.
+        if self.pipeline is not None:
+            self.pipeline.set_state(Gst.State.PAUSED)
+
     def ensure(self, name, width, height, token):
         key = (name, width, height, token if name == "donut" else None)
         if self.current == key and self.pipeline is not None:
@@ -94,6 +101,9 @@ class Renderer:
         if name not in GPU_GENERATORS:
             raise ValueError(f"unknown GPU generator: {name}")
         self.ensure(name, width, height, token)
+        # Resume if we were paused (blackout/freeze); a no-op if already
+        # PLAYING.
+        self.pipeline.set_state(Gst.State.PLAYING)
         sample = None
         for _ in range(4):
             sample = self.sink.emit("try-pull-sample", 1 * Gst.SECOND)
@@ -133,6 +143,10 @@ def main():
         for line in sys.stdin.buffer:
             try:
                 req = json.loads(line.decode("utf-8"))
+                if req.get("cmd") == "pause":
+                    renderer.pause()
+                    _send({"ok": True, "paused": True})
+                    continue
                 name = str(req["name"])
                 width = int(req["width"])
                 height = int(req["height"])
