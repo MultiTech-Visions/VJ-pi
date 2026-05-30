@@ -67,6 +67,9 @@ class Engine:
         self.clock = pygame.time.Clock()
         self.start_time = time.time()
         self.fps_measured = 0.0   # smoothed achieved frame rate, shown on the HUD
+        # Smoothed per-phase mapping render times (ms) for the HUD breakdown.
+        self._perf = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
+        self._perf_ms = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
 
         self.clips = ClipPool(cfg.clips_dir, (self.w, self.h))
         self.overlays = ClipPool(cfg.overlays_dir, (self.w, self.h))
@@ -1060,6 +1063,7 @@ class Engine:
         w, h = self.w, self.h
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
         now = time.time()
+        self._perf = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
         self.mapping.tick_autopilot(self, now)
         # Sweep stale mask cache entries every ~5 s. Cheap, and keeps
         # the cache tidy across hours of editing.
@@ -1077,8 +1081,13 @@ class Engine:
                     or (group.content_kind == "generative" and not group.gen_name)):
                 continue
             source = self._compose_group_source(group, now)
+            _tw = time.perf_counter()
             self._place_group_into_canvas(canvas, source, group)
+            self._perf["warp"] += time.perf_counter() - _tw
         canvas = self._apply_hits(canvas)
+        # Smooth the per-phase timings (ms) for the HUD breakdown.
+        for _k, _v in self._perf.items():
+            self._perf_ms[_k] += (_v * 1000.0 - self._perf_ms[_k]) * 0.2
         if self.mapping.show_borders:
             self._draw_selection_border(canvas)
         if self.mapping.edit_mode:
@@ -1107,11 +1116,14 @@ class Engine:
                 frame = np.zeros((h, w, 3), dtype=np.uint8)
             else:
                 self.clips.ensure_open(idx)
+                _tc = time.perf_counter()
                 frame = self.clips.read_at(idx)
+                self._perf["clip"] += time.perf_counter() - _tc
                 if frame is None:
                     frame = np.zeros((h, w, 3), dtype=np.uint8)
         elif group.content_kind == "generative" and group.gen_name:
             gw, gh = self._gen_render_size()
+            _tg = time.perf_counter()
             frame = self._render_generative(
                 group.gen_name,
                 gw,
@@ -1119,6 +1131,7 @@ class Engine:
                 now - self.start_time + group._time_offset,
                 (group.param_x, group.param_y),
             )
+            self._perf["gen"] += time.perf_counter() - _tg
             if frame is None:
                 frame = np.zeros((h, w, 3), dtype=np.uint8)
         else:
@@ -1130,6 +1143,7 @@ class Engine:
         # uses frame.shape; mirror, posterize, rgb_split, edges, invert
         # all are shape-agnostic.
         if any(group.fx_state.values()):
+            _tf = time.perf_counter()
             ctx = EffectContext(fw, fh,
                                 now - self.start_time + group._time_offset,
                                 (group.param_x, group.param_y))
@@ -1146,6 +1160,7 @@ class Engine:
                 frame = edges(frame)
             if s.get("invert"):
                 frame = invert(frame)
+            self._perf["fx"] += time.perf_counter() - _tf
             # feedback is intentionally NOT applied in mapping mode (same as
             # melt). Per-group trails warped across spaces look muddy, and the
             # canvas-vs-thumbnail size mismatch caused artefacts; the toggle

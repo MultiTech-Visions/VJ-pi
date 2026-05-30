@@ -221,7 +221,20 @@ class ControlWindow:
         fcol = (110, 230, 130) if fps >= 25.0 else (245, 215, 110) if fps >= 15.0 else (240, 90, 90)
         fps_surf = self.font_h.render("%.0f FPS" % fps, True, fcol)
         surface.blit(fps_surf, (pad, y))
-        y += fps_surf.get_height() + 8
+        y += fps_surf.get_height() + 4
+
+        # In mapping mode, break the frame time down by phase so we can see
+        # where it goes (clip decode / generator / per-group FX / warp).
+        if mapping_mode:
+            p = getattr(e, "_perf_ms", None)
+            if p:
+                btxt = "clip %.0f · gen %.0f · fx %.0f · warp %.0f ms" % (
+                    p["clip"], p["gen"], p["fx"], p["warp"])
+                bsurf = self.font_m.render(btxt, True, (175, 180, 200))
+                surface.blit(bsurf, (pad, y))
+                y += bsurf.get_height() + 6
+        else:
+            y += 4
 
         # Badges (only renders if anything to show; returns same y otherwise)
         y = self._draw_badges(surface, pad, y)
