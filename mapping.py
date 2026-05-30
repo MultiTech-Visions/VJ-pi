@@ -255,6 +255,9 @@ class MappingManager:
         # MOUSEMOTION in either the HUD preview or the projector output,
         # used to decide which space's hover toolbar to render.
         self.hovered_space: Optional[tuple] = None
+        # Last hover position (normalised 0..1), for drawing a big crosshair
+        # cursor on the projector in edit mode (the OS pointer is tiny at 4K).
+        self.hover_norm: Optional[tuple] = None
         # When True, the NEXT space click binds into the selected space's
         # group (instead of becoming the new selection). Reset after use.
         # Still used by the keyboard fallback path; the hover toolbar's +
@@ -575,6 +578,7 @@ class MappingManager:
                      "start": tuple(start_norm), "current": tuple(start_norm)}
 
     def update_drag(self, norm_xy):
+        self.hover_norm = norm_xy
         if self.drag is None:
             return
         kind = self.drag.get("kind")
@@ -696,6 +700,7 @@ class MappingManager:
         `+` bind button) is impossible to click — the cursor passes
         through the dead zone and the toolbar disappears before the click
         lands."""
+        self.hover_norm = norm_xy
         if norm_xy is None:
             self.hovered_space = None
             return
