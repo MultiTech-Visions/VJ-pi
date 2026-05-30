@@ -1094,12 +1094,34 @@ class Engine:
             renderable.append(group)
 
         if self._map_pool is not None and len(renderable) > 1:
+            # Pre-decode clip sources in parallel. H.264 decode is CPU-bound
+            # and GIL-free, and each clip is an independent decoder handle, so
+            # this scales across cores far better than the memory-bound warps.
+            # Open serially first (the pool's open path mutates shared LRU
+            # state); decode only DISTINCT clips (a shared handle can't be
+            # read concurrently — and sharing one frame is also correct).
+            to_decode = {}
+            for group in renderable:
+                if group.content_kind == "clip" and group.clip_stem:
+                    cidx = self.clips.find_by_stem(group.clip_stem)
+                    if cidx is not None:
+                        self.clips.ensure_open(cidx)
+                        to_decode[cidx] = None
+            predecoded = None
+            if len(to_decode) > 1:
+                _tc = time.perf_counter()
+                for cidx, fr in self._map_pool.map(
+                        lambda i: (i, self.clips.read_at(i)), list(to_decode)):
+                    to_decode[cidx] = fr
+                self._perf["clip"] += time.perf_counter() - _tc
+                predecoded = to_decode
+
             # Phase 1 (serial): I/O + mask resolve. The clip/overlay pools,
             # the GPU bridge, and the mask cache are NOT thread-safe, so all
             # shared-state access happens here on the main thread.
             jobs = []
             for group in renderable:
-                base, ov = self._group_io(group, now)
+                base, ov = self._group_io(group, now, predecoded=predecoded)
                 mask_info = (None if group.fit_mode == "stretch"
                              else self._group_mask(group))
                 jobs.append((base, ov, group, mask_info))
@@ -1144,11 +1166,16 @@ class Engine:
         self._perf["fx"] += time.perf_counter() - _tf
         return frame
 
-    def _group_io(self, group, now):
+    def _group_io(self, group, now, predecoded=None):
         """Phase 1 (serial): decode the clip / render the generator and READ
         (not blend) the overlay. Touches the non-thread-safe clip & overlay
         pools and the GPU bridge, so it stays on the main thread. Returns
         (base_frame, overlay_frame_or_None).
+
+        `predecoded` is an optional {clip_idx: frame} map of clip frames
+        already decoded in parallel by the caller — when a group's clip is
+        in it we use that frame instead of read_at (which would advance the
+        decoder a second time).
 
         Generative sources render at cfg.gen_render_scale × canvas (default
         0.5) — smooth procedural patterns, no detail lost from upscaling, but
@@ -1164,6 +1191,10 @@ class Engine:
                 self._persist_mapping()
             if idx is None:
                 frame = np.zeros((h, w, 3), dtype=np.uint8)
+            elif predecoded is not None and idx in predecoded:
+                frame = predecoded[idx]
+                if frame is None:
+                    frame = np.zeros((h, w, 3), dtype=np.uint8)
             else:
                 self.clips.ensure_open(idx)
                 _tc = time.perf_counter()
