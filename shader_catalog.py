@@ -914,67 +914,6 @@ void main() {
 }
 """
 
-MIRRORBOX_SHADER = """#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
-
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-float hash(float n) { return fract(sin(n) * 43758.5453); }
-
-// The stuff inside the tube: translucent drifting beads over a soft
-// gradient. `cfg` steps every so often so the whole bead set (colours,
-// paths, sizes) gets reshuffled — like shaking the kaleidoscope. That
-// is the "what's inside" parameter changing on its own.
-vec3 scene(vec2 p, float t, float cfg) {
-    vec3 col = mix(vec3(0.02, 0.0, 0.06), vec3(0.0, 0.05, 0.12),
-                   0.5 + 0.5 * sin(p.x * 2.0 + t * 0.2));
-    for (int i = 0; i < 6; i++) {
-        float seed = float(i) + cfg * 7.0;
-        float spd = 0.2 + hash(seed) * 0.5;
-        float rad = 0.22 + 0.5 * hash(seed + 3.0);
-        vec2 c = rad * vec2(cos(t * spd + seed * 5.0),
-                            sin(t * spd * 0.8 + seed * 3.0));
-        c += 0.15 * vec2(sin(t * 0.7 + seed), cos(t * 0.5 + seed * 2.0));
-        float sz = 0.10 + 0.16 * hash(seed + 9.0);
-        float d = length(p - c);
-        vec3 bc = hsv2rgb(vec3(fract(hash(seed + 1.0) + t * 0.03), 0.85, 1.0));
-        col = mix(col, bc, smoothstep(sz, sz * 0.2, d) * 0.85);   // translucent bead
-        col += bc * smoothstep(sz, 0.0, d) * 0.3;                 // glassy core
-    }
-    return col;
-}
-
-void main() {
-    vec2 uv = (v_texcoord - 0.5) * vec2(1280.0/720.0, 1.0);
-    float t = time;
-
-    float stage = floor(t / 11.0);
-    float N = 3.0 + mod(stage, 6.0);          // mirror count clicks 3..8 over time
-    float cfg = floor(t / 13.0);              // bead set reshuffles every 13 s
-
-    float r = length(uv);
-    float a = atan(uv.y, uv.x) + t * 0.08;    // slow rotation of the whole tube
-    float seg = 6.2831853 / N;
-    a = mod(a, seg);
-    a = abs(a - seg * 0.5);                   // dihedral mirror -> kaleidoscope
-
-    float zoom = 0.85 + 0.22 * sin(t * 0.1);
-    vec2 fp = (r * zoom) * vec2(cos(a), sin(a));
-    fp += 0.2 * vec2(sin(t * 0.13), cos(t * 0.11));   // pan the sampled contents
-
-    vec3 col = scene(fp, t, cfg);
-    col *= 1.0 - smoothstep(0.6, 1.12, r) * 0.5;       // tube vignette
-    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
-}
-"""
-
 MANDALA_SHADER = """#version 100
 #ifdef GL_ES
 precision highp float;
@@ -1077,7 +1016,6 @@ GPU_GENERATORS = {
     'seraphim': SERAPHIM_SHADER,
     'quasicrystal': QUASICRYSTAL_SHADER,
     'kaliset': KALISET_SHADER,
-    'mirrorbox': MIRRORBOX_SHADER,
     'mandala': MANDALA_SHADER,
     'drostescope': DROSTESCOPE_SHADER,
     'apollonian': APOLLONIAN_SHADER,

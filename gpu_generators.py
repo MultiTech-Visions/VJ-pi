@@ -55,6 +55,24 @@ class GpuGeneratorBridge:
             self.shutdown()
             return None
 
+    def pause(self):
+        """Tell the worker to PAUSE its GL pipeline so it stops using the
+        GPU while we're not pulling frames (blackout / freeze). The next
+        render() resumes it. No-op if the worker isn't running."""
+        proc = self.proc
+        if self.disabled or self.failed or proc is None or proc.poll() is not None:
+            return
+        try:
+            req = json.dumps({"cmd": "pause"}, separators=(",", ":"))
+            proc.stdin.write((req + "\n").encode("utf-8"))
+            proc.stdin.flush()
+            if not proc.stdout.readline():       # ack (no payload)
+                raise RuntimeError("GPU worker exited during pause")
+        except Exception as exc:
+            print(f"[vj] GPU worker pause failed: {exc!r}")
+            self.failed = True
+            self.shutdown()
+
     def shutdown(self):
         proc = self.proc
         self.proc = None
