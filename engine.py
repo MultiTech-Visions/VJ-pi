@@ -2128,6 +2128,13 @@ class Engine:
                     else:
                         self._handle_output_mouse_event(event)
 
+                elif event.type == pygame.MOUSEWHEEL:
+                    # Wheel only scrolls the HUD's tabbed pickers (clip /
+                    # generator lists); the projector output has nothing to
+                    # scroll, so forward it straight to the control panel.
+                    if control is not None:
+                        control.handle_event(event)
+
             # Per-frame long-press detection
             now = time.time()
             for k, t in list(fav_pressed_at.items()):
