@@ -66,6 +66,21 @@ def _window_pos_for(display_idx):
     return (centered, centered)
 
 
+def _lantern_param_seed(name):
+    """The (param_x, param_y) that recall a lantern preset's saved look.
+
+    param_y is the LED hue; param_x is the spin dial, where 0.5 = stopped
+    and the offset from centre is the signed velocity over LANTERN_MAX_SPIN.
+    Returns None for non-lantern generators (leave the knobs untouched)."""
+    preset = LANTERN_PRESETS.get(name)
+    if preset is None:
+        return None
+    hue, _sat, spin = preset
+    px = min(1.0, max(0.0, 0.5 + spin / (2.0 * LANTERN_MAX_SPIN)))
+    py = min(1.0, max(0.0, hue))
+    return (px, py)
+
+
 class Engine:
     def __init__(self, cfg, screen):
         self.cfg = cfg
@@ -979,7 +994,16 @@ class Engine:
 
     def _render_generative(self, name, width, height, t, params):
         token = self._generator_activation_token if name == "donut" else 0
-        frame = self.gpu_generators.render(name, width, height, token=token)
+        if name in LANTERN_PRESETS:
+            # param_y -> LED hue, param_x -> spin velocity (0.5 = stopped).
+            px, py = params
+            led_sat = LANTERN_PRESETS[name][1]
+            spin = (px - 0.5) * 2.0 * LANTERN_MAX_SPIN
+            frame = self.gpu_generators.render(
+                name, width, height,
+                led_hue=py, led_sat=led_sat, spin=spin)
+        else:
+            frame = self.gpu_generators.render(name, width, height, token=token)
         if frame is not None:
             return frame
         fn = GENERATIVE_FNS.get(name)

@@ -2,6 +2,7 @@
 import json
 import random
 import sys
+import time
 from pathlib import Path
 
 import gi
@@ -44,6 +45,11 @@ class Renderer:
         self.shader = None
         self.sink = None
         self.current = None
+        # Rotation phase for lantern generators, integrated here so changing
+        # the spin velocity never makes the angle jump. One worker process
+        # serves one generator name, so this phase belongs to that lantern.
+        self._phase = 0.0
+        self._phase_t = None
 
     def close(self):
         if self.pipeline is not None:
@@ -97,13 +103,39 @@ class Renderer:
         self.pipeline.set_state(Gst.State.PLAYING)
         self.current = key
 
-    def render(self, name, width, height, token):
+    def _set_lantern_uniforms(self, led_hue, led_sat, spin):
+        """Push the tunable lantern uniforms onto the glshader. Spin is a
+        velocity (rad/s); we integrate it into a continuous phase here, with
+        dt clamped so a long pause (blackout) can't fling the rotation."""
+        now = time.monotonic()
+        dt = 0.0 if self._phase_t is None else min(max(now - self._phase_t, 0.0), 0.1)
+        self._phase_t = now
+        self._phase += spin * dt
+        desc = ("uniforms"
+                ",led_hue=(gfloat)%.5f"
+                ",led_sat=(gfloat)%.5f"
+                ",phase=(gfloat)%.5f" % (led_hue, led_sat, self._phase))
+        # new_from_string is the clean 1.20+ API; from_string is the older
+        # one and (in some bindings) returns a (struct, end) tuple.
+        if hasattr(Gst.Structure, "new_from_string"):
+            st = Gst.Structure.new_from_string(desc)
+        else:
+            st = Gst.Structure.from_string(desc)
+            if isinstance(st, tuple):
+                st = st[0]
+        if st is not None:
+            self.shader.set_property("uniforms", st)
+
+    def render(self, name, width, height, token,
+               led_hue=0.5, led_sat=0.9, spin=0.0):
         if name not in GPU_GENERATORS:
             raise ValueError(f"unknown GPU generator: {name}")
         self.ensure(name, width, height, token)
         # Resume if we were paused (blackout/freeze); a no-op if already
         # PLAYING.
         self.pipeline.set_state(Gst.State.PLAYING)
+        if name.startswith("lantern"):
+            self._set_lantern_uniforms(led_hue, led_sat, spin)
         sample = None
         for _ in range(4):
             sample = self.sink.emit("try-pull-sample", 1 * Gst.SECOND)
@@ -151,7 +183,12 @@ def main():
                 width = int(req["width"])
                 height = int(req["height"])
                 token = int(req.get("token", 0))
-                data = renderer.render(name, width, height, token)
+                data = renderer.render(
+                    name, width, height, token,
+                    led_hue=float(req.get("led_hue", 0.5)),
+                    led_sat=float(req.get("led_sat", 0.9)),
+                    spin=float(req.get("spin", 0.0)),
+                )
                 _send({"ok": True, "width": width, "height": height, "n": len(data)}, data)
             except Exception as exc:
                 print(f"[gpu-worker] {exc!r}", file=sys.stderr, flush=True)
