@@ -42,6 +42,14 @@ class Config:
     # are hard to tell apart, so linear buys back several ms/frame.
     display_filter: str = "linear"
 
+    # Scale the output to the projector on the GPU instead of the CPU. When
+    # on, the projector's window owns the process's single SDL renderer and
+    # stretches the render canvas to the display in hardware (so 'disp' cost
+    # is ~independent of projector resolution — crisp 2K/4K for free). The
+    # control HUD then renders in plain software (it's small and never
+    # scales). Exactly one GL context either way — never two (the V3D rule).
+    gpu_scale: bool = False
+
     @property
     def clips_dir(self) -> Path:
         return self.assets_dir / "clips"

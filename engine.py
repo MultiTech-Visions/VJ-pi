@@ -80,6 +80,14 @@ class Engine:
         self._map_threads = max(1, int(getattr(cfg, "mapping_threads", 1)))
         self._map_pool = (ThreadPoolExecutor(max_workers=self._map_threads)
                           if self._map_threads > 1 else None)
+        # Optional GPU output scaling. When on, a single SDL Renderer on the
+        # OUTPUT window stretches the canvas to the display in hardware (so
+        # 'disp' is ~independent of projector res). _gpu_out is None unless
+        # init succeeds — every failure falls back to the CPU blit path, so
+        # this can never black-screen the proven default. Set up after the
+        # window exists (see init_gpu_output, called from main).
+        self._gpu_out = None
+        self._gpu_tex_size = None
 
         self.clips = ClipPool(cfg.clips_dir, (self.w, self.h))
         self.overlays = ClipPool(cfg.overlays_dir, (self.w, self.h))
@@ -629,6 +637,13 @@ class Engine:
             pygame.mouse.set_visible(True)  # always show cursor
             print(f"[vj] output → display {new_idx} ({size[0]}x{size[1]}, "
                   f"borderless={self.cfg.fullscreen})")
+            # set_mode recreated the output window, invalidating any renderer
+            # bound to it. Rebuild the GPU output presenter on the new window;
+            # if rebuild fails, blit falls back to the CPU path automatically.
+            if self._gpu_out is not None:
+                self._gpu_out = None
+                self._gpu_tex_size = None
+                self.init_gpu_output()
         except (TypeError, pygame.error, ValueError) as exc:
             print(f"[vj] switch_output_display({new_idx}) failed: {exc!r}")
 
@@ -1556,8 +1571,71 @@ class Engine:
                 cv2.putText(canvas, label, (tx, ty), font, scale,
                             (220, 230, 250), 1, cv2.LINE_AA)
 
+    def init_gpu_output(self):
+        """Attach a single SDL Renderer to the OUTPUT window so the canvas is
+        scaled to the display on the GPU. Only one renderer exists in the
+        process (the V3D rule); when this is active the HUD runs in software.
+
+        Returns True on success. On ANY failure it leaves _gpu_out = None and
+        returns False, so blit_to_output transparently uses the proven CPU
+        path — this can never break the default launch.
+        """
+        if not getattr(self.cfg, "gpu_scale", False):
+            return False
+        try:
+            from pygame._sdl2.video import Window, Renderer, Texture
+            # Wrap the existing display-module window (the one set_mode made),
+            # so F11/F12 switching, caption, events etc. stay on the proven
+            # plumbing — we only add a renderer for presenting.
+            win = Window.from_display_module()
+            renderer = Renderer(win)
+            self._gpu_out = {
+                "win": win, "renderer": renderer, "Texture": Texture,
+                "tex": None,
+            }
+            print("[vj] GPU output scaling enabled (renderer on output window)")
+            return True
+        except Exception as exc:
+            print(f"[vj] --gpu-scale init failed ({exc!r}); "
+                  f"using CPU output scaling")
+            self._gpu_out = None
+            return False
+
+    def _blit_gpu(self, frame):
+        """Present `frame` via the output renderer, GPU-scaled to the window.
+        Raises on failure so blit_to_output can fall back to the CPU path and
+        disable the GPU path permanently for the session."""
+        g = self._gpu_out
+        renderer = g["renderer"]
+        # Reuse one streaming texture sized to the canvas; the renderer
+        # stretches it to the window on draw(). frombuffer needs a contiguous
+        # buffer (mapping/clip frames already are; be safe for views).
+        if g["tex"] is None or self._gpu_tex_size != (self.w, self.h):
+            g["tex"] = g["Texture"](
+                renderer, (self.w, self.h),
+                streaming=True,
+            )
+            self._gpu_tex_size = (self.w, self.h)
+        surface = pygame.image.frombuffer(
+            np.ascontiguousarray(frame), (self.w, self.h), "RGB")
+        g["tex"].update(surface)
+        renderer.clear()
+        g["tex"].draw()           # no dstrect → fills the window (GPU scale)
+        renderer.present()
+
     def blit_to_output(self, frame):
         _t = time.perf_counter()
+        if self._gpu_out is not None:
+            try:
+                self._blit_gpu(frame)
+                self._disp_ms += ((time.perf_counter() - _t) * 1000.0
+                                  - self._disp_ms) * 0.2
+                return
+            except Exception as exc:
+                print(f"[vj] GPU output present failed ({exc!r}); "
+                      f"reverting to CPU scaling for the rest of the session")
+                self._gpu_out = None
+                # fall through to CPU path below
         tw, th = self.screen.get_size()
         if (tw, th) != (self.w, self.h):
             # Final upscale to the display. cv2 takes (width, height); frame
