@@ -38,6 +38,12 @@ FX_TOGGLES = [
     "invert", "posterize", "edges", "rgb_split", "melt",
 ]
 
+# FX that autopilot must not leave on for long. `edges` (edge detect)
+# renders mostly-black with thin bright outlines, so a stuck "edges"
+# drops the output toward black until a bright frame suddenly flashes
+# through. Autopilot caps its on-time to this many seconds.
+AUTO_FX_MAX_HOLD = {"edges": 3.0}
+
 # How fast the arrow keys move param_x / param_y (units of 0..1 per second).
 PARAM_RATE = 0.6
 
@@ -60,6 +66,7 @@ class Engine:
         self.w, self.h = cfg.width, cfg.height
         self.clock = pygame.time.Clock()
         self.start_time = time.time()
+        self.fps_measured = 0.0   # smoothed achieved frame rate, shown on the HUD
 
         self.clips = ClipPool(cfg.clips_dir, (self.w, self.h))
         self.overlays = ClipPool(cfg.overlays_dir, (self.w, self.h))
@@ -140,6 +147,7 @@ class Engine:
         self._auto_next_overlay_at = 0.0
         self._auto_target_x = 0.5
         self._auto_target_y = 0.5
+        self._auto_fx_expiry = {}   # fx name -> time it must auto-switch off
 
         self.running = True
 
@@ -502,6 +510,7 @@ class Engine:
         self._auto_next_clip_at    = now + 1.0
         self._auto_next_fx_at      = now + self.auto_fx_interval
         self._auto_next_param_at   = now
+        self._auto_fx_expiry = {}
         print(f"[vj] AUTOPILOT engaged — clip every {self.auto_clip_interval:.1f}s, "
               f"fx every {self.auto_fx_interval:.1f}s")
 
@@ -514,6 +523,14 @@ class Engine:
     def update_auto(self, now):
         if not self.auto_mode:
             return
+
+        # Enforce per-FX max-hold caps (e.g. edges) every tick, regardless
+        # of the FX-toggle interval, so a mostly-black FX can't sit on long
+        # enough to black the output out.
+        for fx in list(self._auto_fx_expiry.keys()):
+            if now >= self._auto_fx_expiry[fx]:
+                self.fx_state[fx] = False
+                del self._auto_fx_expiry[fx]
 
         # Base layer cycling: usually a clip, sometimes a generative.
         if now >= self._auto_next_clip_at:
@@ -532,9 +549,14 @@ class Engine:
             active_on = [k for k, v in self.fx_state.items() if v]
             active_off = [k for k, v in self.fx_state.items() if not v]
             if active_on and (len(active_on) >= 3 or random.random() < 0.45):
-                self.fx_state[random.choice(active_on)] = False
+                turned_off = random.choice(active_on)
+                self.fx_state[turned_off] = False
+                self._auto_fx_expiry.pop(turned_off, None)
             elif active_off:
-                self.fx_state[random.choice(active_off)] = True
+                turned_on = random.choice(active_off)
+                self.fx_state[turned_on] = True
+                if turned_on in AUTO_FX_MAX_HOLD:
+                    self._auto_fx_expiry[turned_on] = now + AUTO_FX_MAX_HOLD[turned_on]
             self._auto_next_fx_at = now + self.auto_fx_interval * random.uniform(0.5, 1.8)
 
         # Drift PARAM X/Y toward fresh random targets every few seconds.
@@ -1641,6 +1663,10 @@ class Engine:
 
             dt = now - last_t
             last_t = now
+            if dt > 1e-6:
+                # Smoothed achieved fps (dt includes the clock.tick cap, so
+                # this reads the real rate, capped at cfg.fps).
+                self.fps_measured += (1.0 / dt - self.fps_measured) * 0.15
             self.update_auto(now)
             self.update_params_from_keys(dt)
             self.update_held_hits(HIT_KEYS)
