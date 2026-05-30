@@ -72,6 +72,7 @@ class Engine:
         self._perf = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
         self._perf_ms = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
         self._disp_ms = 0.0   # smoothed display upscale+blit time (ms)
+        self._perf_log_at = 0.0   # last stdout perf-line timestamp
         self._display_interp = (cv2.INTER_CUBIC
                                 if getattr(cfg, "display_filter", "linear") == "cubic"
                                 else cv2.INTER_LINEAR)
@@ -1581,6 +1582,7 @@ class Engine:
         path — this can never break the default launch.
         """
         if not getattr(self.cfg, "gpu_scale", False):
+            print("[vj] gpu-scale: OFF (CPU output scaling)")
             return False
         try:
             from pygame._sdl2.video import Window, Renderer, Texture
@@ -1777,6 +1779,14 @@ class Engine:
                 # Smoothed achieved fps (dt includes the clock.tick cap, so
                 # this reads the real rate, capped at cfg.fps).
                 self.fps_measured += (1.0 / dt - self.fps_measured) * 0.15
+            # Periodic perf line to stdout so a no-HUD run is still measurable
+            # (the launcher tees stdout into vj_last_run.log).
+            if now - self._perf_log_at >= 2.0:
+                self._perf_log_at = now
+                p = self._perf_ms
+                print("[vj] %.0f fps | clip %.0f gen %.0f fx %.0f warp %.0f "
+                      "disp %.0f ms" % (self.fps_measured, p["clip"], p["gen"],
+                      p["fx"], p["warp"], self._disp_ms), flush=True)
             self.update_auto(now)
             self.update_params_from_keys(dt)
             self.update_held_hits(HIT_KEYS)

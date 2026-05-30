@@ -239,6 +239,7 @@ def main():
         gpu_out_ok = engine.init_gpu_output()
 
     print(f"[vj] output:      {cfg.width}x{cfg.height} fullscreen={cfg.fullscreen} display={cfg.display}")
+    print(f"[vj] gpu-scale:   requested={args.gpu_scale} active={gpu_out_ok}")
     if control is not None:
         print(f"[vj] control HUD: display {args.control_display}, size {args.control_size}")
     print(f"[vj] clips dir:    {cfg.clips_dir}")
