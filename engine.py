@@ -1179,18 +1179,10 @@ class Engine:
                 frame = edges(frame)
             if s.get("invert"):
                 frame = invert(frame)
-            if s.get("feedback"):
-                # Mapping-mode feedback uses the previous full canvas as
-                # the trail buffer. Skip if we don't have one yet OR if
-                # dimensions don't match (avoids a feedback artefact on
-                # a low-res generative pulling from the canvas-sized
-                # prev_frame; the warp would inflate a thumbnail).
-                if (self.prev_frame is not None
-                        and self.prev_frame.shape[:2] == frame.shape[:2]):
-                    zoom = 1.0 + ctx.px * 0.08
-                    rot = (ctx.py - 0.5) * 4.0
-                    frame = feedback_blend(self.prev_frame, frame,
-                                           zoom=zoom, rotate=rot)
+            # feedback is intentionally NOT applied in mapping mode (same as
+            # melt). Per-group trails warped across spaces look muddy, and the
+            # canvas-vs-thumbnail size mismatch caused artefacts; the toggle
+            # is left settable but has no visual effect here.
 
         # Per-group overlay screen-blend. Overlay pool reads at canvas
         # size; resize to match the source if the source was rendered
