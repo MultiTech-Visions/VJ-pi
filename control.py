@@ -228,8 +228,9 @@ class ControlWindow:
         if mapping_mode:
             p = getattr(e, "_perf_ms", None)
             if p:
-                btxt = "clip %.0f · gen %.0f · fx %.0f · warp %.0f ms" % (
-                    p["clip"], p["gen"], p["fx"], p["warp"])
+                disp = getattr(e, "_disp_ms", 0.0)
+                btxt = "clip %.0f · gen %.0f · fx %.0f · warp %.0f · disp %.0f ms" % (
+                    p["clip"], p["gen"], p["fx"], p["warp"], disp)
                 bsurf = self.font_m.render(btxt, True, (175, 180, 200))
                 surface.blit(bsurf, (pad, y))
                 y += bsurf.get_height() + 6

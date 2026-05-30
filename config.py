@@ -37,6 +37,11 @@ class Config:
     # thread-safe). 1 = serial (default). Try 3-4 on a 4-core Pi 5.
     mapping_threads: int = 1
 
+    # Interpolation for the final canvas→display upscale: "linear" (fast,
+    # default) or "cubic" (sharper, slower). On a moving projection the two
+    # are hard to tell apart, so linear buys back several ms/frame.
+    display_filter: str = "linear"
+
     @property
     def clips_dir(self) -> Path:
         return self.assets_dir / "clips"

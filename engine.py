@@ -71,6 +71,10 @@ class Engine:
         # Smoothed per-phase mapping render times (ms) for the HUD breakdown.
         self._perf = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
         self._perf_ms = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
+        self._disp_ms = 0.0   # smoothed display upscale+blit time (ms)
+        self._display_interp = (cv2.INTER_CUBIC
+                                if getattr(cfg, "display_filter", "linear") == "cubic"
+                                else cv2.INTER_LINEAR)
         # Optional thread pool for parallelising per-group warp/resize in
         # mapping mode (--mapping-threads). 1 = serial (default, unchanged).
         self._map_threads = max(1, int(getattr(cfg, "mapping_threads", 1)))
@@ -1090,20 +1094,25 @@ class Engine:
             renderable.append(group)
 
         if self._map_pool is not None and len(renderable) > 1:
-            # Phase 1 (serial): build each group's source + resolve its mask.
-            # The clip/overlay pools, the GPU bridge, and the mask cache are
-            # all NOT thread-safe, so every shared-state access happens here.
+            # Phase 1 (serial): I/O + mask resolve. The clip/overlay pools,
+            # the GPU bridge, and the mask cache are NOT thread-safe, so all
+            # shared-state access happens here on the main thread.
             jobs = []
             for group in renderable:
-                source = self._compose_group_source(group, now)
+                base, ov = self._group_io(group, now)
                 mask_info = (None if group.fit_mode == "stretch"
                              else self._group_mask(group))
-                jobs.append((source, group, mask_info))
-            # Phase 2 (parallel): warp/resize into paint ops — pure cv2 on
-            # each group's own arrays, no shared writes.
+                jobs.append((base, ov, group, mask_info))
+
+            # Phase 2 (parallel): FX + overlay + warp into paint ops — pure
+            # cv2 on each group's own arrays, no shared writes. (The "warp"
+            # timer here covers fx+warp combined since they run together.)
+            def _fx_warp(j):
+                frame = self._apply_fx_overlay(j[0], j[1], j[2], now)
+                return self._group_paint_ops(frame, j[2], j[3])
+
             _tw = time.perf_counter()
-            ops_lists = list(self._map_pool.map(
-                lambda j: self._group_paint_ops(j[0], j[1], j[2]), jobs))
+            ops_lists = list(self._map_pool.map(_fx_warp, jobs))
             # Phase 3 (serial): composite, in group order, onto the canvas.
             for ops in ops_lists:
                 self._apply_paint_ops(canvas, ops)
@@ -1125,14 +1134,25 @@ class Engine:
         return canvas
 
     def _compose_group_source(self, group, now):
-        """Build the unwarped source frame for one group (clip / gen / FX).
+        """Serial: unwarped source for one group = I/O (clip/gen/overlay)
+        followed by the FX chain + overlay blend. Split into _group_io
+        (phase 1, not thread-safe) and _apply_fx_overlay (phase 2, pure cv2)
+        so the threaded mapping path can parallelise the FX."""
+        base, ov = self._group_io(group, now)
+        _tf = time.perf_counter()
+        frame = self._apply_fx_overlay(base, ov, group, now)
+        self._perf["fx"] += time.perf_counter() - _tf
+        return frame
+
+    def _group_io(self, group, now):
+        """Phase 1 (serial): decode the clip / render the generator and READ
+        (not blend) the overlay. Touches the non-thread-safe clip & overlay
+        pools and the GPU bridge, so it stays on the main thread. Returns
+        (base_frame, overlay_frame_or_None).
 
         Generative sources render at cfg.gen_render_scale × canvas (default
-        0.5) — they're smooth procedural patterns, no detail lost from
-        upscaling, but 4× fewer pixels under the per-frame sin/sqrt/etc.
-        Clips stay at canvas resolution since they carry real detail.
-        FX runs at whatever size the base was rendered at (kaleido / mirror
-        / etc. adapt via frame.shape internally).
+        0.5) — smooth procedural patterns, no detail lost from upscaling, but
+        4× fewer pixels. Clips stay at canvas resolution (real detail).
         """
         w, h = self.w, self.h
         is_clip = (group.content_kind == "clip" and group.clip_stem)
@@ -1167,18 +1187,27 @@ class Engine:
         else:
             frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-        fh, fw = frame.shape[:2]
+        ov = None
+        if group.overlay_stem:
+            ov_idx = self.overlays.find_by_stem(group.overlay_stem)
+            if ov_idx is not None:
+                self.overlays.ensure_open(ov_idx)
+                ov = self.overlays.read_at(ov_idx)
+        return frame, ov
 
-        # Per-group FX chain. Runs at whatever size the base is — kaleido
-        # uses frame.shape; mirror, posterize, rgb_split, edges, invert
-        # all are shape-agnostic.
+    def _apply_fx_overlay(self, frame, ov, group, now):
+        """Phase 2 (thread-safe, pure cv2): per-group FX chain then overlay
+        screen-blend. No pool / cache / canvas access and no shared writes,
+        so it can run in a worker thread.
+
+        Heavy FX (kaleidoscope especially) cost per output pixel, so we drop
+        the source to fx_render_scale before running them — the group is
+        warped onto a quad anyway, so the detail loss is minor. Clips render
+        at full canvas res, so that's where it pays off; generators are
+        already small (no-op for them).
+        """
+        fh, fw = frame.shape[:2]
         if any(group.fx_state.values()):
-            _tf = time.perf_counter()
-            # Heavy FX (kaleidoscope especially) cost per output pixel, so
-            # drop the source to fx_render_scale before running them — the
-            # group gets warped onto a quad anyway, so the detail loss is
-            # minor. Clips render at full canvas res, so this is where it
-            # pays off; generators are already small (no-op for them).
             fxs = getattr(self.cfg, "fx_render_scale", 1.0)
             _tw2, _th2 = max(64, int(self.w * fxs)), max(36, int(self.h * fxs))
             if fw > _tw2 or fh > _th2:
@@ -1201,27 +1230,18 @@ class Engine:
                 frame = edges(frame)
             if s.get("invert"):
                 frame = invert(frame)
-            self._perf["fx"] += time.perf_counter() - _tf
             # feedback is intentionally NOT applied in mapping mode (same as
-            # melt). Per-group trails warped across spaces look muddy, and the
-            # canvas-vs-thumbnail size mismatch caused artefacts; the toggle
-            # is left settable but has no visual effect here.
+            # melt) — per-group trails warped across spaces look muddy.
 
-        # Per-group overlay screen-blend. Overlay pool reads at canvas
-        # size; resize to match the source if the source was rendered
-        # smaller (cheap — one resize at fw×fh).
-        if group.overlay_stem:
-            ov_idx = self.overlays.find_by_stem(group.overlay_stem)
-            if ov_idx is not None:
-                self.overlays.ensure_open(ov_idx)
-                ov = self.overlays.read_at(ov_idx)
-                if ov is not None:
-                    if ov.shape[:2] != (fh, fw):
-                        ov = cv2.resize(ov, (fw, fh),
-                                        interpolation=cv2.INTER_AREA)
-                    frame = screen_blend(frame, ov)
+        # Per-group overlay screen-blend. Resize the (already-read) overlay
+        # to match the post-FX source size if needed (cheap, one resize).
+        if ov is not None:
+            if ov.shape[:2] != (fh, fw):
+                ov = cv2.resize(ov, (fw, fh), interpolation=cv2.INTER_AREA)
+            frame = screen_blend(frame, ov)
 
         return frame
+
 
     def _gen_render_size(self):
         """Internal generative resolution = cfg.width/height × scale,
@@ -1500,19 +1520,21 @@ class Engine:
                             (220, 230, 250), 1, cv2.LINE_AA)
 
     def blit_to_output(self, frame):
+        _t = time.perf_counter()
         tw, th = self.screen.get_size()
         if (tw, th) != (self.w, self.h):
-            # Bicubic (cv2) for the final upscale to the display — sharper
-            # and less blocky than pygame's bilinear smoothscale, especially
-            # for generators that started below canvas resolution. cv2 takes
-            # (width, height); frame is (h, w, 3). Cubic on uint8 is
-            # saturate-clamped internally, so no overshoot wrap-around.
-            frame = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_CUBIC)
+            # Final upscale to the display. cv2 takes (width, height); frame
+            # is (h, w, 3). Default INTER_LINEAR — on a projector in motion
+            # it's visually ~indistinguishable from cubic but markedly
+            # cheaper; --display-filter cubic restores the sharper (slower)
+            # path.
+            frame = cv2.resize(frame, (tw, th), interpolation=self._display_interp)
             surface = pygame.image.frombuffer(frame.tobytes(), (tw, th), "RGB")
         else:
             surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
         self.screen.blit(surface, (0, 0))
         pygame.display.flip()
+        self._disp_ms += ((time.perf_counter() - _t) * 1000.0 - self._disp_ms) * 0.2
 
     def render(self):
         """Convenience: compose + blit (used when there is no control window)."""
