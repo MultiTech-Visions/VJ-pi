@@ -60,6 +60,8 @@ class GpuGeneratorBridge:
     def __init__(self):
         self.workers = OrderedDict()   # name -> Popen ; ordered for LRU
         self._cooldown = {}            # name -> time before which not to respawn
+        self._paused = set()           # names of workers currently PAUSED
+        self._rendered = set()         # names render()'d since the last pause_idle
         self.disabled = (os.environ.get("VJ_NO_GPU_GENERATORS") == "1"
                          or MAX_WORKERS < 1)
         self.failed = False
@@ -95,6 +97,8 @@ class GpuGeneratorBridge:
             if len(payload) != n:
                 raise RuntimeError("short frame from worker")
             frame = np.frombuffer(payload, dtype=np.uint8)
+            self._rendered.add(name)     # on-screen this frame
+            self._paused.discard(name)   # a successful render means it's PLAYING
             return frame.reshape((int(msg["height"]), int(msg["width"]), 3)).copy()
         except Exception as exc:
             # Retire just this generator's worker (others keep running) and
@@ -112,11 +116,29 @@ class GpuGeneratorBridge:
             return
         for name in list(self.workers.keys()):
             self._pause_one(name)
+            self._paused.add(name)
+
+    def pause_idle(self):
+        """Pause every live worker that wasn't render()'d since the last call
+        — i.e. generators that just went off-screen. V3D is shared, so a few
+        off-screen GL pipelines all running at 30fps starve whatever IS on
+        screen (a lone donut dropping to 9fps because 7 cycled-past generators
+        are still churning). This is edge-triggered: a worker is paused only
+        on the transition to idle (tracked in _paused) and resumes by itself
+        on its next render(), so steady state is just a couple of set checks.
+        Call once per composed frame."""
+        if not self.disabled and not self.failed:
+            for name in list(self.workers.keys()):
+                if name not in self._rendered and name not in self._paused:
+                    self._pause_one(name)
+                    self._paused.add(name)
+        self._rendered.clear()
 
     def shutdown(self):
         for name in list(self.workers.keys()):
             self._kill(name)
         self.workers.clear()
+        self._paused.clear()
 
     # ── internals ──────────────────────────────────────────────────
 
@@ -164,6 +186,7 @@ class GpuGeneratorBridge:
             self._kill(name)
 
     def _kill(self, name):
+        self._paused.discard(name)
         proc = self.workers.pop(name, None)
         if proc is None:
             return
