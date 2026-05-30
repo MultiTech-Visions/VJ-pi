@@ -1,6 +1,7 @@
 import os
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pygame
 import numpy as np
@@ -70,6 +71,11 @@ class Engine:
         # Smoothed per-phase mapping render times (ms) for the HUD breakdown.
         self._perf = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
         self._perf_ms = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
+        # Optional thread pool for parallelising per-group warp/resize in
+        # mapping mode (--mapping-threads). 1 = serial (default, unchanged).
+        self._map_threads = max(1, int(getattr(cfg, "mapping_threads", 1)))
+        self._map_pool = (ThreadPoolExecutor(max_workers=self._map_threads)
+                          if self._map_threads > 1 else None)
 
         self.clips = ClipPool(cfg.clips_dir, (self.w, self.h))
         self.overlays = ClipPool(cfg.overlays_dir, (self.w, self.h))
@@ -1070,6 +1076,7 @@ class Engine:
         if now - getattr(self, "_mask_cache_gc_at", 0.0) > 5.0:
             self._invalidate_mask_cache()
             self._mask_cache_gc_at = now
+        renderable = []
         for group in self.mapping.groups:
             # Skip groups with no spaces (no mask) AND skip groups
             # whose content is blackout (nothing to compose). Saves a
@@ -1080,10 +1087,33 @@ class Engine:
                     or (group.content_kind == "clip" and not group.clip_stem)
                     or (group.content_kind == "generative" and not group.gen_name)):
                 continue
-            source = self._compose_group_source(group, now)
+            renderable.append(group)
+
+        if self._map_pool is not None and len(renderable) > 1:
+            # Phase 1 (serial): build each group's source + resolve its mask.
+            # The clip/overlay pools, the GPU bridge, and the mask cache are
+            # all NOT thread-safe, so every shared-state access happens here.
+            jobs = []
+            for group in renderable:
+                source = self._compose_group_source(group, now)
+                mask_info = (None if group.fit_mode == "stretch"
+                             else self._group_mask(group))
+                jobs.append((source, group, mask_info))
+            # Phase 2 (parallel): warp/resize into paint ops — pure cv2 on
+            # each group's own arrays, no shared writes.
             _tw = time.perf_counter()
-            self._place_group_into_canvas(canvas, source, group)
+            ops_lists = list(self._map_pool.map(
+                lambda j: self._group_paint_ops(j[0], j[1], j[2]), jobs))
+            # Phase 3 (serial): composite, in group order, onto the canvas.
+            for ops in ops_lists:
+                self._apply_paint_ops(canvas, ops)
             self._perf["warp"] += time.perf_counter() - _tw
+        else:
+            for group in renderable:
+                source = self._compose_group_source(group, now)
+                _tw = time.perf_counter()
+                self._place_group_into_canvas(canvas, source, group)
+                self._perf["warp"] += time.perf_counter() - _tw
         canvas = self._apply_hits(canvas)
         # Smooth the per-phase timings (ms) for the HUD breakdown.
         for _k, _v in self._perf.items():
@@ -1203,33 +1233,54 @@ class Engine:
         return gw, gh
 
     def _place_group_into_canvas(self, canvas, source, group):
-        """Dispatch into the right placement strategy based on the group's
-        fit_mode. "stretch" is per-space (each quad warps its own copy of
-        the video — legacy billboard look). The other three modes are
-        per-GROUP: the video plays once across the whole canvas at the
-        chosen zoom / pan, and the union of the group's space polygons
-        is the mask through which it shows. Multiple spaces in one
-        group → multiple windows onto one playing video."""
+        """Serial placement: compute the group's paint ops and apply them."""
+        self._apply_paint_ops(canvas, self._group_paint_ops(source, group))
+
+    def _apply_paint_ops(self, canvas, ops):
+        """Composite precomputed (y0,y1,x0,x1, src, mask) ops onto the canvas.
+        Kept separate from op COMPUTATION so the heavy warp/resize can run in
+        worker threads (they write nothing shared) and only this cheap masked
+        copy touches the shared canvas, on the main thread."""
+        for (y0, y1, x0, x1, src, mask) in ops:
+            cv2.copyTo(src, mask, canvas[y0:y1, x0:x1])
+
+    def _group_paint_ops(self, source, group, mask_info=None):
+        """Build a group's paint ops WITHOUT touching the canvas, so it is
+        safe to run in a worker thread — pure cv2 on `source` plus group
+        geometry. The one shared input, the cached group mask for the
+        window/fit/fill modes, is passed in via `mask_info` when threaded
+        (the cache itself isn't thread-safe); when None we fetch it here for
+        the serial path.
+
+        "stretch" is per-space (each quad warps its own copy of the video —
+        legacy billboard look). The other modes play the video once across
+        the canvas and reveal it through the union of the group's space
+        polygons — many windows onto one playing video.
+        """
         w, h = self.w, self.h
         if group.fit_mode == "stretch":
+            ops = []
             for space in group.spaces:
-                self._warp_into_canvas(canvas, source,
-                                       space.corners_px(w, h))
-            return
-        self._window_group_into_canvas(canvas, source, group)
+                op = self._warp_op(source, space.corners_px(w, h))
+                if op is not None:
+                    ops.append(op)
+            return ops
+        if mask_info is None:
+            mask_info = self._group_mask(group)
+        op = self._window_op(source, group, mask_info)
+        return [] if op is None else [op]
 
-    def _warp_into_canvas(self, canvas, source, dst_corners):
-        """Warp `source` into the quad `dst_corners` on `canvas` — the
-        old "stretch to fit the quad" behaviour, kept as an opt-in
-        fit_mode so the operator can deliberately get the perspective-
-        billboard look (good for projecting onto an angled flat surface).
+    def _warp_op(self, source, dst_corners):
+        """Stretch-mode paint op: warp `source` onto the quad `dst_corners`.
+        Returns (y0, y1, x0, x1, warped_bbox, mask_bbox) or None for a
+        degenerate quad. Pure cv2, no canvas writes → thread-safe.
 
-        Pitfall: cv2.warpPerspective on the full canvas is expensive. We
-        crop output to the quad's bounding box and apply a convex-poly mask
-        so pixels outside the quad on the canvas stay black (no leak onto
-        the wall) and other groups' pixels aren't trampled.
+        We warp straight into the quad's bounding box (translate the
+        transform so the bbox origin maps to 0,0 and render at bbox size)
+        rather than warping the whole canvas and cropping — identical pixels,
+        much cheaper for small quads.
         """
-        h, w = canvas.shape[:2]
+        h, w = self.h, self.w
         sh, sw = source.shape[:2]
         src_corners = np.array(
             [[0, 0], [sw, 0], [sw, sh], [0, sh]], dtype=np.float32
@@ -1241,31 +1292,33 @@ class Engine:
         y_min = max(0, int(np.floor(dst_corners[:, 1].min())))
         y_max = min(h, int(np.ceil(dst_corners[:, 1].max())))
         if x_max - x_min < 2 or y_max - y_min < 2:
-            return  # Degenerate quad, skip silently.
+            return None  # Degenerate quad.
 
+        bw, bh = x_max - x_min, y_max - y_min
+        shift = np.array([[1.0, 0.0, float(-x_min)],
+                          [0.0, 1.0, float(-y_min)],
+                          [0.0, 0.0, 1.0]])
+        Mb = shift.dot(M)
         warped = cv2.warpPerspective(
-            source, M, (w, h),
+            source, Mb, (bw, bh),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0),
         )
-        mask = np.zeros((h, w), dtype=np.uint8)
-        poly = dst_corners.astype(np.int32)
+        mask = np.zeros((bh, bw), dtype=np.uint8)
+        poly = dst_corners.astype(np.int32) - np.array([x_min, y_min], dtype=np.int32)
         cv2.fillConvexPoly(mask, poly, 255)
-        sub_mask = mask[y_min:y_max, x_min:x_max]
-        sub_warp = warped[y_min:y_max, x_min:x_max]
-        sub_canvas = canvas[y_min:y_max, x_min:x_max]
-        idx = sub_mask > 0
-        sub_canvas[idx] = sub_warp[idx]
-        canvas[y_min:y_max, x_min:x_max] = sub_canvas
+        return (y_min, y_max, x_min, x_max, warped, mask)
 
-    def _window_group_into_canvas(self, canvas, source, group):
-        """Place `source` ONCE across the canvas at the group's chosen
-        zoom / pan, then reveal it only through the union of the group's
-        space polygons. The video keeps its natural aspect (no warp);
-        each space is a hole onto a single underlying video plane, so
-        two spaces side-by-side in one group show the video continuously
-        across both — different parts of the same video, in sync.
+    def _window_op(self, source, group, mask_info):
+        """Window/fit/fill paint op: place `source` once across the canvas at
+        the group's zoom/pan, revealed through `mask_info` (the cached group
+        mask + its bbox). Returns (y0, y1, x0, x1, src, mask) or None. Pure
+        cv2, no canvas writes → thread-safe.
+
+        The video keeps its natural aspect (no warp); each space is a hole
+        onto a single underlying video plane, so two spaces side-by-side in
+        one group show the video continuously across both.
 
         fit_mode = "fit"   : uniform scale so the source fits the
                              canvas (letterboxed). Zoom / pan ignored.
@@ -1274,10 +1327,10 @@ class Engine:
         fit_mode = "window": "fit" base scale times group.zoom, plus
                              pan offset (-1..+1 of half-canvas).
         """
-        h, w = canvas.shape[:2]
+        h, w = self.h, self.w
         sh, sw = source.shape[:2]
         if sw < 2 or sh < 2:
-            return
+            return None
 
         mode = group.fit_mode
         if mode == "fill":
@@ -1302,12 +1355,11 @@ class Engine:
         vx0, vy0 = max(0, dx), max(0, dy)
         vx1, vy1 = min(w, dx + dw), min(h, dy + dh)
         if vx1 <= vx0 or vy1 <= vy0:
-            return  # Video positioned entirely off-canvas.
+            return None  # Video positioned entirely off-canvas.
 
-        # Resolve the group mask + its bounding rect (cached per-group;
-        # only rebuilt when corners change, so a static layout pays the
-        # cv2.fillConvexPoly cost ONCE, not every frame).
-        mask, mbox = self._group_mask(group)
+        # The group mask + its bounding rect, precomputed (cached per-group;
+        # passed in for thread-safety since the cache isn't thread-safe).
+        mask, mbox = mask_info
         mx0, my0, mx1, my1 = mbox
 
         # Intersection of "where the video lands" and "where the mask
@@ -1315,20 +1367,15 @@ class Engine:
         x0, y0 = max(vx0, mx0), max(vy0, my0)
         x1, y1 = min(vx1, mx1), min(vy1, my1)
         if x1 <= x0 or y1 <= y0:
-            return  # Mask and video don't overlap.
+            return None  # Mask and video don't overlap.
 
         interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
         resized = cv2.resize(source, (dw, dh), interpolation=interp)
 
         sx0, sy0 = x0 - dx, y0 - dy
         sx1, sy1 = sx0 + (x1 - x0), sy0 + (y1 - y0)
-        # cv2.copyTo writes `src` into `dst` where `mask` != 0 in pure
-        # C, GIL released — significantly faster than the previous
-        # `dst[mask>0] = src[mask>0]` boolean-fancy-index path which
-        # builds a full-canvas-sized intermediate every call.
-        cv2.copyTo(resized[sy0:sy1, sx0:sx1],
-                   mask[y0:y1, x0:x1],
-                   canvas[y0:y1, x0:x1])
+        return (y0, y1, x0, x1,
+                resized[sy0:sy1, sx0:sx1], mask[y0:y1, x0:x1])
 
     def _group_mask(self, group):
         """Return (mask, (x0, y0, x1, y1)) for `group`. Cached by space
@@ -1603,3 +1650,5 @@ class Engine:
         self.clips.release_all()
         self.overlays.release_all()
         self.gpu_generators.shutdown()
+        if self._map_pool is not None:
+            self._map_pool.shutdown(wait=False)

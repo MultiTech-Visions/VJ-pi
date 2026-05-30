@@ -30,6 +30,13 @@ class Config:
     # the heaviest effect. 1.0 = run FX at full source resolution (sharper).
     fx_render_scale: float = 0.5
 
+    # Mapping mode renders each group's source serially, then warps/resizes
+    # it onto its quad — the warp/resize is pure cv2 (GIL released), so it
+    # parallelises across cores. With >1, the per-group warp runs in a thread
+    # pool (clip decode / generators / masks stay serial — their pools aren't
+    # thread-safe). 1 = serial (default). Try 3-4 on a 4-core Pi 5.
+    mapping_threads: int = 1
+
     @property
     def clips_dir(self) -> Path:
         return self.assets_dir / "clips"
