@@ -626,7 +626,7 @@ class Engine:
         try:
             self.screen = pygame.display.set_mode(size, flags, display=new_idx)
             pygame.display.set_caption("pi-paint VJ — Output")
-            pygame.mouse.set_visible(not self.cfg.fullscreen)
+            pygame.mouse.set_visible(True)  # always show cursor
             print(f"[vj] output → display {new_idx} ({size[0]}x{size[1]}, "
                   f"borderless={self.cfg.fullscreen})")
         except (TypeError, pygame.error, ValueError) as exc:
@@ -1529,9 +1529,12 @@ class Engine:
             # cheaper; --display-filter cubic restores the sharper (slower)
             # path.
             frame = cv2.resize(frame, (tw, th), interpolation=self._display_interp)
-            surface = pygame.image.frombuffer(frame.tobytes(), (tw, th), "RGB")
+            # cv2.resize output is C-contiguous, so hand the array straight to
+            # frombuffer (no full-frame tobytes() copy).
+            surface = pygame.image.frombuffer(frame, (tw, th), "RGB")
         else:
-            surface = pygame.image.frombuffer(frame.tobytes(), (self.w, self.h), "RGB")
+            surface = pygame.image.frombuffer(
+                np.ascontiguousarray(frame), (self.w, self.h), "RGB")
         self.screen.blit(surface, (0, 0))
         pygame.display.flip()
         self._disp_ms += ((time.perf_counter() - _t) * 1000.0 - self._disp_ms) * 0.2
