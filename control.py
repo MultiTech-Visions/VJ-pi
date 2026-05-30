@@ -85,6 +85,7 @@ class ControlWindow:
         self.font_h = pygame.font.SysFont("Sans,Arial,DejaVuSans", 18, bold=True)
         self.font_m = pygame.font.SysFont("Sans,Arial,DejaVuSans", 14)
         self.font_s = pygame.font.SysFont("Sans,Arial,DejaVuSans", 12)
+        self.font_fps = pygame.font.SysFont("Sans,Arial,DejaVuSans", 30, bold=True)
 
         # Hit-test rects, populated each frame in render().
         self._display_btn_rects = []  # [(idx, pygame.Rect), ...]
@@ -205,15 +206,6 @@ class ControlWindow:
 
         # ── Top row: preview (left) + status (right) ─────────────
         self._draw_preview(surface, pad, pad, frame)
-        # FPS readout overlaid on the preview (top-left), colour-coded so
-        # performance is visible at a glance: green ≥25, amber ≥15, red below.
-        fps = getattr(e, "fps_measured", 0.0)
-        fcol = (120, 230, 140) if fps >= 25.0 else (240, 220, 120) if fps >= 15.0 else (240, 120, 120)
-        fps_txt = "%.0f FPS" % fps
-        shadow = self.font_m.render(fps_txt, True, (0, 0, 0))
-        label = self.font_m.render(fps_txt, True, fcol)
-        surface.blit(shadow, (pad + 5, pad + 5))
-        surface.blit(label, (pad + 4, pad + 4))
         if mapping_mode:
             self._draw_space_overlay(surface)
         sx = pad + self.preview_w + 16
@@ -222,8 +214,15 @@ class ControlWindow:
         else:
             self._draw_status(surface, sx, pad, win_w - sx - pad)
 
-        # Cursor flowing down the page from below the preview row.
-        y = pad + self.preview_h + 14
+        # FPS readout on its own line just under the preview — big and
+        # colour-coded (green good / amber marginal / red bad) so it stays
+        # legible on the small 7" operator screen.
+        y = pad + self.preview_h + 6
+        fps = getattr(e, "fps_measured", 0.0)
+        fcol = (110, 230, 130) if fps >= 25.0 else (245, 215, 110) if fps >= 15.0 else (240, 90, 90)
+        fps_surf = self.font_fps.render("%.0f FPS" % fps, True, fcol)
+        surface.blit(fps_surf, (pad, y))
+        y += fps_surf.get_height() + 8
 
         # Badges (only renders if anything to show; returns same y otherwise)
         y = self._draw_badges(surface, pad, y)
