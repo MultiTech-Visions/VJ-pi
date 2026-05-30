@@ -16,6 +16,13 @@ OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
 CONTROL_SIZE="680x720"
 
+# Render canvas resolution. Leave empty to use config.py's default (1280x720).
+# To test the 1080p sweet spot, FIRST run "Process Assets (1080p).sh", then
+# set these to 1920 / 1080 so clips play at canvas res (no per-frame resize).
+# GPU scaling (below) presents the canvas to the projector either way.
+RENDER_WIDTH=""
+RENDER_HEIGHT=""
+
 cd "$(dirname "$0")"
 LOG="$(pwd)/vj_last_run.log"
 
@@ -48,6 +55,9 @@ fi
 # HUD picker's persistent selection always wins. Uncomment the second
 # block instead if you want this script to override the saved state.
 ARGS=( --fullscreen --gpu-scale --control --control-display "$CONTROL_DISPLAY" --control-size "$CONTROL_SIZE" )
+if [ -n "$RENDER_WIDTH" ] && [ -n "$RENDER_HEIGHT" ]; then
+  ARGS+=( --width "$RENDER_WIDTH" --height "$RENDER_HEIGHT" )
+fi
 if [ ! -f vj_state.json ]; then
   ARGS+=( --output-display "$OUTPUT_DISPLAY" )
 fi
