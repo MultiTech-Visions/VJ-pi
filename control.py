@@ -43,10 +43,6 @@ MAPPING_KEY_CHEAT = [
     ("Ctrl+A",       "Toggle autopilot on current group"),
     ("Ctrl+K",       "Cycle autopilot kind"),
     ("Ctrl+, / .",   "Autopilot interval ±1s"),
-    ("Ctrl+B",       "Toggle borders"),
-    ("Ctrl+C",       "Cycle border colour"),
-    ("Ctrl+[ / ]",   "Border intensity ±10%"),
-    ("Ctrl+; / '",   "Border thickness ±1px"),
     ("PERFORM — content keys", "1-0/A-L;/[]/F1-F8/←→↑↓ → selected group"),
 ]
 
@@ -89,9 +85,6 @@ class ControlWindow:
         # Hit-test rects, populated each frame in render().
         self._display_btn_rects = []  # [(idx, pygame.Rect), ...]
         self._apply_rect = None
-        # Frame panel buttons (per-group zoom / pan / fit / reset).
-        # Each entry: (action_name, *args, pygame.Rect).
-        self._frame_btn_rects = []
         # Preview rect kept current each frame so corner-handle hit tests
         # know where the preview lives.
         self._preview_rect = pygame.Rect(0, 0, self.preview_w, self.preview_h)
@@ -148,30 +141,12 @@ class ControlWindow:
             e._mapping_handle_click(self._preview_to_norm(pos))
             return
 
-        # Frame-panel buttons (per-group zoom / pan / fit / reset).
-        if e.mode == "mapping":
-            for action, args, rect in self._frame_btn_rects:
-                if rect.collidepoint(pos):
-                    self._invoke_frame_action(action, args)
-                    return
-
         for idx, rect in self._display_btn_rects:
             if rect.collidepoint(pos):
                 self.engine.pending_display = idx
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
             self.engine.apply_pending_display()
-
-    def _invoke_frame_action(self, action, args):
-        e = self.engine
-        if action == "cycle_fit":
-            e.mapping_cycle_fit_mode(1)
-        elif action in ("zoom_in", "zoom_out"):
-            e.mapping_adjust_zoom(args[0])
-        elif action == "reset":
-            e.mapping_reset_frame()
-        elif action == "pan":
-            e.mapping_adjust_pan(args[0], args[1])
 
     def _preview_to_norm(self, pos):
         """Convert a preview-window click position into normalized (0..1)
@@ -305,10 +280,6 @@ class ControlWindow:
                              (x, y, self.preview_w, self.preview_h))
         pygame.draw.rect(surface, (90, 90, 120),
                          (x, y, self.preview_w, self.preview_h), 1)
-        label_text = ("MAPPING — drag corner handles to reshape"
-                      if self.engine.mode == "mapping" else "LIVE OUTPUT")
-        label = self.font_s.render(label_text, True, (140, 140, 160))
-        surface.blit(label, (x + 6, y + 4))
 
     def _draw_space_overlay(self, surface):
         """Outline every group's spaces on the preview, highlight the
@@ -446,81 +417,6 @@ class ControlWindow:
 
         self._param_bar(surface, "PARAM X", g.param_x, x, y, width); y += 18
         self._param_bar(surface, "PARAM Y", g.param_y, x, y, width); y += 22
-
-        # Border style summary
-        bc = e.mapping.border_color_eff()
-        sw = pygame.Rect(x + 88, y + 2, 18, 12)
-        pygame.draw.rect(surface, bc, sw)
-        pygame.draw.rect(surface, (90, 90, 120), sw, 1)
-        bls = self.font_m.render("BORDER", True, (130, 130, 160))
-        surface.blit(bls, (x, y))
-        on = "on" if e.mapping.show_borders else "OFF"
-        bvs = self.font_s.render(
-            f"  {on}  ·  thick {e.mapping.border_thickness}px"
-            f"  ·  int {int(e.mapping.border_intensity * 100)}%",
-            True, (200, 200, 220),
-        )
-        surface.blit(bvs, (sw.right + 6,
-                           y + (bls.get_height() - bvs.get_height()) // 2))
-        y += 22
-
-        # Frame controls — fit mode, zoom, pan, reset. All clickable so
-        # the operator can compose the per-group video framing without
-        # touching the keyboard.
-        self._draw_frame_panel(surface, g, x, y, width)
-
-    def _draw_frame_panel(self, surface, group, x, y, width):
-        """Per-group video framing controls: fit mode cycler, zoom ± /
-        reset, pan arrows. Rebuilds _frame_btn_rects each frame."""
-        self._frame_btn_rects = []
-        title = self.font_m.render("FRAME", True, (130, 130, 160))
-        surface.blit(title, (x, y))
-        # Fit-mode pill, click-to-cycle.
-        pill_label = f" {group.fit_mode} "
-        pill_txt = self.font_s.render(pill_label, True, (20, 20, 30))
-        pill_rect = pygame.Rect(x + 78, y + 1, pill_txt.get_width() + 8, 16)
-        pygame.draw.rect(surface, (180, 200, 240), pill_rect, border_radius=3)
-        pygame.draw.rect(surface, (90, 110, 160), pill_rect, 1, border_radius=3)
-        surface.blit(pill_txt, (pill_rect.x + 4,
-                                pill_rect.y + (pill_rect.h - pill_txt.get_height()) // 2))
-        self._frame_btn_rects.append(("cycle_fit", (), pill_rect))
-        # Zoom +/- and reset, on the same row.
-        bx = pill_rect.right + 8
-        for label, action, args in (("−", "zoom_out", (1 / 1.15,)),
-                                    ("+", "zoom_in", (1.15,)),
-                                    ("RESET", "reset", ())):
-            txt = self.font_s.render(f" {label} ", True, (240, 240, 250))
-            btn = pygame.Rect(bx, y + 1, txt.get_width() + 8, 16)
-            pygame.draw.rect(surface, (40, 50, 70), btn, border_radius=3)
-            pygame.draw.rect(surface, (90, 110, 140), btn, 1, border_radius=3)
-            surface.blit(txt, (btn.x + 4,
-                               btn.y + (btn.h - txt.get_height()) // 2))
-            self._frame_btn_rects.append((action, args, btn))
-            bx = btn.right + 6
-        y += 20
-
-        # Pan arrows + readout.
-        pan_label = self.font_s.render(
-            f"zoom {group.zoom:.2f} · pan {group.pan_x:+.2f}, {group.pan_y:+.2f}",
-            True, (170, 170, 200),
-        )
-        surface.blit(pan_label, (x, y + 4))
-        # Arrow cluster, right-aligned.
-        ax = x + width - (22 * 3 + 4)
-        ay = y
-        step = 0.1
-        arrows = [("◀", "pan", (-step, 0.0), (ax,        ay + 11)),
-                  ("▲", "pan", (0.0, -step), (ax + 22,   ay)),
-                  ("▼", "pan", (0.0, step),  (ax + 22,   ay + 22)),
-                  ("▶", "pan", (step, 0.0),  (ax + 44,   ay + 11))]
-        for label, action, args, pos in arrows:
-            txt = self.font_s.render(label, True, (240, 240, 250))
-            btn = pygame.Rect(pos[0], pos[1], 18, 18)
-            pygame.draw.rect(surface, (40, 50, 70), btn, border_radius=3)
-            pygame.draw.rect(surface, (90, 110, 140), btn, 1, border_radius=3)
-            surface.blit(txt, (btn.x + (btn.w - txt.get_width()) // 2,
-                               btn.y + (btn.h - txt.get_height()) // 2))
-            self._frame_btn_rects.append((action, args, btn))
 
     def _draw_groups_list(self, surface, x, y, width):
         e = self.engine

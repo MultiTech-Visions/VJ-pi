@@ -37,10 +37,10 @@ def parse_args():
                         "(0.1..1.0, default 0.5). Big speedup for heavy FX "
                         "like kaleidoscope in mapping mode (the result is "
                         "warped onto a quad anyway); 1.0 = full-res FX.")
-    p.add_argument("--mapping-threads", type=int, default=1,
+    p.add_argument("--mapping-threads", type=int, default=0,
                    help="Parallelise per-group FX + warp in mapping mode "
-                        "across this many threads (default 1 = serial). "
-                        "Try 3-4 on a 4-core Pi 5 for multi-group scenes.")
+                        "across this many threads (default 0 = auto: number "
+                        "of cores, capped at 4). Use 1 to force serial.")
     p.add_argument("--display-filter", choices=("linear", "cubic"),
                    default="linear",
                    help="Interpolation for the final upscale to the display "
@@ -156,13 +156,14 @@ def main():
         fullscreen=args.fullscreen, display=display,
         gen_render_scale=max(0.1, min(1.0, args.gen_render_scale)),
         fx_render_scale=max(0.1, min(1.0, args.fx_render_scale)),
-        mapping_threads=max(1, args.mapping_threads),
+        mapping_threads=(args.mapping_threads if args.mapping_threads >= 1
+                         else min(4, os.cpu_count() or 1)),
         display_filter=args.display_filter,
     )
 
     output_screen = _open_output_window(cfg)
     pygame.display.set_caption("pi-paint VJ — Output")
-    pygame.mouse.set_visible(not cfg.fullscreen)
+    pygame.mouse.set_visible(True)  # always show cursor
 
     # NOTE: we *don't* try to move the window to the target display at
     # launch any more — the SDL pump loop took long enough that X11
