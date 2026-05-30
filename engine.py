@@ -1562,6 +1562,19 @@ class Engine:
             if x1 - x0 >= 2 and y1 - y0 >= 2:
                 cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 255, 200), 1)
 
+        # Big crosshair cursor at the hover position. The OS pointer is tiny
+        # on a 4K projector; full-canvas intersecting lines make it obvious
+        # where the click will land.
+        if m.hover_norm is not None:
+            hx = int(max(0.0, min(1.0, m.hover_norm[0])) * w)
+            hy = int(max(0.0, min(1.0, m.hover_norm[1])) * h)
+            cv2.line(canvas, (0, hy), (w, hy), (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.line(canvas, (hx, 0), (hx, h), (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.line(canvas, (0, hy), (w, hy), (120, 255, 160), 1, cv2.LINE_AA)
+            cv2.line(canvas, (hx, 0), (hx, h), (120, 255, 160), 1, cv2.LINE_AA)
+            cv2.circle(canvas, (hx, hy), 9, (0, 0, 0), 2, cv2.LINE_AA)
+            cv2.circle(canvas, (hx, hy), 8, (120, 255, 160), 1, cv2.LINE_AA)
+
     def _draw_hover_toolbar(self, canvas, gi, si):
         """Render the per-space hover toolbar on the projector output."""
         w, h = self.w, self.h
@@ -1597,8 +1610,14 @@ class Engine:
                             (220, 230, 250), 1, cv2.LINE_AA)
 
     def _output_size(self):
-        """Output window pixel size — works for both the pygame.display
-        Surface (.get_size()) and the _sdl2 GPU Window (.size)."""
+        """Logical output size to normalise mouse coords against. Under
+        gpu-scale the renderer has logical_size = canvas, so SDL reports mouse
+        positions in CANVAS coords — normalise against the canvas, not the
+        window's pixel size (which would be off by the scale factor and make
+        every edit-mode click land at the wrong place). CPU path: the plain
+        display surface's pixel size."""
+        if self._gpu_out is not None:
+            return (self.w, self.h)
         scr = self.screen
         if hasattr(scr, "get_size"):
             return scr.get_size()
