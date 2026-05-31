@@ -1221,6 +1221,130 @@ LANTERN_PRESETS = {
 LANTERN_MAX_SPIN = 1.2
 
 
+# ── Hypercube: morphing box-fold fractal interior ────────────────────
+#
+# The "trippy guts" of the UON-visuals fractal-hypercube look: a
+# raymarched Menger / box-fold fractal viewed corner-on (cube-in-cube
+# recursion), with the fold ROTATED a little more each iteration by a
+# time-driven angle. Rotation is distance-preserving, so the distance
+# estimator stays valid while the whole crystal writhes and reorganises
+# — that undulating churn is the point. An orbit trap on the folded
+# coordinate paints the dense "circuit-trace" filigree; a cheap glow is
+# accumulated along the ray (exp of the step distance) so it blooms a
+# little without any second pass. Rainbow HDR colour from trap + depth.
+#
+# Single fragment pass, same family as kifs3d — heavy (deep march) so
+# it's meant as a full-screen showpiece, not a wall of copies. Stack the
+# CPU FX (rgb_split / feedback / edges) on top for glitch/aberration.
+HYPERCUBE_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+uniform float width;
+uniform float height;
+
+#define PI 3.14159265359
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+vec2 rot(vec2 p, float a) {
+    float c = cos(a), s = sin(a);
+    return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+// Orbit trap, written by DE() for the colouring. trap.x = a circuit-line
+// trap (min distance to the fold axis), trap.y = how deep the point
+// stayed inside the structure (iteration weight).
+vec2 g_trap;
+
+// Menger-sponge distance estimator with an animated rotation woven into
+// each fold. Scale 3 + offset 1 is the classic sponge; the per-iteration
+// rotation (an isometry, so the DE stays sound) is what makes it morph.
+float DE(vec3 z) {
+    float scale = 3.0;
+    vec3 offset = vec3(1.0 + 0.12 * sin(time * 0.21),
+                       1.0,
+                       1.0 + 0.12 * cos(time * 0.17));
+    float t = time * 0.12;
+    float trapLine = 1e9;
+    float trapDepth = 0.0;
+    for (int n = 0; n < 9; n++) {
+        z = abs(z);
+        if (z.x < z.y) z.xy = z.yx;
+        if (z.x < z.z) z.xz = z.zx;
+        if (z.y < z.z) z.yz = z.zy;
+        // morph: a little extra twist each level, phase-staggered
+        z.xz = rot(z.xz, 0.10 * sin(t + float(n) * 0.6));
+        z.xy = rot(z.xy, 0.07 * cos(t * 0.8 + float(n) * 0.4));
+        z = z * scale - offset * (scale - 1.0);
+        if (z.z < -0.5 * offset.z * (scale - 1.0))
+            z.z += offset.z * (scale - 1.0);
+        trapLine = min(trapLine, length(z.xy));
+        trapDepth += 1.0;
+    }
+    g_trap = vec2(trapLine, trapDepth);
+    return (length(max(abs(z) - vec3(1.0), 0.0))) * pow(scale, -9.0);
+}
+
+void main() {
+    float asp = (height > 0.5) ? (width / height) : (1280.0 / 720.0);
+    vec2 uv = (v_texcoord - 0.5) * vec2(asp, 1.0);
+
+    // Camera orbits the gasket and dollies in/out. The orbit path swings
+    // through (1,1,1)-ish corner-on views — the iconic cube-in-cube look.
+    float ct = time * 0.13;
+    float rad = 2.7 + 0.7 * sin(time * 0.06);
+    vec3 ro = vec3(sin(ct) * rad, sin(ct * 0.37) * 1.3, cos(ct) * rad);
+    vec3 ww = normalize(-ro);
+    vec3 uu = normalize(cross(vec3(0.0, 1.0, 0.0), ww));
+    vec3 vv = cross(ww, uu);
+    vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.5 * ww);
+
+    float dist = 0.0;
+    float glow = 0.0;
+    vec3 acc = vec3(0.0);
+    bool hit = false;
+    float stepi = 0.0;
+    for (int i = 0; i < 110; i++) {
+        vec3 pos = ro + rd * dist;
+        float d = DE(pos);
+        // Volumetric haze: each step adds colour weighted by nearness to
+        // the surface, so the structure glows without a bloom pass.
+        float near = exp(-d * 7.0);
+        float hue = fract(0.58 + g_trap.x * 0.35 + dist * 0.09 + time * 0.03);
+        float bands = 0.5 + 0.5 * sin(g_trap.x * 26.0 - time * 0.7); // circuit lines
+        acc += hsv2rgb(vec3(hue, 0.85, 1.0)) * near * (0.25 + 0.75 * bands);
+        glow += near;
+        if (d < 0.0007) { hit = true; break; }
+        dist += d;
+        stepi += 1.0;
+        if (dist > 9.0) break;
+    }
+
+    vec3 col = acc * 0.045;                       // haze contribution
+
+    if (hit) {
+        float ao = 1.0 - stepi / 110.0;           // cheap AO from step count
+        float hue = fract(0.58 + g_trap.x * 0.4 + dist * 0.12 + time * 0.03);
+        float bands = 0.5 + 0.5 * sin(g_trap.x * 30.0 - time * 0.9);
+        vec3 surf = hsv2rgb(vec3(hue, 0.9, 0.35 + 0.65 * ao));
+        surf = mix(surf, hsv2rgb(vec3(fract(hue + 0.5), 0.8, 1.0)), bands * 0.45);
+        col += surf;
+    }
+
+    col += glow * 0.012 * hsv2rgb(vec3(fract(time * 0.05), 0.6, 1.0));
+    col = pow(clamp(col, 0.0, 1.0), vec3(0.85));   // gentle HDR-ish lift
+    gl_FragColor = vec4(col, 1.0);
+}
+"""
+
+
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
     'tunnel': TUNNEL_SHADER,
@@ -1246,6 +1370,7 @@ GPU_GENERATORS = {
     'apollonian': APOLLONIAN_SHADER,
     'hyperbolic': HYPERBOLIC_SHADER,
     'kifs3d': KIFS3D_SHADER,
+    'hypercube': HYPERCUBE_SHADER,
     'domaincolor': DOMAINCOLOR_SHADER,
     'curlflow': CURLFLOW_SHADER,
     'phyllotaxis': PHYLLOTAXIS_SHADER,
