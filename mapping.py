@@ -144,6 +144,11 @@ class Group:
     # Transient (not persisted)
     _last_change_at: float = 0.0
     _time_offset: float = 0.0
+    # Autopilot PARAM X/Y drift targets + retarget time (mirrors the main
+    # live autopilot; see MappingManager._drift_group_params).
+    _auto_target_x: float = 0.5
+    _auto_target_y: float = 0.5
+    _auto_next_param_at: float = 0.0
 
     def __post_init__(self):
         # Stagger generative phase so identical generatives across groups
@@ -412,6 +417,9 @@ class MappingManager:
         for g in self.groups:
             if not g.autopilot_enabled:
                 continue
+            # Sweep the group's live knobs every frame (smooth), independent of
+            # the slower content-change interval below.
+            self._drift_group_params(g, now)
             if g._last_change_at <= 0.0:
                 g._last_change_at = now
                 continue
@@ -419,6 +427,28 @@ class MappingManager:
                 continue
             g._last_change_at = now
             self._autopilot_step(g, engine, GENERATIVES)
+
+    @staticmethod
+    def _drift_group_params(g, now):
+        """Smoothly sweep an autopilot group's PARAM X/Y — the mapping-mode
+        counterpart to the main autopilot's param drift. Over a generative the
+        knobs ARE the generator's controls (PARAM X = character, PARAM Y =
+        speed), so sweep the character knob across its full range but bias the
+        speed toward the lively half (~1x–4x), with the occasional slow stretch
+        for contrast (PARAM Y is inverted: 0 = fast, 1 = slow). Over a clip the
+        knobs tune the group's FX, so both sweep uniformly."""
+        if now >= g._auto_next_param_at:
+            g._auto_target_x = random.random()
+            if g.content_kind == "generative":
+                g._auto_target_y = (random.uniform(0.0, 0.45)
+                                    if random.random() < 0.8
+                                    else random.uniform(0.45, 0.85))
+            else:
+                g._auto_target_y = random.random()
+            g._auto_next_param_at = now + random.uniform(2.0, 5.0)
+        lerp = 0.04
+        g.param_x += (g._auto_target_x - g.param_x) * lerp
+        g.param_y += (g._auto_target_y - g.param_y) * lerp
 
     @staticmethod
     def _autopilot_step(g, engine, generatives):
