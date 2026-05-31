@@ -17,7 +17,7 @@ from effects import (
     invert, posterize, edges, screen_blend,
 )
 from gpu_generators import GpuGeneratorBridge
-from shader_catalog import GPU_GENERATOR_ORDER
+from shader_catalog import GPU_GENERATOR_ORDER, LANTERN_PRESETS, LANTERN_MAX_SPIN
 
 
 GENERATIVES = list(GPU_GENERATOR_ORDER)
