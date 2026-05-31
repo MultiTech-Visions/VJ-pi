@@ -1115,6 +1115,178 @@ void main() {
 """
 
 
+# ── Mandelbox: organic box-fold sibling to hypercube ─────────────────
+#
+# Alternating box-fold (clamp + reflect about ±1) and sphere-fold
+# (invert through the unit / min radius spheres). The classic Mandelbox
+# IFS reads as soft organic architecture — alien towers and chambers —
+# very different from Menger's hard cubic cells, but in the same
+# performance class as hypercube on the Pi. We morph it by drifting the
+# `scale` parameter slowly through a small range; even tiny changes
+# radically reshuffle the structure while the distance estimator stays
+# numerically sane. Same cheap accumulated-haze glow + gamma-crush
+# colouring as hypercube so they read as a family.
+MANDELBOX_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+uniform float width;
+uniform float height;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+float g_trap;
+
+// Mandelbox distance estimator. `dr` tracks the accumulated derivative
+// so `length(z)/dr` is a valid lower bound on distance to the surface.
+float DE(vec3 z0) {
+    float scale  = 2.55 + 0.20 * sin(time * 0.10);
+    float minR2  = 0.5;
+    float fixedR2 = 1.0;
+    vec3  z  = z0;
+    float dr = 1.0;
+    float trap = 1e9;
+    for (int i = 0; i < 7; i++) {
+        // box fold: clamp into [-1,1] then reflect
+        z = clamp(z, -1.0, 1.0) * 2.0 - z;
+        // sphere fold: invert through min/unit spheres
+        float r2 = dot(z, z);
+        if (r2 < minR2) {
+            float k = fixedR2 / minR2;
+            z *= k; dr *= k;
+        } else if (r2 < fixedR2) {
+            float k = fixedR2 / r2;
+            z *= k; dr *= k;
+        }
+        z = z * scale + z0;
+        dr = dr * abs(scale) + 1.0;
+        trap = min(trap, length(z.xy));
+    }
+    g_trap = trap;
+    return length(z) / abs(dr);
+}
+
+void main() {
+    float asp = (height > 0.5) ? (width / height) : (1280.0 / 720.0);
+    vec2 uv = (v_texcoord - 0.5) * vec2(asp, 1.0);
+
+    // Camera orbit slower than hypercube and pulled out further, since
+    // mandelbox structures are bigger and read better at a distance.
+    float ct = time * 0.10;
+    float rad = 3.5 + 0.8 * sin(time * 0.05);
+    vec3 ro = vec3(sin(ct) * rad, sin(ct * 0.31) * 1.6, cos(ct) * rad);
+    vec3 ww = normalize(-ro);
+    vec3 uu = normalize(cross(vec3(0.0, 1.0, 0.0), ww));
+    vec3 vv = cross(ww, uu);
+    vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.6 * ww);
+
+    // Scalar-only inner march, same shape as hypercube.
+    float dist = 0.0;
+    float haze = 0.0;
+    float trapAcc = 0.0;
+    bool hit = false;
+    float stepi = 0.0;
+    for (int i = 0; i < 56; i++) {
+        vec3 pos = ro + rd * dist;
+        float d = DE(pos);
+        float near = exp(-d * 4.0);
+        haze += near;
+        trapAcc += near * g_trap;
+        if (d < 0.0018) { hit = true; break; }
+        dist += d;
+        stepi += 1.0;
+        if (dist > 12.0) break;
+    }
+
+    float trapAvg = (haze > 1e-3) ? (trapAcc / haze) : 0.0;
+    // Warm hue base (orange-amber-magenta) to differ from hypercube's blues.
+    float hue = fract(0.06 + trapAvg * 0.45 + dist * 0.04 + time * 0.025);
+    vec3 col = hsv2rgb(vec3(hue, 0.82, min(haze * 0.018, 0.42)));
+
+    if (hit) {
+        float ao = 1.0 - stepi / 56.0;
+        float bands = 0.5 + 0.5 * sin(g_trap * 22.0 - time * 0.6);
+        vec3 surf = hsv2rgb(vec3(hue, 0.88, 0.25 + 0.55 * ao));
+        surf = mix(surf, hsv2rgb(vec3(fract(hue + 0.5), 0.85, 0.55)),
+                   bands * 0.2);
+        col += surf;
+    }
+
+    col *= 1.0 - smoothstep(0.55, 1.2, length(uv)) * 0.55;
+    col = pow(clamp(col, 0.0, 1.0), vec3(1.15));
+    gl_FragColor = vec4(col, 1.0);
+}
+"""
+
+
+# ── Kaleido: calmer kaliset, mostly-stable mandala ───────────────────
+#
+# The kaliset iteration z = |z|/dot(z,z) - c becomes wildly chaotic when
+# c sits in the unstable basin. Here we keep c centred deep in the
+# stable basin and only allow it to drift by ~20% of the amplitude
+# kaliset uses (0.035/0.030 vs 0.18/0.14), so the pattern reads as a
+# mostly-locked mandala that gently breathes rather than churning.
+# An 8-fold dihedral wedge fold is applied BEFORE the iteration so the
+# kaleidoscopic symmetry is structural, not accidental.
+KALEIDO_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+uniform float width;
+uniform float height;
+
+#define PI 3.14159265359
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+    float asp = (height > 0.5) ? (width / height) : (1280.0 / 720.0);
+    vec2 uv = (v_texcoord - 0.5) * vec2(asp, 1.0);
+    float t = time;
+
+    // 8-fold dihedral kaleidoscope fold — slow rotation gives the
+    // illusion of a real spinning kaleidoscope tube.
+    float a = atan(uv.y, uv.x);
+    float r = length(uv);
+    float seg = 2.0 * PI / 8.0;
+    a = mod(a + t * 0.04, seg);
+    a = abs(a - seg * 0.5);
+    vec2 z = vec2(cos(a), sin(a)) * r * 1.3;
+
+    // c sits in the stable basin with only ~20% of kaliset's drift.
+    vec2 c = vec2(0.55 + 0.035 * sin(t * 0.09),
+                  0.55 + 0.030 * cos(t * 0.07));
+
+    float acc = 0.0;
+    float warm = 0.0;
+    for (int i = 0; i < 12; i++) {
+        z = abs(z) / clamp(dot(z, z), 0.03, 4.0) - c;
+        float w = exp(-length(z) * 4.0);
+        acc += w;
+        warm += w * float(i);
+    }
+    float glow = clamp(acc * 0.5, 0.0, 1.0);
+    float depth = (acc > 1e-3) ? (warm / acc) / 12.0 : 0.0;
+    float hue = fract(0.55 + depth * 0.5 + t * 0.02);
+    vec3 col = hsv2rgb(vec3(hue, 0.72, glow));
+    col *= 1.0 - smoothstep(0.55, 1.15, length(uv)) * 0.45;
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
     'tunnel': TUNNEL_SHADER,
@@ -1135,12 +1307,14 @@ GPU_GENERATORS = {
     'seraphim': SERAPHIM_SHADER,
     'quasicrystal': QUASICRYSTAL_SHADER,
     'kaliset': KALISET_SHADER,
+    'kaleido': KALEIDO_SHADER,
     'mandala': MANDALA_SHADER,
     'drostescope': DROSTESCOPE_SHADER,
     'apollonian': APOLLONIAN_SHADER,
     'hyperbolic': HYPERBOLIC_SHADER,
     'kifs3d': KIFS3D_SHADER,
     'hypercube': HYPERCUBE_SHADER,
+    'mandelbox': MANDELBOX_SHADER,
     'domaincolor': DOMAINCOLOR_SHADER,
     'curlflow': CURLFLOW_SHADER,
     'phyllotaxis': PHYLLOTAXIS_SHADER,
