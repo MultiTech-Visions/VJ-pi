@@ -567,10 +567,22 @@ class Engine:
                     self._auto_fx_expiry[turned_on] = now + AUTO_FX_MAX_HOLD[turned_on]
             self._auto_next_fx_at = now + self.auto_fx_interval * random.uniform(0.5, 1.8)
 
-        # Drift PARAM X/Y toward fresh random targets every few seconds.
+        # Drift PARAM X/Y toward fresh random targets every few seconds. These
+        # two knobs are shared: over a clip they tune the active FX, but over a
+        # GPU generator they ARE its live controls — PARAM X = character knob,
+        # PARAM Y = speed. So when a generator is the base we shape the targets
+        # for it: sweep the character knob across its full range, but bias the
+        # speed toward the lively half (~1x–4x) so autopilot keeps the generator
+        # energetic instead of randomly crawling it — with the occasional slow,
+        # dreamy stretch for contrast. (PARAM Y is inverted: 0 = fast, 1 = slow.)
         if now >= self._auto_next_param_at:
             self._auto_target_x = random.random()
-            self._auto_target_y = random.random()
+            if self.active_generative is not None:
+                self._auto_target_y = (random.uniform(0.0, 0.45)
+                                       if random.random() < 0.8
+                                       else random.uniform(0.45, 0.85))
+            else:
+                self._auto_target_y = random.random()
             self._auto_next_param_at = now + random.uniform(2.0, 5.0)
         lerp = 0.04
         self.param_x += (self._auto_target_x - self.param_x) * lerp
