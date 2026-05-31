@@ -52,6 +52,14 @@ Live FX parameters are tuned with the **arrow keys** (← → for PARAM X,
 ↑ ↓ for PARAM Y) so you don't have to fight the trackpad/mouse cursor
 mid-set. The current values show as bars in the HUD.
 
+The same two knobs also tune whatever **GPU generator** is on screen:
+**↑ ↓ = speed** (centre = normal, up = faster, down toward freeze — e.g.
+push ↑ to drive the hypercube's undulation up to ~4× faster), and
+**← → = a per-generator "character" knob** (zoom / density / arm or petal
+count / hue / fold, depending on the generator). Centre keeps each
+generator's original look, so leaving the knobs alone changes nothing.
+The speed knob is jump-free: changing it never makes the pattern snap.
+
 ### Switching the output display
 
 The HUD has an **OUTPUT DISPLAY** picker. Two ways to drive it:

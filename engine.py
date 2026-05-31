@@ -979,7 +979,9 @@ class Engine:
 
     def _render_generative(self, name, width, height, t, params):
         token = self._generator_activation_token if name == "donut" else 0
-        frame = self.gpu_generators.render(name, width, height, token=token)
+        px, py = params
+        frame = self.gpu_generators.render(
+            name, width, height, token=token, param_x=px, param_y=py)
         if frame is not None:
             return frame
         fn = GENERATIVE_FNS.get(name)

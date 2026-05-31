@@ -2,6 +2,7 @@
 import json
 import random
 import sys
+import time
 from pathlib import Path
 
 import gi
@@ -44,6 +45,13 @@ class Renderer:
         self.shader = None
         self.sink = None
         self.current = None
+        # Operator-controlled animation clock. Shaders read `atime` instead of
+        # the built-in `time`; we integrate it at a speed dialled by param_y so
+        # the operator can speed up / slow down a generator without the pattern
+        # jumping (dt is clamped so a long pause can't fling it). One worker
+        # process serves one generator name, so this clock belongs to it.
+        self._atime = 0.0
+        self._atime_t = None
 
     def close(self):
         if self.pipeline is not None:
@@ -97,13 +105,39 @@ class Renderer:
         self.pipeline.set_state(Gst.State.PLAYING)
         self.current = key
 
-    def render(self, name, width, height, token):
+    def _set_tunable_uniforms(self, param_x, param_y):
+        """Advance the animation clock and push the live knobs onto the
+        glshader. param_y (UP/DOWN) sets the speed: 0.5 = normal (1x), toward
+        0 (UP) speeds up, toward 1 (DOWN) slows down — a +/- 2 octave range.
+        param_x (LEFT/RIGHT) is forwarded raw for each shader's character knob."""
+        now = time.monotonic()
+        dt = 0.0 if self._atime_t is None else min(max(now - self._atime_t, 0.0), 0.1)
+        self._atime_t = now
+        speed = pow(16.0, 0.5 - param_y)        # py 0 -> 4x, 0.5 -> 1x, 1 -> 0.25x
+        self._atime += speed * dt
+        desc = ("uniforms"
+                ",atime=(gfloat)%.5f"
+                ",param_x=(gfloat)%.5f"
+                ",param_y=(gfloat)%.5f" % (self._atime, param_x, param_y))
+        # new_from_string is the clean 1.20+ API; from_string is the older one
+        # and (in some bindings) returns a (struct, end) tuple.
+        if hasattr(Gst.Structure, "new_from_string"):
+            st = Gst.Structure.new_from_string(desc)
+        else:
+            st = Gst.Structure.from_string(desc)
+            if isinstance(st, tuple):
+                st = st[0]
+        if st is not None:
+            self.shader.set_property("uniforms", st)
+
+    def render(self, name, width, height, token, param_x=0.5, param_y=0.5):
         if name not in GPU_GENERATORS:
             raise ValueError(f"unknown GPU generator: {name}")
         self.ensure(name, width, height, token)
         # Resume if we were paused (blackout/freeze); a no-op if already
         # PLAYING.
         self.pipeline.set_state(Gst.State.PLAYING)
+        self._set_tunable_uniforms(param_x, param_y)
         sample = None
         for _ in range(4):
             sample = self.sink.emit("try-pull-sample", 1 * Gst.SECOND)
@@ -151,7 +185,11 @@ def main():
                 width = int(req["width"])
                 height = int(req["height"])
                 token = int(req.get("token", 0))
-                data = renderer.render(name, width, height, token)
+                data = renderer.render(
+                    name, width, height, token,
+                    param_x=float(req.get("param_x", 0.5)),
+                    param_y=float(req.get("param_y", 0.5)),
+                )
                 _send({"ok": True, "width": width, "height": height, "n": len(data)}, data)
             except Exception as exc:
                 print(f"[gpu-worker] {exc!r}", file=sys.stderr, flush=True)

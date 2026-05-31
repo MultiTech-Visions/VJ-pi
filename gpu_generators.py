@@ -69,7 +69,7 @@ class GpuGeneratorBridge:
     def available(self, name):
         return not self.disabled and not self.failed and name in GPU_GENERATORS
 
-    def render(self, name, width, height, token=0):
+    def render(self, name, width, height, token=0, param_x=0.5, param_y=0.5):
         if not self.available(name):
             return None
         proc = self._worker_for(name)
@@ -81,6 +81,11 @@ class GpuGeneratorBridge:
                 "width": int(width),
                 "height": int(height),
                 "token": int(token),
+                # Live arrow-key knobs (0..1). The worker turns param_y into a
+                # speed for its integrated animation clock and forwards both as
+                # uniforms; every shader reads them (see shader_catalog._tunable).
+                "param_x": float(param_x),
+                "param_y": float(param_y),
             }, separators=(",", ":"))
             proc.stdin.write((req + "\n").encode("utf-8"))
             proc.stdin.flush()
