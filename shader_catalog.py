@@ -996,246 +996,22 @@ void main() {
 }
 """
 
-# ── Ornate cast-iron lantern (faux-3D, tunable) ──────
-#
-# A glowing LED interior behind an intricate wrought-iron cage, drawn
-# on a shaded, rotating sphere so it reads as a real 3D object: a
-# central khatim (Rub el Hizb) eight-point star panel per face, mirrored
-# C-scroll filigree, latitude band rings, longitude cage bars that sweep
-# as it turns, studded bosses, a see-through far wall, a fresnel rim and
-# a spear-tipped crown finial + base drop. Pure fragment maths (no
-# texture, no raymarch), so a whole wall of them is cheap.
-#
-# Tunable live via two uniforms fed from the arrow keys (see engine):
-#   led_hue  <- param_y  (UP/DOWN sweep the colour wheel)
-#   phase    <- integrated spin, speed+direction from param_x
-#               (LEFT/RIGHT; 0.5 = stopped)
-# led_sat is a per-preset constant. The one shader is registered under
-# every LANTERN_PRESETS name; each preset seeds the knobs with a saved
-# colour + spin that the keyboard then overrides.
-LANTERN_SHADER = """#version 100
-#ifdef GL_ES
-precision highp float;
-#endif
-varying vec2 v_texcoord;
-uniform float time;
-uniform float width;
-uniform float height;
-uniform float led_hue;     // interior LED hue, 0..1 (UP/DOWN arrows)
-uniform float led_sat;     // interior LED saturation, 0..1 (per preset)
-uniform float phase;       // accumulated spin angle, radians (LEFT/RIGHT)
-
-#define PI 3.14159265359
-#define TAU 6.28318530718
-
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
-vec2 rot(vec2 p, float a) {
-    float c = cos(a), s = sin(a);
-    return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
-}
-
-float sdBox(vec2 p, vec2 b) {
-    vec2 d = abs(p) - b;
-    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
-}
-
-float sdSeg(vec2 p, vec2 a, vec2 b) {
-    vec2 pa = p - a, ba = b - a;
-    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-    return length(pa - ba * h);
-}
-
-// Interlaced eight-point star (khatim / Rub el Hizb): two squares, one
-// rotated 45 deg, both stroked so the overlap reads as the classic star.
-float khatim(vec2 p, float s, float w) {
-    float b1 = abs(sdBox(p, vec2(s)));
-    float b2 = abs(sdBox(rot(p, 0.7853981634), vec2(s)));
-    return max(smoothstep(w, 0.0, b1), smoothstep(w, 0.0, b2));
-}
-
-// Distance to a forged C-scroll: a log-spiral curl sampled as a short
-// polyline, eye at the origin, growing outward ~1.5 turns.
-float curl(vec2 p) {
-    float best = 1e9;
-    vec2 prev = vec2(0.0);
-    for (int i = 0; i <= 16; i++) {
-        float t = float(i) / 16.0;
-        float ang = t * 3.2 * PI;
-        float rad = 0.010 * exp(2.3 * t);
-        vec2 q = vec2(cos(ang), sin(ang)) * rad;
-        if (i > 0) best = min(best, sdSeg(p, prev, q));
-        prev = q;
-    }
-    return best;
-}
-
-// Full ornamental cage sampled on a sphere-surface point P (radius R).
-// Pattern lives in (longitude, latitude); longitude carries the spin so
-// vertical bars and star panels sweep across as the lantern turns. z is
-// P.z, used to fade fine detail toward the grazing limb (anti-alias).
-float cageFront(vec3 P, float R, float z) {
-    float lat = asin(clamp(P.y / R, -1.0, 1.0));
-    float lon = atan(P.x, P.z) + phase;
-    float m = 0.0;
-
-    // latitude band rings (stay put while spinning)
-    for (int i = 0; i < 5; i++) {
-        float lt = (float(i) - 2.0) * 0.44;
-        m = max(m, smoothstep(0.038, 0.0, abs(lat - lt)));
-    }
-
-    // longitude cage bars sweep with phase
-    float seg = TAU / 12.0;
-    float lf = mod(lon, seg) - seg * 0.5;
-    m = max(m, smoothstep(0.034, 0.0, abs(lf)));
-
-    // one ornamental panel per 60-degree sector
-    float pseg = TAU / 6.0;
-    float pc = mod(lon + pseg * 0.5, pseg) - pseg * 0.5;
-    vec2 panel = vec2(pc, lat);
-
-    // central khatim star + gem on the equator
-    float eqMask = smoothstep(0.52, 0.36, abs(lat));
-    m = max(m, khatim(panel, 0.165, 0.020) * eqMask);
-    m = max(m, smoothstep(0.034, 0.022, length(panel)) * eqMask);
-
-    // mirrored C-scroll pairs above and below the star
-    vec2 bUp = vec2(pc, lat - 0.64);
-    float scU = min(curl(bUp / 3.0), curl(vec2(-bUp.x, bUp.y) / 3.0)) * 3.0;
-    vec2 bDn = vec2(pc, lat + 0.64);
-    float scD = min(curl(bDn / 3.0), curl(vec2(-bDn.x, bDn.y) / 3.0)) * 3.0;
-    m = max(m, smoothstep(0.018, 0.0, min(scU, scD)));
-
-    // bosses studding the equator band
-    float bseg = TAU / 18.0;
-    float bf = mod(lon, bseg) - bseg * 0.5;
-    m = max(m, smoothstep(0.020, 0.012, length(vec2(bf, lat))));
-
-    // fade intricate detail at the grazing limb so it doesn't alias
-    return clamp(m, 0.0, 1.0) * smoothstep(0.04, 0.17, z);
-}
-
-// Cheaper cage for the far wall seen through the openwork (bands + bars
-// only). Dim and led-tinted, it gives the lantern see-through depth.
-float cageBack(vec3 P, float R) {
-    float lat = asin(clamp(P.y / R, -1.0, 1.0));
-    float lon = atan(P.x, P.z) + phase;
-    float m = 0.0;
-    for (int i = 0; i < 5; i++) {
-        float lt = (float(i) - 2.0) * 0.44;
-        m = max(m, smoothstep(0.045, 0.0, abs(lat - lt)));
-    }
-    float seg = TAU / 12.0;
-    float lf = mod(lon, seg) - seg * 0.5;
-    m = max(m, smoothstep(0.040, 0.0, abs(lf)));
-    return clamp(m, 0.0, 1.0);
-}
-
-void main() {
-    float asp = (height > 0.5) ? (width / height) : (1280.0 / 720.0);
-    vec2 uv = (v_texcoord - 0.5) * vec2(asp, 1.0);
-    float r = length(uv);
-
-    vec3 led = hsv2rgb(vec3(led_hue, clamp(led_sat, 0.0, 1.0), 1.0));
-    float flick = 0.90 + 0.07 * sin(time * 6.3) + 0.05 * sin(time * 11.7 + 1.0);
-    float breathe = 0.96 + 0.04 * sin(time * 0.7);
-
-    vec3 col = vec3(0.0);
-    float R = 0.46;
-    vec3 Ldir = normalize(vec3(-0.45, 0.55, 0.70));
-
-    float z2 = R * R - r * r;
-    if (z2 > 0.0) {
-        float z = sqrt(z2);
-        vec3 Pf = vec3(uv, z);          // front surface point
-        vec3 N = Pf / R;                // outward normal
-        float chord = z / R;            // 1 at centre .. 0 at the limb
-
-        // interior LED glow seen through the cage
-        vec3 inner = led * pow(chord, 1.4) * 1.5 * breathe;
-        inner += vec3(1.0) * pow(chord, 6.0) * 0.5 * flick;   // hot filament
-        col = inner;
-
-        // far wall of the cage, lit from inside (depth cue)
-        float bm = cageBack(vec3(uv, -z), R);
-        col = mix(col, led * 0.22, bm * 0.55);
-
-        // near cage: shaded metal, occludes the glow
-        float fm = cageFront(Pf, R, z);
-        float diff = clamp(dot(N, Ldir), 0.0, 1.0);
-        float spec = pow(clamp(dot(reflect(-Ldir, N), vec3(0.0, 0.0, 1.0)), 0.0, 1.0), 26.0);
-        vec3 iron = vec3(0.05, 0.055, 0.07) * (0.35 + 0.85 * diff) + vec3(0.9) * spec;
-        iron += led * pow(chord, 1.4) * 0.22;     // edges catch interior light
-        col = mix(col, iron, fm);
-
-        // fresnel rim: interior light leaking around the limb
-        col += led * pow(1.0 - chord, 3.0) * 0.55;
-
-        // crisp silhouette frame at the body edge
-        float frame = smoothstep(0.016, 0.007, abs(r - R));
-        col = mix(col, vec3(0.05, 0.055, 0.07) + led * 0.18, frame);
-    }
-
-    // crown finial + hanging stem (on the pole, does not spin)
-    float deco = 0.0;
-    deco = max(deco, smoothstep(0.010, 0.0, sdSeg(uv, vec2(0.0, 0.452), vec2(0.0, 0.520))));
-    deco = max(deco, smoothstep(0.030, 0.022, length(uv - vec2(0.0, 0.530))));
-    for (int i = -2; i <= 2; i++) {
-        float fx = float(i) * 0.045;
-        vec2 sb = vec2(fx, 0.500);
-        vec2 st = vec2(fx * 1.15, 0.620 - abs(float(i)) * 0.022);
-        deco = max(deco, smoothstep(0.008, 0.0, sdSeg(uv, sb, st)));
-    }
-    // base finial drop (bottom pole)
-    deco = max(deco, smoothstep(0.012, 0.0, sdSeg(uv, vec2(0.0, -0.460), vec2(0.0, -0.540))));
-    deco = max(deco, smoothstep(0.032, 0.024, length(uv - vec2(0.0, -0.560))));
-    col = mix(col, vec3(0.06, 0.065, 0.085) + led * 0.15, deco);
-
-    // warm light spilling past the cage into the surroundings
-    col += led * exp(-(r - R) * 7.0) * step(R, r) * 0.16;
-
-    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
-}
-"""
-
-
-# Preset -> (base_hue 0..1, saturation 0..1, base_spin rad/s). Selecting
-# a preset seeds the live param knobs with these; the arrows override.
-LANTERN_PRESETS = {
-    'lantern_amber':   (0.090, 0.85,  0.10),
-    'lantern_ember':   (0.015, 0.92, -0.10),
-    'lantern_rose':    (0.945, 0.80,  0.00),
-    'lantern_violet':  (0.740, 0.70,  0.18),
-    'lantern_azure':   (0.600, 0.85, -0.16),
-    'lantern_cyan':    (0.500, 0.85,  0.00),
-    'lantern_emerald': (0.380, 0.80,  0.14),
-    'lantern_moon':    (0.600, 0.10,  0.00),
-}
-
-# Angular velocity (rad/s) the spin dial reaches at full deflection.
-LANTERN_MAX_SPIN = 1.2
-
 
 # ── Hypercube: morphing box-fold fractal interior ────────────────────
 #
-# The "trippy guts" of the UON-visuals fractal-hypercube look: a
-# raymarched Menger / box-fold fractal viewed corner-on (cube-in-cube
-# recursion), with the fold ROTATED a little more each iteration by a
-# time-driven angle. Rotation is distance-preserving, so the distance
-# estimator stays valid while the whole crystal writhes and reorganises
-# — that undulating churn is the point. An orbit trap on the folded
-# coordinate paints the dense "circuit-trace" filigree; a cheap glow is
-# accumulated along the ray (exp of the step distance) so it blooms a
-# little without any second pass. Rainbow HDR colour from trap + depth.
+# Raymarched Menger / box-fold fractal viewed corner-on (cube-in-cube
+# recursion), with the fold rotated a little more each iteration by a
+# time-driven angle. Rotation is distance-preserving so the DE stays
+# valid while the whole crystal writhes and reorganises — that
+# undulating churn is the point. An orbit trap on the folded coordinate
+# paints the circuit-trace banding; a capped scalar haze accumulates a
+# coloured glow without a second pass.
 #
-# Single fragment pass, same family as kifs3d — heavy (deep march) so
-# it's meant as a full-screen showpiece, not a wall of copies. Stack the
-# CPU FX (rgb_split / feedback / edges) on top for glitch/aberration.
+# Tuned for the Pi 5: 56 march steps × 6 folds (down from 110 × 9), and
+# the inner loop carries only floats (no per-step hsv2rgb), so it's
+# roughly 3× cheaper than the showpiece version. Brightness is
+# deliberately tamed — capped haze, no gamma lift, gentle gamma>1 crush
+# at the end — so colours read instead of washing toward white.
 HYPERCUBE_SHADER = """#version 100
 #ifdef GL_ES
 precision highp float;
@@ -1245,8 +1021,6 @@ uniform float time;
 uniform float width;
 uniform float height;
 
-#define PI 3.14159265359
-
 vec3 hsv2rgb(vec3 c) {
     vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
     vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
@@ -1258,14 +1032,11 @@ vec2 rot(vec2 p, float a) {
     return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
 
-// Orbit trap, written by DE() for the colouring. trap.x = a circuit-line
-// trap (min distance to the fold axis), trap.y = how deep the point
-// stayed inside the structure (iteration weight).
-vec2 g_trap;
+// Orbit-trap state, written by DE() and read after the call.
+float g_trap;
 
-// Menger-sponge distance estimator with an animated rotation woven into
-// each fold. Scale 3 + offset 1 is the classic sponge; the per-iteration
-// rotation (an isometry, so the DE stays sound) is what makes it morph.
+// Menger-sponge distance estimator with a time-driven rotation woven
+// into each fold (rotation is an isometry, so the DE stays sound).
 float DE(vec3 z) {
     float scale = 3.0;
     vec3 offset = vec3(1.0 + 0.12 * sin(time * 0.21),
@@ -1273,31 +1044,26 @@ float DE(vec3 z) {
                        1.0 + 0.12 * cos(time * 0.17));
     float t = time * 0.12;
     float trapLine = 1e9;
-    float trapDepth = 0.0;
-    for (int n = 0; n < 9; n++) {
+    for (int n = 0; n < 6; n++) {
         z = abs(z);
         if (z.x < z.y) z.xy = z.yx;
         if (z.x < z.z) z.xz = z.zx;
         if (z.y < z.z) z.yz = z.zy;
-        // morph: a little extra twist each level, phase-staggered
         z.xz = rot(z.xz, 0.10 * sin(t + float(n) * 0.6));
         z.xy = rot(z.xy, 0.07 * cos(t * 0.8 + float(n) * 0.4));
         z = z * scale - offset * (scale - 1.0);
         if (z.z < -0.5 * offset.z * (scale - 1.0))
             z.z += offset.z * (scale - 1.0);
         trapLine = min(trapLine, length(z.xy));
-        trapDepth += 1.0;
     }
-    g_trap = vec2(trapLine, trapDepth);
-    return (length(max(abs(z) - vec3(1.0), 0.0))) * pow(scale, -9.0);
+    g_trap = trapLine;
+    return (length(max(abs(z) - vec3(1.0), 0.0))) * pow(scale, -6.0);
 }
 
 void main() {
     float asp = (height > 0.5) ? (width / height) : (1280.0 / 720.0);
     vec2 uv = (v_texcoord - 0.5) * vec2(asp, 1.0);
 
-    // Camera orbits the gasket and dollies in/out. The orbit path swings
-    // through (1,1,1)-ish corner-on views — the iconic cube-in-cube look.
     float ct = time * 0.13;
     float rad = 2.7 + 0.7 * sin(time * 0.06);
     vec3 ro = vec3(sin(ct) * rad, sin(ct * 0.37) * 1.3, cos(ct) * rad);
@@ -1306,40 +1072,44 @@ void main() {
     vec3 vv = cross(ww, uu);
     vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.5 * ww);
 
+    // The inner march carries only scalars — no per-step hsv2rgb, no
+    // per-step colour blend; colour happens once after the loop.
     float dist = 0.0;
-    float glow = 0.0;
-    vec3 acc = vec3(0.0);
+    float haze = 0.0;
+    float trapAcc = 0.0;
     bool hit = false;
     float stepi = 0.0;
-    for (int i = 0; i < 110; i++) {
+    for (int i = 0; i < 56; i++) {
         vec3 pos = ro + rd * dist;
         float d = DE(pos);
-        // Volumetric haze: each step adds colour weighted by nearness to
-        // the surface, so the structure glows without a bloom pass.
-        float near = exp(-d * 7.0);
-        float hue = fract(0.58 + g_trap.x * 0.35 + dist * 0.09 + time * 0.03);
-        float bands = 0.5 + 0.5 * sin(g_trap.x * 26.0 - time * 0.7); // circuit lines
-        acc += hsv2rgb(vec3(hue, 0.85, 1.0)) * near * (0.25 + 0.75 * bands);
-        glow += near;
-        if (d < 0.0007) { hit = true; break; }
+        float near = exp(-d * 5.0);
+        haze += near;
+        trapAcc += near * g_trap;
+        if (d < 0.0014) { hit = true; break; }
         dist += d;
         stepi += 1.0;
         if (dist > 9.0) break;
     }
 
-    vec3 col = acc * 0.045;                       // haze contribution
+    float trapAvg = (haze > 1e-3) ? (trapAcc / haze) : 0.0;
+    float hue = fract(0.62 + trapAvg * 0.4 + dist * 0.04 + time * 0.03);
+
+    // Volumetric glow: dim, coloured, hard-capped so it can't bleach.
+    vec3 col = hsv2rgb(vec3(hue, 0.85, min(haze * 0.018, 0.45)));
 
     if (hit) {
-        float ao = 1.0 - stepi / 110.0;           // cheap AO from step count
-        float hue = fract(0.58 + g_trap.x * 0.4 + dist * 0.12 + time * 0.03);
-        float bands = 0.5 + 0.5 * sin(g_trap.x * 30.0 - time * 0.9);
-        vec3 surf = hsv2rgb(vec3(hue, 0.9, 0.35 + 0.65 * ao));
-        surf = mix(surf, hsv2rgb(vec3(fract(hue + 0.5), 0.8, 1.0)), bands * 0.45);
+        float ao = 1.0 - stepi / 56.0;
+        float bands = 0.5 + 0.5 * sin(g_trap * 24.0 - time * 0.7);
+        vec3 surf = hsv2rgb(vec3(hue, 0.92, 0.25 + 0.55 * ao));
+        // Subtle complementary banding — kept low so it doesn't push white.
+        surf = mix(surf, hsv2rgb(vec3(fract(hue + 0.45), 0.85, 0.55)),
+                   bands * 0.22);
         col += surf;
     }
 
-    col += glow * 0.012 * hsv2rgb(vec3(fract(time * 0.05), 0.6, 1.0));
-    col = pow(clamp(col, 0.0, 1.0), vec3(0.85));   // gentle HDR-ish lift
+    // Vignette + gamma>1 crush — preserves blacks, takes the bright edge off.
+    col *= 1.0 - smoothstep(0.55, 1.2, length(uv)) * 0.55;
+    col = pow(clamp(col, 0.0, 1.0), vec3(1.15));
     gl_FragColor = vec4(col, 1.0);
 }
 """
@@ -1377,8 +1147,5 @@ GPU_GENERATORS = {
     'sunplasma': SUNPLASMA_SHADER,
     'donut': DONUT_SHADER,
 }
-
-for _lname in LANTERN_PRESETS:
-    GPU_GENERATORS[_lname] = LANTERN_SHADER
 
 GPU_GENERATOR_ORDER = list(GPU_GENERATORS.keys())
