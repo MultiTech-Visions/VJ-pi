@@ -237,11 +237,12 @@ class ControlWindow:
     def _toggle_collapse_all(self):
         """One-shot tidy: collapse every folder, or — if they're already all
         collapsed — expand them all again."""
-        labels = [lbl for lbl, _ in self.engine.clips.grouped() if lbl]
-        if labels and all(lbl in self._collapsed_folders for lbl in labels):
+        _, _, _, all_folders = self._clip_tree()
+        if all_folders and all(lbl in self._collapsed_folders
+                               for lbl in all_folders):
             self._collapsed_folders.clear()
         else:
-            self._collapsed_folders.update(labels)
+            self._collapsed_folders.update(all_folders)
         self._scroll["clips"] = 0
 
     def _activate_list_item(self, idx):
@@ -887,30 +888,88 @@ class ControlWindow:
             surface.blit(s, (area.x + 2, yy))
             yy += s.get_height() + 4
 
-    def _draw_tab_clips(self, surface, area):
-        """Collapsible folder tree of the clip library. Folders (subdirs of
-        assets/clips/) can be expanded/collapsed independently — any number
-        open at once — and a Collapse-all button tidies them in one shot."""
+    def _clip_tree(self):
+        """Build the nested clip tree for the picker.
+
+        Returns (rows, total_count, descendant_counts, all_folders):
+        - rows: the visible flat row model honouring collapse state —
+          ("folder", full_label, depth, total_descendant_clips) or
+          ("clip", idx, depth, name). Children sit under their parent and a
+          collapsed parent hides its whole subtree.
+        - all_folders: every folder path that exists (for collapse-all),
+          including synthesised intermediate parents (e.g. "Hype" when only
+          "Hype/Sub" holds clips)."""
         e = self.engine
-        groups = e.clips.grouped()
+        groups = e.clips.grouped()  # [(folder_label, [idx,...]), ...]
+
+        # Direct clips per folder path ("" = top level).
+        direct = {}
+        all_folders = set()
+        for label, idxs in groups:
+            direct.setdefault(label, []).extend(idxs)
+            # Register the folder and every intermediate parent.
+            if label:
+                parts = label.split("/")
+                for i in range(1, len(parts) + 1):
+                    all_folders.add("/".join(parts[:i]))
+
+        # Children folders of each path (direct subfolders only).
+        children = {}
+        for folder in all_folders:
+            parent = folder.rsplit("/", 1)[0] if "/" in folder else ""
+            children.setdefault(parent, set()).add(folder)
+
+        # Recursive descendant clip counts (a folder's own clips + subtrees).
+        desc_count = {}
+
+        def count(folder):
+            if folder in desc_count:
+                return desc_count[folder]
+            total = len(direct.get(folder, []))
+            for ch in sorted(children.get(folder, ())):
+                total += count(ch)
+            desc_count[folder] = total
+            return total
+
+        rows = []
+
+        def emit(folder, depth):
+            # Subfolders first (sorted), then this folder's own clips —
+            # mirrors the folder-first ordering used elsewhere.
+            for ch in sorted(children.get(folder, ()),
+                             key=lambda f: f.lower()):
+                rows.append(("folder", ch, depth, count(ch)))
+                if ch not in self._collapsed_folders:
+                    emit(ch, depth + 1)
+            for idx in direct.get(folder, []):
+                rows.append(("clip", idx, depth, e.clips.name(idx) or "—"))
+
+        emit("", 0)
+        return rows, len(e.clips), desc_count, all_folders
+
+    def _draw_tab_clips(self, surface, area):
+        """Collapsible nested folder tree of the clip library. Subfolders
+        nest under their parent; folders expand/collapse independently (any
+        number open at once) and a Collapse-all button tidies in one shot."""
+        e = self.engine
         active = self._active_index_for("clips")
         active = active if active is not None else -1
         self._folder_rects = []
+        self._collapse_all_rect = None
 
         if len(e.clips) == 0:
             msg = self.font_m.render("No clips in assets/clips/",
                                      True, (150, 150, 175))
             surface.blit(msg, (area.x + 2, area.y + 2))
-            self._collapse_all_rect = None
             return
 
-        folder_labels = [lbl for lbl, _ in groups if lbl]
+        rows, _, _, all_folders = self._clip_tree()
+
         # Header strip: a Collapse-/Expand-all button, top-right of the area.
         head_h = 0
-        self._collapse_all_rect = None
-        if folder_labels:
+        if all_folders:
             all_collapsed = all(lbl in self._collapsed_folders
-                                for lbl in folder_labels)
+                                for lbl in all_folders)
             btn_text = " Expand all " if all_collapsed else " Collapse all "
             bs = self.font_s.render(btn_text, True, (20, 22, 30))
             brect = pygame.Rect(0, area.y, bs.get_width() + 8, 18)
@@ -921,25 +980,17 @@ class ControlWindow:
             self._collapse_all_rect = brect
             head_h = 22
 
-        # Build the flat row model: folder headers + (when expanded) clips.
-        # ("folder", label, count) or ("clip", idx, label).
-        rows = []
-        for label, idxs in groups:
-            if label:
-                rows.append(("folder", label, len(idxs)))
-                if label in self._collapsed_folders:
-                    continue
-            for idx in idxs:
-                rows.append(("clip", idx, e.clips.name(idx) or "—"))
-
         list_area = pygame.Rect(area.x, area.y + head_h,
                                 area.w, max(0, area.h - head_h))
         self._draw_tree_rows(surface, list_area, rows, active)
 
     def _draw_tree_rows(self, surface, area, rows, active_idx):
-        """Render the clips folder tree (mixed folder/clip rows) with scroll.
-        Populates _folder_rects and _list_row_rects for hit-testing."""
+        """Render the nested clips folder tree (mixed folder/clip rows) with
+        scroll. Each row carries a depth for indentation; collapsing a parent
+        already hid its subtree upstream. Populates _folder_rects and
+        _list_row_rects for hit-testing."""
         row_h = 19
+        step = 14  # px of indent per nesting level
         n = len(rows)
         visible = max(1, area.h // row_h)
         max_scroll = max(0, n - visible)
@@ -951,10 +1002,12 @@ class ControlWindow:
             ri = scroll + row
             if ri >= n:
                 break
-            kind = rows[ri][0]
-            rect = pygame.Rect(area.x, area.y + row * row_h, list_w, row_h - 2)
+            kind, ref, depth, payload = rows[ri]
+            indent = depth * step
+            rect = pygame.Rect(area.x + indent, area.y + row * row_h,
+                               list_w - indent, row_h - 2)
             if kind == "folder":
-                _, label, count = rows[ri]
+                label, count = ref, payload
                 collapsed = label in self._collapsed_folders
                 pygame.draw.rect(surface, (44, 48, 66), rect, border_radius=3)
                 pygame.draw.rect(surface, (80, 90, 120), rect, 1, border_radius=3)
@@ -969,25 +1022,22 @@ class ControlWindow:
                                  rect.y + (rect.height - s.get_height()) // 2))
                 self._folder_rects.append((label, rect))
             else:
-                _, idx, label = rows[ri]
+                idx, label = ref, payload
                 is_active = (idx == active_idx)
-                indent = 16
-                rrect = pygame.Rect(rect.x + indent, rect.y,
-                                    rect.w - indent, rect.h)
                 if is_active:
-                    pygame.draw.rect(surface, (70, 130, 200), rrect, border_radius=3)
-                    pygame.draw.rect(surface, (160, 220, 255), rrect, 1, border_radius=3)
+                    pygame.draw.rect(surface, (70, 130, 200), rect, border_radius=3)
+                    pygame.draw.rect(surface, (160, 220, 255), rect, 1, border_radius=3)
                     fg = (255, 255, 255)
                 else:
-                    pygame.draw.rect(surface, (30, 33, 44), rrect, border_radius=3)
+                    pygame.draw.rect(surface, (30, 33, 44), rect, border_radius=3)
                     fg = (210, 220, 240)
-                max_chars = max(4, (rrect.w - 14) // 7)
+                max_chars = max(4, (rect.w - 14) // 7)
                 if len(label) > max_chars:
                     label = label[:max_chars - 1] + "…"
                 s = self.font_m.render(label, True, fg)
-                surface.blit(s, (rrect.x + 6,
-                                 rrect.y + (rrect.height - s.get_height()) // 2))
-                self._list_row_rects.append((idx, rrect))
+                surface.blit(s, (rect.x + 6,
+                                 rect.y + (rect.height - s.get_height()) // 2))
+                self._list_row_rects.append((idx, rect))
         if has_bar:
             track = pygame.Rect(area.right - 6, area.y, 4, visible * row_h)
             pygame.draw.rect(surface, (40, 44, 60), track, border_radius=2)
