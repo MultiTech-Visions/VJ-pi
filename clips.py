@@ -8,6 +8,35 @@ import cv2
 # GB on a 200-clip library while the operator scrubs through.
 MAX_OPEN = 12
 
+VIDEO_EXTS = (".mp4", ".mov")
+
+
+def _discover(root):
+    """Recursively find clips under `root`, so the operator can foldery the
+    library however makes sense. Skips `_originals` (the pre-process backup)
+    and any hidden / underscore-prefixed directory. Sorted folder-first then
+    by name so the picker groups each folder into one contiguous run, with
+    top-level clips first."""
+    root = Path(root)
+    out = []
+    for p in root.rglob("*"):
+        if p.suffix.lower() not in VIDEO_EXTS or not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        # Drop anything inside a backup/hidden/underscore dir at any depth.
+        if any(part == "_originals" or part.startswith((".", "_"))
+               for part in rel.parts[:-1]):
+            continue
+        out.append(p)
+    # Sort key: top-level (depth 0) before foldered, then by folder path,
+    # then by filename — all case-insensitive for a natural-looking list.
+    def _key(p):
+        rel = p.relative_to(root)
+        depth = len(rel.parts) - 1
+        folder = rel.parent.as_posix().lower()
+        return (1 if depth else 0, folder, rel.name.lower())
+    return sorted(out, key=_key)
+
 
 class Clip:
     def __init__(self, path):
@@ -38,10 +67,8 @@ class ClipPool:
 
     def __init__(self, directory, target_size, max_open=MAX_OPEN):
         self.target_w, self.target_h = target_size
-        self.paths = (
-            sorted(Path(directory).glob("*.mp4"))
-            + sorted(Path(directory).glob("*.mov"))
-        )
+        self.root = Path(directory)
+        self.paths = _discover(self.root)
         self.clips = [None] * len(self.paths)
         self.active_idx = None
         self.max_open = max_open
@@ -65,8 +92,37 @@ class ClipPool:
             return None
         return self.paths[idx].stem
 
+    def rel_dir(self, idx):
+        """Folder this clip lives in, relative to the pool root, as a
+        forward-slash string. Top-level clips return "" (no folder)."""
+        if not 0 <= idx < len(self.paths):
+            return ""
+        try:
+            rel = self.paths[idx].relative_to(self.root).parent
+        except ValueError:
+            return ""
+        s = rel.as_posix()
+        return "" if s == "." else s
+
+    def grouped(self):
+        """Ordered grouping of clip indices by folder, for the picker tree:
+        [(folder_label, [idx, ...]), ...]. The "" label holds top-level
+        (unfoldered) clips and always sorts first. Relies on `paths` being
+        pre-sorted folder-then-name so each group is a contiguous run."""
+        groups = []
+        pos = {}
+        for i in range(len(self.paths)):
+            label = self.rel_dir(i)
+            if label not in pos:
+                pos[label] = len(groups)
+                groups.append((label, []))
+            groups[pos[label]][1].append(i)
+        return groups
+
     def find_by_stem(self, stem):
-        """Return the index of the clip whose filename stem matches, or None."""
+        """Return the index of the clip whose filename stem matches, or None.
+        Stems stay bare (no folder) so favourites/mapping refs survive a clip
+        being moved into a subfolder — keep filenames unique across folders."""
         if not stem:
             return None
         for i, p in enumerate(self.paths):

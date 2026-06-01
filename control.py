@@ -120,6 +120,11 @@ class ControlWindow:
         self._scroll = {"clips": 0, "gens": 0, "scenes": 0}
         # Clickable list rows for the active tab: [(idx, pygame.Rect), ...]
         self._list_row_rects = []
+        # Clips tab folder tree: labels the operator has collapsed (any
+        # number may be open at once), plus this frame's clickable rects.
+        self._collapsed_folders = set()
+        self._folder_rects = []       # [(folder_label, pygame.Rect), ...]
+        self._collapse_all_rect = None
 
     # ── Event handling ───────────────────────────────────────────────
 
@@ -211,11 +216,33 @@ class ControlWindow:
                     self.active_tab = tab_id
                     self._scroll_to_active(tab_id)
                 return True
+        # Clips-tab folder controls (collapse-all + folder headers).
+        if (self._collapse_all_rect is not None
+                and self._collapse_all_rect.collidepoint(pos)):
+            self._toggle_collapse_all()
+            return True
+        for label, rect in self._folder_rects:
+            if rect.collidepoint(pos):
+                if label in self._collapsed_folders:
+                    self._collapsed_folders.discard(label)
+                else:
+                    self._collapsed_folders.add(label)
+                return True
         for idx, rect in self._list_row_rects:
             if rect.collidepoint(pos):
                 self._activate_list_item(idx)
                 return True
         return False
+
+    def _toggle_collapse_all(self):
+        """One-shot tidy: collapse every folder, or — if they're already all
+        collapsed — expand them all again."""
+        labels = [lbl for lbl, _ in self.engine.clips.grouped() if lbl]
+        if labels and all(lbl in self._collapsed_folders for lbl in labels):
+            self._collapsed_folders.clear()
+        else:
+            self._collapsed_folders.update(labels)
+        self._scroll["clips"] = 0
 
     def _activate_list_item(self, idx):
         """A picker row was clicked. Clips/generators route through the same
@@ -229,7 +256,10 @@ class ControlWindow:
 
     def _scroll_to_active(self, tab_id):
         """When a tab is opened, scroll its list so the current selection is
-        roughly centred — so the clips tab opens on the playing clip."""
+        roughly centred. Skipped for clips, whose folder tree means the row
+        offset no longer equals the clip index."""
+        if tab_id == "clips":
+            return
         active = self._active_index_for(tab_id)
         if active is None or active < 0:
             return
@@ -858,12 +888,114 @@ class ControlWindow:
             yy += s.get_height() + 4
 
     def _draw_tab_clips(self, surface, area):
+        """Collapsible folder tree of the clip library. Folders (subdirs of
+        assets/clips/) can be expanded/collapsed independently — any number
+        open at once — and a Collapse-all button tidies them in one shot."""
         e = self.engine
-        items = [e.clips.name(i) or "—" for i in range(len(e.clips))]
+        groups = e.clips.grouped()
         active = self._active_index_for("clips")
-        self._draw_list(surface, area, items,
-                        active if active is not None else -1,
-                        "clips", empty_msg="No clips in assets/clips/")
+        active = active if active is not None else -1
+        self._folder_rects = []
+
+        if len(e.clips) == 0:
+            msg = self.font_m.render("No clips in assets/clips/",
+                                     True, (150, 150, 175))
+            surface.blit(msg, (area.x + 2, area.y + 2))
+            self._collapse_all_rect = None
+            return
+
+        folder_labels = [lbl for lbl, _ in groups if lbl]
+        # Header strip: a Collapse-/Expand-all button, top-right of the area.
+        head_h = 0
+        self._collapse_all_rect = None
+        if folder_labels:
+            all_collapsed = all(lbl in self._collapsed_folders
+                                for lbl in folder_labels)
+            btn_text = " Expand all " if all_collapsed else " Collapse all "
+            bs = self.font_s.render(btn_text, True, (20, 22, 30))
+            brect = pygame.Rect(0, area.y, bs.get_width() + 8, 18)
+            brect.right = area.right
+            pygame.draw.rect(surface, (150, 180, 210), brect, border_radius=3)
+            surface.blit(bs, (brect.x + 4,
+                              brect.y + (brect.height - bs.get_height()) // 2))
+            self._collapse_all_rect = brect
+            head_h = 22
+
+        # Build the flat row model: folder headers + (when expanded) clips.
+        # ("folder", label, count) or ("clip", idx, label).
+        rows = []
+        for label, idxs in groups:
+            if label:
+                rows.append(("folder", label, len(idxs)))
+                if label in self._collapsed_folders:
+                    continue
+            for idx in idxs:
+                rows.append(("clip", idx, e.clips.name(idx) or "—"))
+
+        list_area = pygame.Rect(area.x, area.y + head_h,
+                                area.w, max(0, area.h - head_h))
+        self._draw_tree_rows(surface, list_area, rows, active)
+
+    def _draw_tree_rows(self, surface, area, rows, active_idx):
+        """Render the clips folder tree (mixed folder/clip rows) with scroll.
+        Populates _folder_rects and _list_row_rects for hit-testing."""
+        row_h = 19
+        n = len(rows)
+        visible = max(1, area.h // row_h)
+        max_scroll = max(0, n - visible)
+        scroll = max(0, min(self._scroll.get("clips", 0), max_scroll))
+        self._scroll["clips"] = scroll
+        has_bar = n > visible
+        list_w = area.w - (10 if has_bar else 0)
+        for row in range(visible):
+            ri = scroll + row
+            if ri >= n:
+                break
+            kind = rows[ri][0]
+            rect = pygame.Rect(area.x, area.y + row * row_h, list_w, row_h - 2)
+            if kind == "folder":
+                _, label, count = rows[ri]
+                collapsed = label in self._collapsed_folders
+                pygame.draw.rect(surface, (44, 48, 66), rect, border_radius=3)
+                pygame.draw.rect(surface, (80, 90, 120), rect, 1, border_radius=3)
+                caret = "▸" if collapsed else "▾"
+                name = label.split("/")[-1]
+                txt = f"{caret} {name}  ({count})"
+                max_chars = max(4, (rect.w - 14) // 7)
+                if len(txt) > max_chars:
+                    txt = txt[:max_chars - 1] + "…"
+                s = self.font_m.render(txt, True, (225, 230, 245))
+                surface.blit(s, (rect.x + 6,
+                                 rect.y + (rect.height - s.get_height()) // 2))
+                self._folder_rects.append((label, rect))
+            else:
+                _, idx, label = rows[ri]
+                is_active = (idx == active_idx)
+                indent = 16
+                rrect = pygame.Rect(rect.x + indent, rect.y,
+                                    rect.w - indent, rect.h)
+                if is_active:
+                    pygame.draw.rect(surface, (70, 130, 200), rrect, border_radius=3)
+                    pygame.draw.rect(surface, (160, 220, 255), rrect, 1, border_radius=3)
+                    fg = (255, 255, 255)
+                else:
+                    pygame.draw.rect(surface, (30, 33, 44), rrect, border_radius=3)
+                    fg = (210, 220, 240)
+                max_chars = max(4, (rrect.w - 14) // 7)
+                if len(label) > max_chars:
+                    label = label[:max_chars - 1] + "…"
+                s = self.font_m.render(label, True, fg)
+                surface.blit(s, (rrect.x + 6,
+                                 rrect.y + (rrect.height - s.get_height()) // 2))
+                self._list_row_rects.append((idx, rrect))
+        if has_bar:
+            track = pygame.Rect(area.right - 6, area.y, 4, visible * row_h)
+            pygame.draw.rect(surface, (40, 44, 60), track, border_radius=2)
+            thumb_h = max(12, int(track.h * visible / n))
+            thumb_y = track.y + int(track.h * scroll / n)
+            pygame.draw.rect(surface, (110, 140, 180),
+                             pygame.Rect(track.x, thumb_y, track.w, thumb_h),
+                             border_radius=2)
 
     def _draw_tab_gens(self, surface, area):
         items = list(GPU_GENERATOR_ORDER)
