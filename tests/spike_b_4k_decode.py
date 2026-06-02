@@ -52,7 +52,7 @@ from gi.repository import Gst, GLib  # noqa: E402
 # same glshader contract the generator worker uses (tex, v_texcoord, time).
 WARP_SHADER = """#version 100
 #ifdef GL_ES
-precision highp float;
+precision mediump float;
 #endif
 varying vec2 v_texcoord;
 uniform sampler2D tex;
@@ -67,11 +67,10 @@ void main () {
   c.x = c.x / persp;                           // perspective keystone
   c = c * (1.0 + 0.1 * sin(time * 0.3));       // breathing zoom
   vec2 suv = c + 0.5;
-  if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) {
-    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-  } else {
-    gl_FragColor = texture2D(tex, suv);
-  }
+  // Branchless edge mask — V3D hates branches, so no if().
+  vec2 e = step(vec2(0.0), suv) * step(suv, vec2(1.0));
+  float m = e.x * e.y;
+  gl_FragColor = vec4(texture2D(tex, clamp(suv, 0.0, 1.0)).rgb * m, 1.0);
 }
 """
 
