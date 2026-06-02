@@ -29,10 +29,17 @@ fi
 : >"$LOG"
 date '+[spike-b] start: %Y-%m-%d %H:%M:%S' | tee -a "$LOG"
 
-"$PY" tests/spike_b_4k_decode.py --clip tests/4k_hevc_test.mp4 2>&1 | tee -a "$LOG"
+# 1) Pure decode (no CPU colour-convert) — the decoder's true ceiling.
+echo "=== pure decode throughput ===" | tee -a "$LOG"
+"$PY" tests/spike_b_4k_decode.py --clip tests/4k_hevc_test.mp4 --mode decode 2>&1 | tee -a "$LOG"
 EXIT=${PIPESTATUS[0]}
 
-# Pull out the two lines that actually decide things.
+# 2) On-screen 4K playback via the GPU (glimagesink) — the real number,
+#    and you get to SEE it on the projector.
+echo "=== on-screen 4K playback ===" | tee -a "$LOG"
+"$PY" tests/spike_b_4k_decode.py --clip tests/4k_hevc_test.mp4 --mode display --fullscreen 2>&1 | tee -a "$LOG"
+
+# Pull out the lines that actually decide things.
 HEAD=$(grep -E 'decoder plugged|RESULT' "$LOG" 2>/dev/null)
 TAIL=$(tail -20 "$LOG" 2>/dev/null)
 if [ "$EXIT" -eq 0 ]; then

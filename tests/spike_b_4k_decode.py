@@ -89,9 +89,11 @@ def _src_chain(clip, decoder):
 
 def run_decode(clip, decoder, n_frames):
     """Decode as fast as possible to appsink; time the steady-state fps."""
-    desc = (f'{_src_chain(clip, decoder)} ! videoconvert ! '
-            "video/x-raw,format=RGB ! "
-            "appsink name=sink emit-signals=false max-buffers=2 drop=false sync=false")
+    # NO videoconvert/RGB here. Forcing a 4K CPU colour-convert to RGB is
+    # itself a ~6fps bottleneck and hides the decoder's real speed. Pull
+    # the decoder's native output straight to appsink = pure decode.
+    desc = (f'{_src_chain(clip, decoder)} ! '
+            "appsink name=sink emit-signals=false max-buffers=2 drop=true sync=false")
     print(f"[spike-b] pipeline: {desc}", flush=True)
     pipeline = Gst.parse_launch(desc)
     sink = pipeline.get_by_name("sink")
@@ -157,7 +159,10 @@ def run_display(clip, decoder, seconds, fullscreen):
     except Exception:
         pass
 
+    last = {"avg": 0.0}
+
     def on_fps(_sink, fps, droprate, avgfps):
+        last["avg"] = avgfps
         print(f"[spike-b] display: {fps:5.1f} fps  (avg {avgfps:5.1f}, "
               f"drop {droprate:5.1f})", flush=True)
     try:
@@ -187,8 +192,11 @@ def run_display(clip, decoder, seconds, fullscreen):
         loop.run()
     finally:
         pipeline.set_state(Gst.State.NULL)
-    print(f"[spike-b] display: done ({seconds:.0f}s). If it played smoothly "
-          "at ~30fps with a hardware decoder, 4K cinematic is real.", flush=True)
+    verdict = "holds 30fps" if last["avg"] >= 29.5 else "below 30fps"
+    print(f"[spike-b] display  RESULT: avg {last['avg']:5.1f} fps on screen "
+          f"-> {verdict}", flush=True)
+    print(f"[spike-b] display: done ({seconds:.0f}s). Smooth ~30fps with a "
+          "hardware decoder = 4K cinematic is real.", flush=True)
 
 
 def main():
