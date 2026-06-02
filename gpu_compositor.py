@@ -74,13 +74,15 @@ def find_clips(clips_dir):
 
 
 class Compositor:
-    def __init__(self, clips, loop):
+    def __init__(self, clips, loop_clip):
         self.clips = clips
         self.idx = 0
-        self.loop = loop
+        self.loop_clip = loop_clip
         self.pipeline = None
         self.fx = None
         self.fx_amt = 0.0
+        self.mainloop = None      # set in main(); used to stop on fatal error
+        self.err_streak = 0       # consecutive clip failures (loop guard)
 
     # ---- pipeline lifecycle -------------------------------------------
     def _build(self):
@@ -88,55 +90,31 @@ class Compositor:
         print(f"[compositor] play [{self.idx + 1}/{len(self.clips)}] "
               f"{clip.name}", flush=True)
 
-        # Built explicitly so decodebin's dynamic pads are handled cleanly:
-        # the video pad goes to the GL chain (decodebin auto-plugs the
-        # hardware HEVC decoder -> DMABUF -> glupload, zero-copy), any audio
-        # pad is drained to a fakesink so it can't stall preroll.
-        self.pipeline = Gst.Pipeline.new("comp")
-        src = Gst.ElementFactory.make("filesrc", None)
-        src.set_property("location", str(clip))
-        dec = Gst.ElementFactory.make("decodebin", None)
-        glup = Gst.ElementFactory.make("glupload", None)
-        glcc = Gst.ElementFactory.make("glcolorconvert", None)
-        fx = Gst.ElementFactory.make("glshader", "fx")
-        sink = Gst.ElementFactory.make("glimagesink", "sink")
-        missing = [n for n, e in (("filesrc", src), ("decodebin", dec),
-                                  ("glupload", glup), ("glcolorconvert", glcc),
-                                  ("glshader", fx), ("glimagesink", sink))
-                   if e is None]
-        if missing:
-            print(f"[compositor] missing elements: {missing}", flush=True)
+        # Proven path (Spikes C/D, 42fps): the EXPLICIT HEVC decoder chain
+        # into GL, via parse_launch so GStreamer wires GL-context sharing
+        # coherently. decodebin -> glupload fails to negotiate on this Pi,
+        # so we use the explicit chain. HEVC-only for now; broader codec /
+        # audio handling is a Stage-1 follow-up.
+        loc = str(clip).replace("\\", "\\\\").replace('"', '\\"')
+        desc = (
+            f'filesrc location="{loc}" ! qtdemux ! h265parse ! '
+            'v4l2slh265dec ! glupload ! glcolorconvert ! '
+            'glshader name=fx ! glimagesink name=sink sync=true'
+        )
+        try:
+            self.pipeline = Gst.parse_launch(desc)
+        except GLib.Error as exc:
+            print(f"[compositor] build failed: {exc}", flush=True)
+            self.pipeline = None
             return
-        fx.set_property("fragment", FX_SHADER)
+        self.fx = self.pipeline.get_by_name("fx")
+        self.fx.set_property("fragment", FX_SHADER)
+        self._apply_fx()
+        sink = self.pipeline.get_by_name("sink")
         try:
             sink.set_property("fullscreen", True)
         except Exception:
             pass
-        for e in (src, dec, glup, glcc, fx, sink):
-            self.pipeline.add(e)
-        src.link(dec)
-        glup.link(glcc)
-        glcc.link(fx)
-        fx.link(sink)
-
-        def _on_pad(_dbin, pad):
-            caps = pad.get_current_caps() or pad.query_caps(None)
-            name = caps.get_structure(0).get_name() if caps.get_size() else ""
-            if name.startswith("video"):
-                target = glup.get_static_pad("sink")
-                if target is not None and not target.is_linked():
-                    pad.link(target)
-            else:
-                fakes = Gst.ElementFactory.make("fakesink", None)
-                if fakes is not None:
-                    fakes.set_property("sync", False)
-                    self.pipeline.add(fakes)
-                    fakes.sync_state_with_parent()
-                    pad.link(fakes.get_static_pad("sink"))
-        dec.connect("pad-added", _on_pad)
-
-        self.fx = fx
-        self._apply_fx()
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self._on_bus)
@@ -180,18 +158,29 @@ class Compositor:
     # ---- bus ----------------------------------------------------------
     def _on_bus(self, _bus, msg):
         t = msg.type
-        if t == Gst.MessageType.EOS:
-            if self.loop and self.pipeline is not None:
+        if t == Gst.MessageType.ASYNC_DONE:
+            self.err_streak = 0          # a clip prerolled OK
+        elif t == Gst.MessageType.EOS:
+            self.err_streak = 0
+            if self.loop_clip and self.pipeline is not None:
                 # Flush-seek back to the start (v1 loop; small hitch).
                 self.pipeline.seek_simple(
                     Gst.Format.TIME,
                     Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT, 0)
             else:
-                self.switch(delta=1)
+                GLib.idle_add(lambda: (self.switch(delta=1), False)[1])
         elif t == Gst.MessageType.ERROR:
             err, dbg = msg.parse_error()
             print(f"[compositor] ERROR {err.message} :: {dbg}", flush=True)
-            # Skip a broken clip rather than dying.
+            self.err_streak += 1
+            if self.err_streak > len(self.clips):
+                print("[compositor] every clip failed to play — stopping. "
+                      "Clips must be H.265/HEVC in MP4; see the error(s) "
+                      "above.", flush=True)
+                if self.mainloop is not None:
+                    self.mainloop.quit()
+                return
+            # Skip a broken clip rather than spinning on it.
             GLib.idle_add(lambda: (self.switch(delta=1), False)[1])
 
 
@@ -217,7 +206,7 @@ def main():
         return 1
     print(f"[compositor] {len(clips)} clip(s) from {clips_dir}", flush=True)
 
-    comp = Compositor(clips, loop=True)
+    comp = Compositor(clips, loop_clip=True)
 
     def dispatch(line):
         try:
@@ -251,6 +240,7 @@ def main():
             print(f"[compositor] bad command {line!r}: {exc!r}", flush=True)
 
     loop = GLib.MainLoop()
+    comp.mainloop = loop
     threading.Thread(target=_command_reader, args=(dispatch,),
                      daemon=True).start()
     comp.start()
