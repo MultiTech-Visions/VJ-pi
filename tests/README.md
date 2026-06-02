@@ -75,3 +75,37 @@ prints **which decoder GStreamer plugged**.
 **Report back:** the `[spike-b] decoder plugged:` line (HARDWARE vs
 SOFTWARE), the fps RESULT line for each mode, the decoded frame size
 (should be 3840x2160), and any error lines.
+
+---
+
+## RESULTS (2026-06-02) — 4K cinematic is PROVEN
+
+Run on the Pi 5 (Wayland desktop, GStreamer 1.26.2):
+
+| Stage | Result |
+|---|---|
+| Hardware HEVC decode (`v4l2slh265dec`) | **162 fps** at 3840×2160 |
+| Zero-copy GL present (DMABUF → glupload → glimagesink) | **42.8 fps** at 3840×2160 — HOLDS 30 |
+| CPU `videoconvert` → any sink | ~6 fps (the dead end — never do this at 4K) |
+| `playbin3` auto | 7.5 fps (auto-picks the CPU path — do NOT rely on it) |
+| `kmssink` | Permission denied — the Wayland desktop owns the DRM planes |
+
+**The proven 4K cinematic pipeline** (all GPU, no CPU frame copy):
+
+```
+filesrc ! qtdemux ! h265parse ! v4l2slh265dec ! glupload ! glimagesink
+```
+
+Key facts learned the hard way:
+- The Pi 5's HEVC decoder emits a tiled **NV12_128C8 ("SAND")** format in
+  **DMABUF** memory. Ordinary sinks can't negotiate it → `not-negotiated`.
+- `glupload` imports that DMABUF straight to GL (needs GStreamer ≥ the
+  DMABUF+DRM-modifier work; 1.26.2 has it). `glcolorconvert` is optional.
+- **Never** put a CPU `videoconvert` in a 4K path — it caps at ~6 fps.
+- Source clips must be **H.265/HEVC** — the only codec the Pi 5 decodes in
+  hardware. (No H.264 hardware decode on Pi 5.)
+
+Open items for the cinematic build:
+- **Mapping**: warp the decoded GL texture on the GPU (a homography/mesh
+  pass before the sink) instead of today's CPU `cv2.warpPerspective`.
+- **Coexistence** with the live VJ app / control HUD on the second screen.
