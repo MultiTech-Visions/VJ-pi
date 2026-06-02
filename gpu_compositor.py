@@ -48,7 +48,16 @@ except Exception as exc:  # noqa: BLE001
     GPU_GENERATORS, GPU_GENERATOR_ORDER = {}, []
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".MP4", ".MOV", ".MKV", ".M4V")
-GEN_W, GEN_H = 1280, 720      # generator render res (upscaled to projector)
+
+# Curated keepers. Most shader_catalog generators are heavy per-pixel
+# (raymarchers / reaction-diffusion sims) and crawl on V3D — and the future
+# is 4K clips + MilkDrop-style feedback, not these. Keep the few that earn
+# their place. (The rest stay in shader_catalog for the CPU rig.)
+KEEP_GENERATORS = ["kaliset", "eyeball", "seraphim"]
+GEN_RES_DEFAULT = (1280, 720)   # render res; the GPU upscales to the projector
+GEN_RES = {
+    "seraphim": (854, 480),     # heavy shader — render smaller for smoothness
+}
 
 # FX slot: u_amt=0 is a clean passthrough; >0 dials zoom + RGB split.
 # (Real FX catalogue comes in Stage 2 when effects.py is ported to GLSL.)
@@ -81,9 +90,8 @@ def find_clips(clips_dir):
 
 
 def list_generators():
-    # donut needs an image source; skip it for now.
-    return [g for g in GPU_GENERATOR_ORDER
-            if g in GPU_GENERATORS and g != "donut"]
+    # Only the curated keepers that actually exist in the catalogue.
+    return [g for g in KEEP_GENERATORS if g in GPU_GENERATORS]
 
 
 class Compositor:
@@ -137,11 +145,12 @@ class Compositor:
 
     def _build_gen(self):
         name = self.gens[self.gen_idx]
+        w, h = GEN_RES.get(name, GEN_RES_DEFAULT)
         print(f"[compositor] generator [{self.gen_idx + 1}/{len(self.gens)}] "
-              f"{name}", flush=True)
+              f"{name} @ {w}x{h}", flush=True)
         desc = (
             'videotestsrc is-live=true pattern=black ! '
-            f'video/x-raw,width={GEN_W},height={GEN_H},framerate=30/1 ! '
+            f'video/x-raw,width={w},height={h},framerate=30/1 ! '
             'glupload ! glshader name=gen ! glshader name=fx ! '
             'glimagesink name=sink sync=true'
         )
