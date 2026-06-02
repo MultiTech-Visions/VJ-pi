@@ -1,22 +1,10 @@
-# GPU spikes & diagnostics
+# GPU spikes
 
-Two kinds of thing live here:
+Two small, decisive experiments on the **production stack** (SDL2 `_sdl2`
+Renderer + GStreamer), built to answer the two open questions blocking a
+GPU-first / 4K-cinematic direction — *before* committing to any rewrite.
 
-1. **The current spikes** (`spike_a_*`, `spike_b_*`) — small, decisive
-   experiments on the **production stack** (SDL2 `_sdl2` Renderer +
-   GStreamer), built to answer the two open questions blocking a
-   GPU-first / 4K-cinematic direction. **Start here.**
-2. **The legacy moderngl diagnostics** (`test_01_*` … `test_07_*`) —
-   recovered from the abandoned single-process moderngl attempt
-   (reverted in commit `a7c2e48`). Kept for reference and for the V3D
-   lessons baked into them. They need `pip install moderngl`, which is
-   **not** part of the current rig.
-
----
-
-## The two spikes that matter
-
-### Why these exist (the short version)
+## Why these exist (the short version)
 
 The project's whole GPU history died on one bug: **two GL contexts in one
 process corrupt each other on V3D** (a surface goes solid black). The fix
@@ -37,7 +25,7 @@ If A passes and B holds ~30 fps with a **hardware** decoder, the
 confidence. If B only works with a software decoder or drops frames, we
 fall back to a separate, more modest cinematic mode.
 
-### Spike A — dual-screen survival
+## Spike A — dual-screen survival
 
 ```bash
 # On the Pi, two displays (projector = display 1, operator screen = 0):
@@ -55,7 +43,7 @@ fall back to a separate, more modest cinematic mode.
 --control` — the spike is the isolated version so a failure can't hide
 behind the engine.)
 
-### Spike B — 4K HEVC decode throughput
+## Spike B — 4K HEVC decode throughput
 
 First make a 4K HEVC test clip (one-time, software encode, ~minutes):
 
@@ -87,33 +75,3 @@ prints **which decoder GStreamer plugged**.
 **Report back:** the `[spike-b] decoder plugged:` line (HARDWARE vs
 SOFTWARE), the fps RESULT line for each mode, the decoded frame size
 (should be 3840x2160), and any error lines.
-
----
-
-## Legacy moderngl diagnostics (reference only)
-
-Each `test_0N_*.py` exercises ONE thing in a single-process moderngl GL
-context, in order, so the first FAIL points at the broken subsystem.
-They need `pip install moderngl` and are the scaffolding from the
-*reverted* GPU attempt — useful to read for the V3D notes (RGBA8-only
-FBOs, explicit attribute locations, RGBA-only readback) but not part of
-the current architecture.
-
-```bash
-./tests/run_all.sh        # runs test_01 … test_07, logs to tests/output/
-```
-
-| Test | Checks | If it fails… |
-|---|---|---|
-| `01_context` | GL context creation, version queries | no usable GL context at all |
-| `02_clear_screen` | clear to default framebuffer | basic GL output broken |
-| `03_clear_fbo` | clear to an offscreen RGBA8 FBO | FBO path broken on V3D |
-| `04_noattrib_quad` | fullscreen quad via `gl_VertexID` | rasterisation broken |
-| `05_attrib_quad` | same quad via vertex attribute | **04 ok + 05 fail = V3D attribute bug** |
-| `06_fbo_shader` | procedural shader → FBO | the generative path |
-| `07_texture_sample` | upload texture, sample in shader | the clip-frame path |
-
-> Note: these rely on the real V3D driver. On a dev box running software
-> Mesa (LLVMpipe) over Xvfb, `fbo.read()` returns mostly zeros even for a
-> plain clear — that's an Xvfb/LLVMpipe quirk, not a real failure. Run on
-> the Pi.
