@@ -48,37 +48,44 @@ The dual-context V3D bug that killed past attempts cannot occur — it was
 never "GPU is bad," it was always "two GL contexts in one process." This
 is the *same* discipline that already works, just deepened.
 
-## 3. The one remaining unknown → Spike D (do this FIRST)
+## 3. Architecture — RESOLVED (Spike D passed, 2026-06-02)
 
-Everything proven so far used GStreamer's own `glimagesink` for display.
-But a VJ rig needs live, per-frame control (FX intensity on arrow keys,
-hits, param tweaks) — and GStreamer's `glshader` can't cleanly take
-arbitrary per-frame uniforms. That points at a **custom GL compositor**
-(our own shaders/FBOs, full uniform control) fed by GStreamer's hardware
-decode. The open question:
+Spike D confirmed on hardware: **GStreamer's `glshader` takes live,
+externally-driven uniforms** (the element's `uniforms` property; verified
+the picture responds live at ~30Hz from Python). So we do **not** need a
+hand-rolled GL compositor for clips/FX/mapping — that whole risky path is
+off the table. Stages 1–4 ride on the **proven GStreamer GL graph**:
 
-> **Can we get a hardware-decoded 4K frame into OUR GL context as a
-> texture, zero-copy, and still hit ~30 fps?**
+- clip: `v4l2slh265dec ! glupload ! glcolorconvert`
+- generator: `glshader` (existing `shader_catalog` shaders)
+- FX: `glshader` passes with live uniforms (proven)
+- compositing: `glvideomixer`
+- mapping: geometry warp (`gltransformation`-style, single pass)
+- output: `glimagesink` (proven 42 fps)
 
-Two ways to bridge it, Spike D tries both:
-- **A) Shared GstGL context** — `appsink caps=video/x-raw(memory:GLMemory)`
-  with GStreamer using our GL context, so decoded frames arrive as GL
-  textures directly.
-- **B) DMABUF → EGLImage import** — `appsink` hands us a DMABUF fd; we
-  import it as an `EGLImage` → GL texture ourselves.
+…all in ONE compositor process (one GL context — V3D-safe), driven by a
+GL-free controller process over a pipe, exactly like the generator worker
+today.
 
-Spike D = decode 4K HEVC → get it as a texture in a standalone
-EGL/moderngl context → draw it through one of our own shader passes →
-display → measure fps.
+**The one genuinely-hard piece left is Stage 5** (feedback/MilkDrop
+generators), because `glshader` is single-pass and can't sample its own
+previous frame. That stage — and only that stage — needs custom GL FBOs,
+and it gets its own spike when we reach it.
 
-- **If Spike D holds ~30 fps** → custom GL compositor (full flexibility).
-  This is the path we want.
-- **If it can't** → fall back to a GStreamer-GL graph compositor (works,
-  proven 42 fps, but live FX control is more awkward — we'd work around
-  the uniform limits).
+### The 4K fill-rate budget (a hard design rule, from Spikes B/C/D)
 
-This is the same de-risk-before-building discipline that's served us all
-night. One spike, then we commit the architecture.
+Measured: plain 4K present = 42 fps, but **every full-4K shader pass
+roughly halves the framerate** (one glshader pass landed 19–28 fps).
+That's V3D's fill rate over 8.3M pixels — the budget, not a bug. So:
+
+- **Clean clip (no FX): full 4K, ~42 fps.** Cinematic stays gorgeous.
+- **FX moments: run FX passes at reduced resolution** (1080p/720p), then
+  upscale — exactly what the current rig's `--fx-render-scale` already
+  does. 4× cheaper, and the chaotic FX moments don't need 4K detail.
+- **Fuse effects into as few passes as possible** rather than stacking
+  many full-screen passes.
+
+Reserve full-4K passes for the clean present; everything else runs lean.
 
 ## 4. Incremental migration — the rig never breaks
 
@@ -135,8 +142,21 @@ event. No big-bang rewrite.
 - Ship every stage; test on the real Pi each step (edit → push → pull →
   run → observe).
 
-## 7. Immediate next step
+## 7. Immediate next step — Stage 1 begins
 
-Build **Spike D** (clip → our-GL-texture → shader pass → display, fps
-measured). Its result picks the compositor architecture, and then Stage 1
-begins.
+Spikes are done; architecture is locked (§3). Stage 1 first milestone:
+
+1. **`gpu_compositor.py`** — a new compositor process (system python3 /
+   gi, like `gpu_generator_worker.py`): builds the GStreamer GL graph
+   `clip-or-generator → glshader(FX, passthrough at first) →
+   glimagesink(projector)`, reads JSON commands on stdin (set source,
+   next/prev clip, set generator, set FX uniform), rebuilds the source
+   branch on switch (acceptable latency, same as the generator worker).
+2. **A minimal launcher** to run it fullscreen on the projector and cycle
+   the real 4K clip library from the keyboard — proving the unified GL
+   pipeline plays the actual library at 4K with live switching.
+3. Then layer in: generators as a source, the FX uniform wired to a key,
+   the `gltransformation` mapping pass.
+
+The current CPU rig stays the default (its own launcher) the entire time.
+Build → push → pull → run on the Pi → observe, one slice at a time.
