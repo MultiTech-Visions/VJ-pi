@@ -137,7 +137,8 @@ def _sink_desc(sink):
 
 def measure_sink(clip, decoder, sink, seconds, fullscreen):
     """Play the clip to one sink for `seconds`, counting buffers at the
-    sink's pad (no text overlay) to get a clean on-screen fps."""
+    sink's pad (no text overlay) to get a clean on-screen fps. Captures
+    and prints the REAL bus error if the sink won't start."""
     desc = f'{_src_chain(clip, decoder)} ! queue ! {_sink_desc(sink)}'
     print(f"[spike-b] ---- sink={sink}: {desc}", flush=True)
     try:
@@ -162,52 +163,57 @@ def measure_sink(clip, decoder, sink, seconds, fullscreen):
             st["last"] = now
         return Gst.PadProbeReturn.OK
 
-    pad = vsink.get_static_pad("sink")
+    pad = vsink.get_static_pad("sink") if vsink is not None else None
     if pad is not None:
         pad.add_probe(Gst.PadProbeType.BUFFER, _probe)
 
-    loop = GLib.MainLoop()
-    err = {"msg": None}
-
-    def _bus(_b, msg):
-        if msg.type == Gst.MessageType.ERROR:
-            e, d = msg.parse_error()
-            err["msg"] = f"{e.message}; {d}"
-            loop.quit()
-        elif msg.type == Gst.MessageType.EOS:
-            loop.quit()
     bus = pipeline.get_bus()
-    bus.add_signal_watch()
-    bus.connect("message", _bus)
-
     pipeline.set_state(Gst.State.PLAYING)
-    res, _, _ = pipeline.get_state(5 * Gst.SECOND)
-    if fullscreen:
-        try:
-            vsink.set_property("fullscreen", True)
-        except Exception:
-            pass
-    if res == Gst.StateChangeReturn.FAILURE:
-        print(f"[spike-b] {sink:13s} RESULT: failed to start "
-              f"({err['msg'] or 'state change failure'})", flush=True)
+
+    # Synchronously wait for preroll (ASYNC_DONE) OR the real error, so we
+    # actually SEE why a sink won't start instead of a generic failure.
+    msg = bus.timed_pop_filtered(
+        6 * Gst.SECOND,
+        Gst.MessageType.ERROR | Gst.MessageType.ASYNC_DONE | Gst.MessageType.EOS)
+    if msg is not None and msg.type == Gst.MessageType.ERROR:
+        e, d = msg.parse_error()
+        print(f"[spike-b] {sink:13s} RESULT: ERROR {e.message} :: {d}", flush=True)
         pipeline.set_state(Gst.State.NULL)
         return
+    if msg is None:
+        print(f"[spike-b] {sink:13s} RESULT: no preroll within 6s (stuck)",
+              flush=True)
+        pipeline.set_state(Gst.State.NULL)
+        return
+
     _classify_decoder(pipeline)
+
+    # Measure for `seconds`. Run a main loop (some Wayland sinks need it to
+    # pump windowing events) and catch any late error.
+    loop = GLib.MainLoop()
+
+    def _bus_msg(_b, m):
+        if m.type == Gst.MessageType.ERROR:
+            e, d = m.parse_error()
+            print(f"[spike-b] {sink}: late ERROR {e.message} :: {d}", flush=True)
+            loop.quit()
+        elif m.type == Gst.MessageType.EOS:
+            loop.quit()
+    bus.add_signal_watch()
+    bus.connect("message", _bus_msg)
     GLib.timeout_add_seconds(int(seconds), lambda: (loop.quit() or False))
     try:
         loop.run()
     finally:
         pipeline.set_state(Gst.State.NULL)
 
-    if err["msg"]:
-        print(f"[spike-b] {sink:13s} RESULT: error ({err['msg']})", flush=True)
-    elif st["t0"] is not None and st["n"] > 0:
+    if st["t0"] is not None and st["n"] > 0:
         fps = st["n"] / (time.perf_counter() - st["t0"])
         verdict = "HOLDS 30fps" if fps >= 29.5 else "below 30fps"
         print(f"[spike-b] {sink:13s} RESULT: {fps:5.1f} fps on screen "
               f"-> {verdict}", flush=True)
     else:
-        print(f"[spike-b] {sink:13s} RESULT: no frames reached the sink",
+        print(f"[spike-b] {sink:13s} RESULT: prerolled but no frames advanced",
               flush=True)
 
 
@@ -215,7 +221,8 @@ def run_sweep(clip, decoder, seconds, fullscreen):
     print(f"[spike-b] session: XDG_SESSION_TYPE="
           f"{os.environ.get('XDG_SESSION_TYPE')}, "
           f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')}, "
-          f"DISPLAY={os.environ.get('DISPLAY')}", flush=True)
+          f"DISPLAY={os.environ.get('DISPLAY')}, "
+          f"XDG_RUNTIME_DIR={os.environ.get('XDG_RUNTIME_DIR')}", flush=True)
     for sink in ("glimagesink", "waylandsink", "kmssink", "autovideosink"):
         try:
             measure_sink(clip, decoder, sink, seconds, fullscreen)
