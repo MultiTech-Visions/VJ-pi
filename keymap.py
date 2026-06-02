@@ -84,6 +84,9 @@ def dispatch(engine, key, mod):
         if mod & pygame.KMOD_SHIFT:
             engine.quit()
             return
+        if engine.mode == "cinematic":
+            engine.stop_cinematic_mode()
+            return
         if engine.mode == "mapping" and engine.mapping.edit_mode:
             # Cancel any in-flight drag / deselect the picked space, but
             # stay in edit mode so the operator can keep working.
@@ -95,6 +98,19 @@ def dispatch(engine, key, mod):
     # Mode toggle works in both modes; no Ctrl required.
     if key == pygame.K_m and not (mod & pygame.KMOD_CTRL):
         engine.toggle_mapping_mode()
+        return
+
+    if key == pygame.K_n and not (mod & pygame.KMOD_CTRL):
+        engine.toggle_cinematic_mode()
+        return
+
+    if engine.mode == "cinematic":
+        if key == CYCLE_CLIPS_PREV:
+            engine.cinematic_step(-1)
+            return
+        if key == CYCLE_CLIPS_NEXT:
+            engine.cinematic_step(1)
+            return
         return
 
     # Mapping-mode-only ops.

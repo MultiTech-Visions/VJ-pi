@@ -20,6 +20,10 @@ Then double-click these files in order:
    into `assets/images/`; the donut generator cycles through those as
    textures each time you return to it.
 
+   For clean high-detail playback, drop raw 4K video files into
+   `assets/4k/`, then double-click **`Process 4K Assets.sh`** once. It
+   writes Pi 5 GPU-playable HEVC clips into `assets/4k/processed/`.
+
 3. To launch, double-click one of these scripts and choose **"Execute"**:
    - **`Start VJ.sh`** — **dual display** (the main mode). Opens a
      control HUD on the small screen (display 0) showing live preview,
@@ -134,6 +138,7 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `Space`             | Blackout toggle (panic button)                     |
 | `Backspace`         | Freeze frame toggle                                |
 | `M`                 | Toggle **MAPPING mode** (see section below)        |
+| `N`                 | Toggle **4K CINEMATIC mode**. While active, `−` / `=` move through the 4K playlist; `Esc` exits cinematic mode. |
 | `Esc`               | Panic: clear FX, hits, blackout/freeze. **Keeps the current clip _or_ generator playing** so you never drop to black unexpectedly. |
 | `Shift+Esc`         | Quit                                               |
 
@@ -335,6 +340,32 @@ prints progress when run from a terminal, and writes the full log to
 `vj_last_process.log`. Originals are preserved in `assets/clips/_originals/`.
 Clips are scaled + centre-cropped to fill the frame.
 
+### 4K cinematic mode
+
+This is part of the main app: start **`Start VJ.sh`**, then press `N`.
+The normal VJ canvas goes black and a separate GStreamer/GL video window
+plays the `assets/4k/processed/` playlist with the fastest Pi 5 path:
+HEVC hardware decode → GL upload/convert → `glimagesink`. No FX, no
+mapping, no CPU frame copy.
+
+On the Pi/labwc projector setup, run **`Apply Fullscreen Rule.sh`** once
+if the cinematic video window does not jump to the projector fullscreen.
+
+Controls while cinematic mode is active:
+
+| Keys      | Action                         |
+|-----------|--------------------------------|
+| `N`       | Leave cinematic mode           |
+| `Esc`     | Leave cinematic mode           |
+| `−` / `=` | Previous / next 4K clip        |
+
+Drop raw large files into `assets/4k/` and run **`Process 4K Assets.sh`**
+before a set. The processor writes HEVC/H.265 MP4 files capped at
+3840×2160 and 30 fps into `assets/4k/processed/`, leaving the raw source
+files in place. If no processed files exist, cinematic mode will try the
+top-level `assets/4k/` files directly, but unsupported codecs will fail
+or skip; processing ahead of time is the reliable path.
+
 ## Architecture
 
 ```
@@ -353,6 +384,7 @@ shader_catalog.py / gpu_generator_worker.py
 clips.py       ClipPool: lazy MP4 loader keyed by slot index
 keymap.py      Pygame key → engine action dispatch table
 config.py      Config dataclass
+cinematic4k.py System-Python GStreamer/GL player for N-key 4K cinematic mode
 ```
 
 Render pipeline each frame:

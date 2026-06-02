@@ -19,6 +19,7 @@ KEY_CHEAT = [
     ("Space",        "Blackout (panic)"),
     ("Backspace",    "Freeze frame"),
     ("M",            "Toggle MAPPING mode"),
+    ("N",            "Toggle 4K CINEMATIC mode  (-/= prev/next)"),
     ("Esc",          "Panic: clear FX / hits (keeps the clip playing)"),
     ("Shift+Esc",    "Quit"),
 ]

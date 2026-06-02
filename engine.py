@@ -1,7 +1,10 @@
 import os
 import random
+import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pygame
 import numpy as np
@@ -153,6 +156,10 @@ class Engine:
         self.mapping = MappingManager(persisted.get("mapping"))
         self._repair_mapping_media_refs()
         self.mode = "mapping" if self.mapping.enabled else "live"
+        self._mode_before_cinematic = "live"
+        self._cinematic_proc = None
+        self._cinematic_log_handle = None
+        self._cinematic_log = Path(__file__).resolve().parent / "vj_last_cinematic.log"
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
         self._mapping_persist_dirty = False
@@ -365,6 +372,113 @@ class Engine:
         # Hits stay global — they're a panic-button visual smash.
         self.hit_type = kind
         self.hit_frames_left = frames
+
+    # ── Cinematic 4K mode ────────────────────────────────────────────
+
+    def toggle_cinematic_mode(self):
+        if self.mode == "cinematic":
+            self.stop_cinematic_mode()
+        else:
+            self.start_cinematic_mode()
+
+    def start_cinematic_mode(self):
+        if self._cinematic_proc is not None and self._cinematic_proc.poll() is None:
+            self.mode = "cinematic"
+            return
+
+        root = Path(__file__).resolve().parent
+        player = root / "cinematic4k.py"
+        assets_4k = root / "assets" / "4k"
+        processed = assets_4k / "processed"
+        clips_dir = processed if self._has_video_files(processed) else assets_4k
+        if not self._has_video_files(clips_dir):
+            print("[vj] cinematic: no files in assets/4k or assets/4k/processed")
+            return
+
+        py = "/usr/bin/python3" if Path("/usr/bin/python3").exists() else sys.executable
+        try:
+            log = open(self._cinematic_log, "w", buffering=1, encoding="utf-8")
+            log.write(f"[vj] cinematic launch: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log.write(f"[vj] clips-dir: {clips_dir}\n")
+            self._cinematic_log_handle = log
+            self._cinematic_proc = subprocess.Popen(
+                [py, str(player), str(clips_dir)],
+                stdin=subprocess.PIPE,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[vj] cinematic: launch failed: {exc!r}")
+            self._cinematic_proc = None
+            return
+
+        self._mode_before_cinematic = self.mode if self.mode != "cinematic" else "live"
+        self.mode = "cinematic"
+        self.disengage_auto()
+        self.gpu_generators.pause()
+        print(f"[vj] cinematic: started from {clips_dir}")
+
+    def stop_cinematic_mode(self):
+        self._send_cinematic({"cmd": "quit"})
+        if self._cinematic_proc is not None:
+            try:
+                self._cinematic_proc.wait(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                self._cinematic_proc.terminate()
+            self._cinematic_proc = None
+        if self._cinematic_log_handle is not None:
+            try:
+                self._cinematic_log_handle.close()
+            except OSError:
+                pass
+            self._cinematic_log_handle = None
+        self.mode = self._mode_before_cinematic if self._mode_before_cinematic else "live"
+        if self.mode == "cinematic":
+            self.mode = "live"
+        print("[vj] cinematic: stopped")
+
+    def poll_cinematic_mode(self):
+        if self.mode != "cinematic" or self._cinematic_proc is None:
+            return
+        if self._cinematic_proc.poll() is None:
+            return
+        self._cinematic_proc = None
+        if self._cinematic_log_handle is not None:
+            try:
+                self._cinematic_log_handle.close()
+            except OSError:
+                pass
+            self._cinematic_log_handle = None
+        self.mode = self._mode_before_cinematic if self._mode_before_cinematic else "live"
+        if self.mode == "cinematic":
+            self.mode = "live"
+        print("[vj] cinematic: player exited")
+
+    def cinematic_step(self, delta):
+        if self.mode != "cinematic":
+            return False
+        self._send_cinematic({"cmd": "next" if delta >= 0 else "prev"})
+        return True
+
+    def _send_cinematic(self, payload):
+        proc = self._cinematic_proc
+        if proc is None or proc.poll() is not None or proc.stdin is None:
+            return
+        try:
+            import json
+            proc.stdin.write(json.dumps(payload) + "\n")
+            proc.stdin.flush()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[vj] cinematic: command failed: {exc!r}")
+
+    @staticmethod
+    def _has_video_files(path):
+        if not path.exists():
+            return False
+        exts = {".mp4", ".mov", ".mkv", ".m4v"}
+        return any(p.is_file() and p.suffix.lower() in exts for p in path.iterdir())
 
     def toggle_fx(self, name):
         if self._in_mapping():
@@ -596,6 +710,8 @@ class Engine:
             self.gpu_generators.pause()
 
     def quit(self):
+        if self.mode == "cinematic":
+            self.stop_cinematic_mode()
         self.running = False
 
     def cycle_pending_display(self):
@@ -1095,6 +1211,8 @@ class Engine:
             frame = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         elif self.freeze and self.frozen_frame is not None:
             frame = self.frozen_frame
+        elif self.mode == "cinematic":
+            frame = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         elif self.mode == "mapping":
             frame = self._compose_mapping_frame()
         else:
@@ -1893,6 +2011,7 @@ class Engine:
                 if now - t >= LONG_PRESS_S:
                     fav_long(self, k)
                     long_press_fired.add(k)
+            self.poll_cinematic_mode()
 
             dt = now - last_t
             last_t = now
