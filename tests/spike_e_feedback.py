@@ -134,7 +134,10 @@ def main():
               "should install it; or: ./venv/bin/pip install moderngl",
               flush=True)
         return 1
-    ctx = moderngl.create_context()
+    # V3D gives a GLES 3.1 context (version code 310); moderngl otherwise
+    # demands desktop GL 3.3 (330) and bails. Tell it 3.0+ is fine — same as
+    # the old gpu.py did on this hardware.
+    ctx = moderngl.create_context(require=300)
     print(f"[spike-e] GL: {ctx.info.get('GL_RENDERER', '?')} | "
           f"{ctx.info.get('GL_VERSION', '?')}", flush=True)
     print(f"[spike-e] window {win_w}x{win_h} (display {args.display}), "
