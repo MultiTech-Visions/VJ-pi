@@ -34,14 +34,14 @@ echo "=== pure decode throughput ===" | tee -a "$LOG"
 "$PY" tests/spike_b_4k_decode.py --clip tests/4k_hevc_test.mp4 --mode decode 2>&1 | tee -a "$LOG"
 EXIT=${PIPESTATUS[0]}
 
-# 2) Production auto path: playbin3 picks the optimal decode->convert->sink
-#    chain itself. Best single indicator of real-world 4K playback fps.
-echo "=== on-screen 4K playback (playbin3 auto) ===" | tee -a "$LOG"
-"$PY" tests/spike_b_4k_decode.py --clip tests/4k_hevc_test.mp4 --mode playbin 2>&1 | tee -a "$LOG"
+# 2) The documented zero-copy GPU route: decoder DMABUF -> glupload -> GL,
+#    no CPU convert. If these all fail not-negotiated, GStreamer is too old.
+echo "=== on-screen 4K (zero-copy GL / DMABUF attempts) ===" | tee -a "$LOG"
+"$PY" tests/spike_b_4k_decode.py --clip tests/4k_hevc_test.mp4 --mode dmabuf 2>&1 | tee -a "$LOG"
 
-# 3) Explicit GPU vs CPU-convert sinks (~8s each), to see the fast path.
-echo "=== on-screen 4K playback (explicit sink sweep) ===" | tee -a "$LOG"
-"$PY" tests/spike_b_4k_decode.py --clip tests/4k_hevc_test.mp4 --mode sweep 2>&1 | tee -a "$LOG"
+# 3) Production auto path as a cross-check.
+echo "=== on-screen 4K (playbin3 auto) ===" | tee -a "$LOG"
+"$PY" tests/spike_b_4k_decode.py --clip tests/4k_hevc_test.mp4 --mode playbin 2>&1 | tee -a "$LOG"
 
 # Pull out the lines that actually decide things.
 HEAD=$(grep -E 'decoder plugged|RESULT' "$LOG" 2>/dev/null)

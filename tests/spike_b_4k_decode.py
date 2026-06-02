@@ -140,16 +140,15 @@ def _sink_desc(sink):
     return "videoconvert ! autovideosink name=vsink sync=false"
 
 
-def measure_sink(clip, decoder, sink, seconds, fullscreen):
-    """Play the clip to one sink for `seconds`, counting buffers at the
-    sink's pad (no text overlay) to get a clean on-screen fps. Captures
-    and prints the REAL bus error if the sink won't start."""
-    desc = f'{_src_chain(clip, decoder)} ! queue ! {_sink_desc(sink)}'
-    print(f"[spike-b] ---- sink={sink}: {desc}", flush=True)
+def measure_pipeline(desc, label, seconds):
+    """Run a full pipeline string for `seconds`, counting buffers at the
+    element named 'vsink' for a clean on-screen fps. Prints the real bus
+    error if it won't start."""
+    print(f"[spike-b] ---- {label}: {desc}", flush=True)
     try:
         pipeline = Gst.parse_launch(desc)
     except GLib.Error as exc:
-        print(f"[spike-b] {sink:13s} RESULT: not available ({exc})", flush=True)
+        print(f"[spike-b] {label:14s} RESULT: parse failed ({exc})", flush=True)
         return
 
     vsink = pipeline.get_by_name("vsink")
@@ -164,7 +163,7 @@ def measure_sink(clip, decoder, sink, seconds, fullscreen):
         st["n"] += 1
         if now - st["last"] >= 1.0:
             fps = st["n"] / (now - st["t0"])
-            print(f"[spike-b] {sink}: {fps:5.1f} fps", flush=True)
+            print(f"[spike-b] {label}: {fps:5.1f} fps", flush=True)
             st["last"] = now
         return Gst.PadProbeReturn.OK
 
@@ -175,32 +174,29 @@ def measure_sink(clip, decoder, sink, seconds, fullscreen):
     bus = pipeline.get_bus()
     pipeline.set_state(Gst.State.PLAYING)
 
-    # Synchronously wait for preroll (ASYNC_DONE) OR the real error, so we
-    # actually SEE why a sink won't start instead of a generic failure.
+    # Synchronously wait for preroll (ASYNC_DONE) OR the real error.
     msg = bus.timed_pop_filtered(
         6 * Gst.SECOND,
         Gst.MessageType.ERROR | Gst.MessageType.ASYNC_DONE | Gst.MessageType.EOS)
     if msg is not None and msg.type == Gst.MessageType.ERROR:
         e, d = msg.parse_error()
-        print(f"[spike-b] {sink:13s} RESULT: ERROR {e.message} :: {d}", flush=True)
+        print(f"[spike-b] {label:14s} RESULT: ERROR {e.message} :: {d}", flush=True)
         pipeline.set_state(Gst.State.NULL)
         return
     if msg is None:
-        print(f"[spike-b] {sink:13s} RESULT: no preroll within 6s (stuck)",
+        print(f"[spike-b] {label:14s} RESULT: no preroll within 6s (stuck)",
               flush=True)
         pipeline.set_state(Gst.State.NULL)
         return
 
     _classify_decoder(pipeline)
 
-    # Measure for `seconds`. Run a main loop (some Wayland sinks need it to
-    # pump windowing events) and catch any late error.
     loop = GLib.MainLoop()
 
     def _bus_msg(_b, m):
         if m.type == Gst.MessageType.ERROR:
             e, d = m.parse_error()
-            print(f"[spike-b] {sink}: late ERROR {e.message} :: {d}", flush=True)
+            print(f"[spike-b] {label}: late ERROR {e.message} :: {d}", flush=True)
             loop.quit()
         elif m.type == Gst.MessageType.EOS:
             loop.quit()
@@ -215,11 +211,39 @@ def measure_sink(clip, decoder, sink, seconds, fullscreen):
     if st["t0"] is not None and st["n"] > 0:
         fps = st["n"] / (time.perf_counter() - st["t0"])
         verdict = "HOLDS 30fps" if fps >= 29.5 else "below 30fps"
-        print(f"[spike-b] {sink:13s} RESULT: {fps:5.1f} fps on screen "
+        print(f"[spike-b] {label:14s} RESULT: {fps:5.1f} fps on screen "
               f"-> {verdict}", flush=True)
     else:
-        print(f"[spike-b] {sink:13s} RESULT: prerolled but no frames advanced",
+        print(f"[spike-b] {label:14s} RESULT: prerolled but no frames advanced",
               flush=True)
+
+
+def measure_sink(clip, decoder, sink, seconds, fullscreen):
+    desc = f'{_src_chain(clip, decoder)} ! queue ! {_sink_desc(sink)}'
+    measure_pipeline(desc, sink, seconds)
+
+
+def run_dmabuf(clip, seconds):
+    """The documented zero-copy route: keep the decoder's DMABUF (the Pi's
+    tiled NV12_128C8 'SAND' format) and import it into GL via glupload, no
+    CPU videoconvert. If ALL of these fail 'not-negotiated', the installed
+    GStreamer is almost certainly too old for DMABUF+DRM-modifier glupload
+    and needs updating (apt)."""
+    dec = f'filesrc location="{clip}" ! qtdemux ! h265parse ! v4l2slh265dec'
+    candidates = [
+        (f'{dec} ! glupload ! glimagesink name=vsink sync=false',
+         "gl-direct"),
+        (f'{dec} ! glupload ! glcolorconvert ! glimagesink name=vsink sync=false',
+         "gl-colorconv"),
+        (f'{dec} ! capsfilter caps="video/x-raw(memory:DMABuf)" ! '
+         f'glupload ! glimagesink name=vsink sync=false',
+         "gl-dmabufcaps"),
+    ]
+    for desc, label in candidates:
+        try:
+            measure_pipeline(desc, label, seconds)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[spike-b] {label:14s} RESULT: exception {exc!r}", flush=True)
 
 
 def run_sweep(clip, decoder, seconds, fullscreen):
@@ -292,7 +316,7 @@ def main():
     ap.add_argument("--decoder", default="auto",
                     help="'auto' (decodebin) or force e.g. 'avdec_h265'")
     ap.add_argument("--mode",
-                    choices=("decode", "sweep", "display", "playbin"),
+                    choices=("decode", "sweep", "display", "playbin", "dmabuf"),
                     default="decode")
     ap.add_argument("--sink", default="glimagesink",
                     help="Sink for --mode display")
@@ -312,12 +336,15 @@ def main():
         return 1
 
     Gst.init(None)
+    print(f"[spike-b] GStreamer {Gst.version_string()}", flush=True)
     if args.mode == "decode":
         run_decode(args.clip, args.decoder, args.frames)
     elif args.mode == "sweep":
         run_sweep(args.clip, args.decoder, args.seconds, args.fullscreen)
     elif args.mode == "playbin":
         run_playbin(args.clip, args.seconds)
+    elif args.mode == "dmabuf":
+        run_dmabuf(args.clip, args.seconds)
     else:
         measure_sink(args.clip, args.decoder, args.sink, args.seconds,
                      args.fullscreen)
