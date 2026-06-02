@@ -123,16 +123,21 @@ def run_decode(clip, decoder, n_frames):
 
 
 def _sink_desc(sink):
-    """Element chain for each candidate sink. glimagesink gets a glupload
-    (which can import the decoder's DMABUF straight to GL); kms/wayland
-    sinks take DMABUF directly."""
-    if sink == "glimagesink":
-        return "glupload ! glimagesink name=vsink force-aspect-ratio=true sync=false"
-    if sink == "kmssink":
-        return "kmssink name=vsink sync=false"
-    if sink == "waylandsink":
-        return "waylandsink name=vsink sync=false"
-    return "autovideosink name=vsink sync=false"
+    """Element chain per candidate. The earlier sweep died 'not-negotiated'
+    because there was no converter between the decoder (NV12 in GPU/DMABUF
+    memory) and the sink. So:
+      gl      = GPU convert path: glupload ! glcolorconvert ! glimagesink
+                (conversion on the GPU — the one that should be FAST)
+      wayland = CPU-convert baseline to waylandsink (will negotiate; slow)
+      kms     = CPU-convert baseline to kmssink"""
+    if sink == "gl":
+        return ("glupload ! glcolorconvert ! "
+                "glimagesink name=vsink force-aspect-ratio=true sync=false")
+    if sink == "wayland":
+        return "videoconvert ! waylandsink name=vsink sync=false"
+    if sink == "kms":
+        return "videoconvert ! kmssink name=vsink sync=false"
+    return "videoconvert ! autovideosink name=vsink sync=false"
 
 
 def measure_sink(clip, decoder, sink, seconds, fullscreen):
@@ -223,11 +228,61 @@ def run_sweep(clip, decoder, seconds, fullscreen):
           f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')}, "
           f"DISPLAY={os.environ.get('DISPLAY')}, "
           f"XDG_RUNTIME_DIR={os.environ.get('XDG_RUNTIME_DIR')}", flush=True)
-    for sink in ("glimagesink", "waylandsink", "kmssink", "autovideosink"):
+    for sink in ("gl", "wayland", "kms"):
         try:
             measure_sink(clip, decoder, sink, seconds, fullscreen)
         except Exception as exc:  # noqa: BLE001
             print(f"[spike-b] {sink:13s} RESULT: exception {exc!r}", flush=True)
+
+
+def run_playbin(clip, seconds):
+    """The production auto path: playbin3 picks demux/decode/convert/sink
+    itself. fpsdisplaysink (text-overlay off, so no CPU 4K overlay tax)
+    measures the real on-screen rate."""
+    uri = Gst.filename_to_uri(clip)
+    pb = (Gst.ElementFactory.make("playbin3", None)
+          or Gst.ElementFactory.make("playbin", None))
+    if pb is None:
+        print("[spike-b] playbin RESULT: playbin not available", flush=True)
+        return
+    pb.set_property("uri", uri)
+    fps_sink = Gst.ElementFactory.make("fpsdisplaysink", None)
+    fps_sink.set_property("text-overlay", False)
+    fps_sink.set_property("signal-fps-measurements", True)
+    fps_sink.set_property("sync", False)
+    last = {"avg": 0.0}
+
+    def _on_fps(_s, fps, drop, avg):
+        last["avg"] = avg
+        print(f"[spike-b] playbin: {fps:5.1f} fps (avg {avg:5.1f}, "
+              f"drop {drop:5.1f})", flush=True)
+    fps_sink.connect("fps-measurements", _on_fps)
+    pb.set_property("video-sink", fps_sink)
+
+    loop = GLib.MainLoop()
+
+    def _msg(_b, m):
+        if m.type == Gst.MessageType.ERROR:
+            e, d = m.parse_error()
+            print(f"[spike-b] playbin: ERROR {e.message} :: {d}", flush=True)
+            loop.quit()
+        elif m.type == Gst.MessageType.EOS:
+            loop.quit()
+    bus = pb.get_bus()
+    bus.add_signal_watch()
+    bus.connect("message", _msg)
+
+    pb.set_state(Gst.State.PLAYING)
+    pb.get_state(5 * Gst.SECOND)
+    _classify_decoder(pb)
+    GLib.timeout_add_seconds(int(seconds), lambda: (loop.quit() or False))
+    try:
+        loop.run()
+    finally:
+        pb.set_state(Gst.State.NULL)
+    verdict = "HOLDS 30fps" if last["avg"] >= 29.5 else "below 30fps"
+    print(f"[spike-b] playbin   RESULT: avg {last['avg']:5.1f} fps -> {verdict}",
+          flush=True)
 
 
 def main():
@@ -236,7 +291,8 @@ def main():
                     help="Path to a 4K HEVC .mp4 (default: tests/4k_hevc_test.mp4)")
     ap.add_argument("--decoder", default="auto",
                     help="'auto' (decodebin) or force e.g. 'avdec_h265'")
-    ap.add_argument("--mode", choices=("decode", "sweep", "display"),
+    ap.add_argument("--mode",
+                    choices=("decode", "sweep", "display", "playbin"),
                     default="decode")
     ap.add_argument("--sink", default="glimagesink",
                     help="Sink for --mode display")
@@ -260,6 +316,8 @@ def main():
         run_decode(args.clip, args.decoder, args.frames)
     elif args.mode == "sweep":
         run_sweep(args.clip, args.decoder, args.seconds, args.fullscreen)
+    elif args.mode == "playbin":
+        run_playbin(args.clip, args.seconds)
     else:
         measure_sink(args.clip, args.decoder, args.sink, args.seconds,
                      args.fullscreen)
