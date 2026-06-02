@@ -46,6 +46,36 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst, GLib  # noqa: E402
 
 
+# A live GPU warp for the mapping test: rotate + perspective-keystone +
+# breathing zoom of the decoded texture, sampling `tex` at warped coords.
+# Black outside the source so the warp is obvious on the wall. This is the
+# same glshader contract the generator worker uses (tex, v_texcoord, time).
+WARP_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform sampler2D tex;
+uniform float time;
+void main () {
+  vec2 c = v_texcoord - 0.5;
+  float a = 0.15 * sin(time * 0.5);
+  float s = sin(a); float co = cos(a);
+  c = mat2(co, -s, s, co) * c;                 // rotate
+  float k = 0.25 * (0.5 + 0.5 * sin(time * 0.4));
+  float persp = mix(1.0 - k, 1.0 + k, c.y + 0.5);
+  c.x = c.x / persp;                           // perspective keystone
+  c = c * (1.0 + 0.1 * sin(time * 0.3));       // breathing zoom
+  vec2 suv = c + 0.5;
+  if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+  } else {
+    gl_FragColor = texture2D(tex, suv);
+  }
+}
+"""
+
+
 def _classify_decoder(pipeline):
     """Print every element's factory name and flag hardware vs software."""
     names = []
@@ -140,16 +170,23 @@ def _sink_desc(sink):
     return "videoconvert ! autovideosink name=vsink sync=false"
 
 
-def measure_pipeline(desc, label, seconds):
+def measure_pipeline(desc, label, seconds, setup=None):
     """Run a full pipeline string for `seconds`, counting buffers at the
     element named 'vsink' for a clean on-screen fps. Prints the real bus
-    error if it won't start."""
+    error if it won't start. `setup(pipeline)` runs after construction
+    (e.g. to set a glshader fragment) before the pipeline goes PLAYING."""
     print(f"[spike-b] ---- {label}: {desc}", flush=True)
     try:
         pipeline = Gst.parse_launch(desc)
     except GLib.Error as exc:
         print(f"[spike-b] {label:14s} RESULT: parse failed ({exc})", flush=True)
         return
+
+    if setup is not None:
+        try:
+            setup(pipeline)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[spike-b] {label:14s} setup failed: {exc!r}", flush=True)
 
     vsink = pipeline.get_by_name("vsink")
     st = {"n": 0, "t0": None, "last": None}
@@ -246,6 +283,31 @@ def run_dmabuf(clip, seconds):
             print(f"[spike-b] {label:14s} RESULT: exception {exc!r}", flush=True)
 
 
+def run_warp(clip, seconds):
+    """Spike C: warp the decoded 4K GL texture ON THE GPU and measure fps.
+    If this holds 30, projection mapping can be a GPU shader pass and there
+    is no need for a separate CPU mapping path — the whole rig can go
+    GPU-first. Tests two mechanisms:
+      glshader-warp  = custom GLSL warp (what real mapping would use; same
+                       element the generator worker uses)
+      gltransformation = built-in GL 3D perspective transform"""
+    dec = (f'filesrc location="{clip}" ! qtdemux ! h265parse ! '
+           "v4l2slh265dec ! glupload ! glcolorconvert")
+
+    def _set_shader(pipeline):
+        sh = pipeline.get_by_name("warp")
+        if sh is not None:
+            sh.set_property("fragment", WARP_SHADER)
+
+    measure_pipeline(
+        f'{dec} ! glshader name=warp ! glimagesink name=vsink sync=false',
+        "glshader-warp", seconds, setup=_set_shader)
+    measure_pipeline(
+        f'{dec} ! gltransformation name=warp rotation-y=25.0 fov=80.0 ! '
+        "glimagesink name=vsink sync=false",
+        "gltransformation", seconds)
+
+
 def run_sweep(clip, decoder, seconds, fullscreen):
     print(f"[spike-b] session: XDG_SESSION_TYPE="
           f"{os.environ.get('XDG_SESSION_TYPE')}, "
@@ -316,7 +378,8 @@ def main():
     ap.add_argument("--decoder", default="auto",
                     help="'auto' (decodebin) or force e.g. 'avdec_h265'")
     ap.add_argument("--mode",
-                    choices=("decode", "sweep", "display", "playbin", "dmabuf"),
+                    choices=("decode", "sweep", "display", "playbin",
+                             "dmabuf", "warp"),
                     default="decode")
     ap.add_argument("--sink", default="glimagesink",
                     help="Sink for --mode display")
@@ -345,6 +408,8 @@ def main():
         run_playbin(args.clip, args.seconds)
     elif args.mode == "dmabuf":
         run_dmabuf(args.clip, args.seconds)
+    elif args.mode == "warp":
+        run_warp(args.clip, args.seconds)
     else:
         measure_sink(args.clip, args.decoder, args.sink, args.seconds,
                      args.fullscreen)
