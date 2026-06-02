@@ -16,10 +16,13 @@ LOG="$(pwd)/vj_last_compositor.log"
 PY=/usr/bin/python3
 command -v "$PY" >/dev/null 2>&1 || PY=python3
 
-DIR="assets/clips"
-if ! ls assets/clips/*.mp4 assets/clips/*.mkv assets/clips/*.mov >/dev/null 2>&1; then
-  echo "[run] no clips in assets/clips — using tests/ (synthetic 4K clip)"
-  DIR="tests"
+# The compositor is HEVC-only for now, and the guaranteed-HEVC clip is the
+# synthetic one in tests/. Point there for this milestone test. Once you've
+# got 4K HEVC versions of your library in assets/clips, change DIR to
+# "assets/clips" and clip-switching (n/p) lights up across the library.
+DIR="tests"
+if ls assets/clips/*.hevc.mp4 assets/clips/*_hevc.mp4 >/dev/null 2>&1; then
+  DIR="assets/clips"
 fi
 
 echo "[run] starting GPU compositor on: $DIR"
