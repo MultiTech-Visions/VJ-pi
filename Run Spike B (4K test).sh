@@ -8,7 +8,10 @@
 cd "$(dirname "$0")"
 LOG="$(pwd)/vj_last_spike_b.log"
 
-OUTPUT_DISPLAY=1     # projector
+# Spike B is pure GStreamer — run it with SYSTEM python3 (the one with
+# `gi`), exactly like the GPU worker. The venv python doesn't have gi.
+PY=/usr/bin/python3
+command -v "$PY" >/dev/null 2>&1 || PY=python3
 
 show_dialog() {  # $1=error|info $2=title $3=body
   if command -v zenity >/dev/null 2>&1; then
@@ -17,10 +20,6 @@ show_dialog() {  # $1=error|info $2=title $3=body
   printf '%s\n\n%s\n' "$2" "$3"
 }
 
-if [ ! -d "venv" ]; then
-  show_dialog error "VJ-pi: setup needed" "Run setup.sh first."
-  read -p "Press Enter to close..."; exit 1
-fi
 if [ ! -f tests/4k_hevc_test.mp4 ]; then
   show_dialog error "No 4K test clip yet" \
     "tests/4k_hevc_test.mp4 is missing.\n\nDouble-click 'Make 4K Test Clip.sh' first (one-time, a couple of minutes), then run this again."
@@ -30,9 +29,7 @@ fi
 : >"$LOG"
 date '+[spike-b] start: %Y-%m-%d %H:%M:%S' | tee -a "$LOG"
 
-./venv/bin/python tests/spike_b_4k_decode.py \
-    --clip tests/4k_hevc_test.mp4 \
-    --output-display "$OUTPUT_DISPLAY" --fullscreen 2>&1 | tee -a "$LOG"
+"$PY" tests/spike_b_4k_decode.py --clip tests/4k_hevc_test.mp4 2>&1 | tee -a "$LOG"
 EXIT=${PIPESTATUS[0]}
 
 # Pull out the two lines that actually decide things.
