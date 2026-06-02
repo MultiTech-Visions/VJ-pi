@@ -119,7 +119,9 @@ def _pull(sink, seconds=2.0):
 
 def main():
     ap = argparse.ArgumentParser(description="Spike B: 4K HEVC decode throughput")
-    ap.add_argument("--clip", required=True, help="Path to a 4K HEVC .mp4")
+    ap.add_argument("--clip", default=None,
+                    help="Path to a 4K HEVC .mp4 "
+                         "(default: tests/4k_hevc_test.mp4)")
     ap.add_argument("--decoder", default="auto",
                     help="'auto' (decodebin, auto hw), or force an element "
                          "e.g. 'v4l2slh265dec' or 'avdec_h265'")
@@ -132,9 +134,13 @@ def main():
     args = ap.parse_args()
 
     import os
+    from pathlib import Path
+    if args.clip is None:
+        args.clip = str(Path(__file__).resolve().parent / "4k_hevc_test.mp4")
     if not os.path.exists(args.clip):
         print(f"[spike-b] clip not found: {args.clip}\n"
-              f"          make one with ./tests/make_4k_test_clip.sh", flush=True)
+              f"          make one first: double-click 'Make 4K Test Clip.sh'\n"
+              f"          (or run ./tests/make_4k_test_clip.sh)", flush=True)
         return 1
 
     Gst.init(None)

@@ -58,12 +58,14 @@ def _window_pos_for(display_idx):
 def _moving_canvas(w, h, t):
     """A bright moving gradient + sweeping bar. Cheap, but any freeze or
     black-out is instantly visible. Returns an (h, w, 3) uint8 RGB array."""
-    xs = np.linspace(0.0, 1.0, w, dtype=np.float32)[None, :]
-    ys = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
-    r = (0.5 + 0.5 * np.sin(6.28 * (xs + t * 0.15)))
-    g = (0.5 + 0.5 * np.sin(6.28 * (ys + t * 0.11)))
-    b = (0.5 + 0.5 * np.sin(6.28 * (xs + ys + t * 0.07)))
-    img = np.stack([r, g, b], axis=-1)
+    xs = np.linspace(0.0, 1.0, w, dtype=np.float32)[None, :]   # (1, w)
+    ys = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]   # (h, 1)
+    # Broadcast every channel to the full (h, w) grid before stacking —
+    # r was (1, w) and g was (h, 1), which np.stack rejects.
+    r = np.broadcast_to(0.5 + 0.5 * np.sin(6.28 * (xs + t * 0.15)), (h, w))
+    g = np.broadcast_to(0.5 + 0.5 * np.sin(6.28 * (ys + t * 0.11)), (h, w))
+    b = 0.5 + 0.5 * np.sin(6.28 * (xs + ys + t * 0.07))        # (h, w)
+    img = np.stack([r, g, b], axis=-1).astype(np.float32)      # (h, w, 3), writable
     # A hard white sweeping bar so a stalled frame is unmistakable.
     bar = int((t * 0.5 % 1.0) * w)
     img[:, max(0, bar - 3):bar + 3, :] = 1.0
