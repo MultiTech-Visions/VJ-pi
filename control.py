@@ -36,7 +36,7 @@ MAPPING_KEY_CHEAT = [
     ("EDIT — toolbar ⊘",   "unbind this space into its own new group"),
     ("EDIT — toolbar frame", "mode / zoom / pan / reset selected group's video"),
     ("EDIT — toolbar G·",  "tag chip = which group this space belongs to"),
-    ("EDIT — − / =", "prev / next clip for selected box's group"),
+    ("EDIT — −/= [/]", "cycle clip / generator for selected box's group"),
     ("EDIT — Esc",   "cancel drag / deselect"),
     ("Ctrl+N",       "New group"),
     ("Ctrl+Back",    "Delete current group"),
