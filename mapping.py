@@ -748,6 +748,11 @@ class MappingManager:
         is_sel = (self.selected_space == (gi, si))
         kinds = []
         if is_sel:
+            kinds.extend([
+                "fit_mode", "zoom_out", "zoom_in",
+                "pan_left", "pan_right", "pan_up", "pan_down",
+                "reset_frame",
+            ])
             kinds.append("delete")
             if len(self.groups[gi].spaces) > 1:
                 kinds.append("unbind")
@@ -780,7 +785,14 @@ class MappingManager:
         btn = self.TOOLBAR_BTN
         gap = self.TOOLBAR_GAP
         # Group label chip is a bit wider so a 2-digit "G12" fits.
-        widths = [btn * 1.4 if k == "group" else btn for k in kinds]
+        widths = []
+        for k in kinds:
+            if k == "group":
+                widths.append(btn * 1.4)
+            elif k == "fit_mode":
+                widths.append(btn * 2.0)
+            else:
+                widths.append(btn)
         total = sum(widths) + gap * (len(widths) - 1)
 
         # Prefer above the bbox; fall back to below if no room.

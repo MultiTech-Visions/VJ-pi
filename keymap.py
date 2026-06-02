@@ -123,7 +123,8 @@ def dispatch(engine, key, mod):
             # operations under Ctrl below still work, and so do
             # Tab / M / Esc above.
             if (key in FAV_KEYS or key in HIT_KEYS
-                    or key in FX_KEYS or key in NAV_KEYS
+                    or key in FX_KEYS
+                    or key in (CYCLE_GENS_PREV, CYCLE_GENS_NEXT)
                     or key in (pygame.K_LEFT, pygame.K_RIGHT,
                                pygame.K_UP, pygame.K_DOWN)):
                 return

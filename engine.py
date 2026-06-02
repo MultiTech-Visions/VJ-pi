@@ -834,11 +834,34 @@ class Engine:
         m = self.mapping
         shift_held = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
 
-        # 1. Hover toolbar (× delete, + bind, ⊘ unbind, G group tag).
+        # 1. Hover toolbar (frame controls, × delete, + bind, ⊘ unbind, G tag).
         btn = m.hit_test_hover_button(norm)
         if btn is not None:
             kind, gi, si = btn
-            if kind == "delete":
+            if kind in {
+                    "fit_mode", "zoom_out", "zoom_in",
+                    "pan_left", "pan_right", "pan_up", "pan_down",
+                    "reset_frame",
+            }:
+                m.select_space(gi, si)
+                if kind == "fit_mode":
+                    m.cycle_fit_mode(1)
+                elif kind == "zoom_out":
+                    m.adjust_zoom(1.0 / 1.15)
+                elif kind == "zoom_in":
+                    m.adjust_zoom(1.15)
+                elif kind == "pan_left":
+                    m.adjust_pan(-0.08, 0.0)
+                elif kind == "pan_right":
+                    m.adjust_pan(0.08, 0.0)
+                elif kind == "pan_up":
+                    m.adjust_pan(0.0, -0.08)
+                elif kind == "pan_down":
+                    m.adjust_pan(0.0, 0.08)
+                elif kind == "reset_frame":
+                    m.reset_frame()
+                self._persist_mapping()
+            elif kind == "delete":
                 m.select_space(gi, si)
                 m.delete_selected_space()
                 self._persist_mapping()
@@ -1597,6 +1620,30 @@ class Engine:
                 col = (255, 180, 80)
                 cv2.line(canvas, (cx - r, cy + r), (cx + r, cy - r), col, 2, cv2.LINE_AA)
                 cv2.circle(canvas, (cx, cy), 2, (28, 30, 40), -1)
+            elif kind in {
+                    "fit_mode", "zoom_out", "zoom_in",
+                    "pan_left", "pan_right", "pan_up", "pan_down",
+                    "reset_frame",
+            }:
+                group = self.mapping.groups[gi]
+                labels = {
+                    "fit_mode": group.fit_mode.upper()[:5],
+                    "zoom_out": "-",
+                    "zoom_in": "+",
+                    "pan_left": "<",
+                    "pan_right": ">",
+                    "pan_up": "^",
+                    "pan_down": "v",
+                    "reset_frame": "0",
+                }
+                label = labels[kind]
+                scale = max(0.3, (y1 - y0) / 42.0)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
+                tx = cx - tw // 2
+                ty = cy + th // 2
+                cv2.putText(canvas, label, (tx, ty), font, scale,
+                            (160, 220, 255), 1, cv2.LINE_AA)
             elif kind == "group":
                 label = f"G{gi + 1}"
                 # Size text relative to button height so it stays legible

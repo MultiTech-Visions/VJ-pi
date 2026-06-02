@@ -34,7 +34,9 @@ MAPPING_KEY_CHEAT = [
     ("EDIT — toolbar ×",   "delete this space"),
     ("EDIT — toolbar +",   "bind this space into the selected space's group"),
     ("EDIT — toolbar ⊘",   "unbind this space into its own new group"),
+    ("EDIT — toolbar frame", "mode / zoom / pan / reset selected group's video"),
     ("EDIT — toolbar G·",  "tag chip = which group this space belongs to"),
+    ("EDIT — − / =", "prev / next clip for selected box's group"),
     ("EDIT — Esc",   "cancel drag / deselect"),
     ("Ctrl+N",       "New group"),
     ("Ctrl+Back",    "Delete current group"),
@@ -385,6 +387,26 @@ class ControlWindow:
                                  (cx - r, cy + r), (cx + r, cy - r), 2)
                 pygame.draw.rect(surface, (28, 30, 40),
                                  pygame.Rect(cx - 1, cy - 1, 3, 3))
+            elif kind in {
+                    "fit_mode", "zoom_out", "zoom_in",
+                    "pan_left", "pan_right", "pan_up", "pan_down",
+                    "reset_frame",
+            }:
+                group = m.groups[gi]
+                labels = {
+                    "fit_mode": group.fit_mode.upper()[:5],
+                    "zoom_out": "-",
+                    "zoom_in": "+",
+                    "pan_left": "<",
+                    "pan_right": ">",
+                    "pan_up": "^",
+                    "pan_down": "v",
+                    "reset_frame": "0",
+                }
+                label = self.font_s.render(labels[kind], True, (160, 220, 255))
+                surface.blit(label,
+                             (cx - label.get_width() // 2,
+                              cy - label.get_height() // 2))
             elif kind == "group":
                 label = self.font_s.render(f"G{gi + 1}", True, (220, 230, 250))
                 surface.blit(label,
