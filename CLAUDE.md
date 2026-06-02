@@ -99,6 +99,93 @@ image from `assets/images/` as `sampler2D tex`.
    The log-tee + zenity dialog in the launchers exist for exactly this.
    Don't break them.
 
+## GPU / 4K playback — PROVEN, MEASURED FACTS (do not re-derive)
+
+A long spike series settled how to play video on the GPU on this exact
+Pi 5. These are measured results on the hardware, not theory. **The rig's
+job is: play 4K HEVC clips at the highest frame rate, full-screen and
+projection-mapped onto warped surfaces.** Real-time generation
+(generators, MilkDrop/feedback shaders) was tried and **abandoned** —
+hand-authored generated visuals look bad and do not approach real
+MilkDrop. Trippy/psychedelic content comes from **curated 4K clips**, not
+from generation. Only `kaliset` out of the generators is worth keeping.
+
+### The working 4K pipeline (GStreamer GL, ~42 fps at 4K on the projector, zero CPU copy)
+```
+filesrc location="X.mp4" ! qtdemux ! h265parse ! v4l2slh265dec ! glupload ! glcolorconvert ! glimagesink
+```
+- Decode alone (to appsink, no display): **~162 fps** at 3840×2160.
+- Decode → GL → glimagesink (the line above): **~42 fps** at 4K, fullscreen.
+- \+ one `glshader` fragment pass: **~21 fps**. Every full-4K shader pass
+  roughly **halves** the frame rate (V3D fill rate over 8.3M px). Be
+  frugal with passes; run FX/warp at reduced res, reserve full 4K for the
+  clean present.
+- \+ GPU geometry warp (`gltransformation`): **~28 fps**. Mapping is a
+  geometry/quad warp, NOT a per-pixel fragment warp.
+- Live shader uniforms work:
+  `glshader.set_property("uniforms", Gst.Structure.new_from_string("uniforms,u_amt=(float)0.5"))`
+
+### Hard facts / dead ends (these cost real time to find)
+- **Pi 5 hardware-decodes ONLY HEVC/H.265** (`v4l2slh265dec`), up to 4K.
+  NO H.264 hw decode. **Source clips must be H.265/HEVC in MP4.**
+- The HEVC decoder emits a tiled **NV12_128C8 ("SAND") buffer in DMABUF**.
+  Plain sinks fail `not-negotiated`. The DMABUF→GL import works on
+  **GStreamer 1.26.2** (the DMABUF+DRM-modifier `glupload` support is
+  recent; older GStreamer fails).
+- **CPU `videoconvert` on a 4K frame ≈ 6 fps.** NEVER pull a 4K frame into
+  CPU/numpy. The entire win is keeping the frame on the GPU.
+- **`playbin3` auto-selects the CPU path ≈ 7 fps.** Don't use it; use the
+  explicit pipeline above.
+- **`decodebin ! glupload` fails `not-negotiated`.** Use the explicit
+  `qtdemux ! h265parse ! v4l2slh265dec` chain.
+- **`kmssink` = "Permission denied (13)"** under the running labwc desktop
+  (the compositor owns the DRM planes).
+
+### Environment (this Pi)
+- **GStreamer / `gi` (PyGObject) live in SYSTEM python3 (`/usr/bin/python3`),
+  NOT the venv.** Run all GStreamer code under `/usr/bin/python3`. The venv
+  (pygame, opencv, numpy, moderngl) has NO `gi`. Do not mix `gi` and venv
+  libraries in one process. GStreamer version: **1.26.2**.
+
+### Display (this Pi — labwc / Wayland)
+- Compositor is **labwc** (`XDG_SESSION_TYPE=wayland`, `WAYLAND_DISPLAY=wayland-0`).
+- **Projector = output `HDMI-A-2`** (EPL BEIKE), running **4096×2160 @
+  ~24 Hz** (DCI 4K; there is no 4K@60 — 24 Hz is the cap at 4K). It is
+  **pygame/SDL display index 1**.
+- **Control screen = `HDMI-A-1`** (MPI7002), 1920×1080@60 at position
+  1920,0; **pygame/SDL display index 0**.
+- Projector is ~24 Hz, so **cap render rate to ~24–30 fps** — faster just
+  pegs the GPU on frames that are never displayed (uncapped feedback
+  pinned the GPU at 100%; capped + vsync at 720p sat at 60–70%).
+- **`glimagesink` has no `fullscreen` property, and a Wayland client can't
+  self-fullscreen on a chosen output.** Fullscreen-on-projector is a
+  **labwc window rule** in `~/.config/labwc/rc.xml` matching the GStreamer
+  GL window (app-id `python3`, title `OpenGL Renderer`):
+  `<action name="MoveToOutput" output="HDMI-A-2"/>` THEN
+  `<action name="ToggleFullscreen"/>` (move BEFORE fullscreen — labwc
+  can't move an already-fullscreen window). Reload: `pkill -HUP labwc`.
+  `apply_fullscreen_rule.py` installs it safely (backs up, validates XML).
+
+### moderngl on V3D (only if a custom GL path is ever needed)
+- `moderngl.create_context(require=300)` — V3D gives a GLES **3.1** context
+  (version 310); moderngl otherwise demands desktop GL 3.3 (330) and bails.
+- Shaders `#version 300 es`; explicit `layout(location=...)`; **RGBA8 FBOs
+  only** (V3D renders zeros into RGB8). Ping-pong FBO feedback ran ~48 fps
+  at 720p.
+
+### Files from this work
+- `gpu_compositor.py` — GStreamer GL player (system python3): the explicit
+  4K pipeline above, plays clips (+ kept generators), live `glshader` FX
+  slot, stdin commands.
+- `apply_fullscreen_rule.py` / `Apply Fullscreen Rule.sh` — install the
+  labwc fullscreen-on-projector rule.
+- `Make 4K Test Clip.sh` — make a 4K HEVC test clip (Pi has no hw encoder;
+  software x265/libx265 encode).
+- `tests/spike_b_4k_decode.py` + `tests/README.md` — spike harness + the
+  recorded numbers above.
+- `milkdrop.py`, `tests/spike_e_feedback.py` — feedback/generation
+  experiments, **abandoned**, kept only as reference.
+
 ## How to test changes
 
 1. Make the edit.
