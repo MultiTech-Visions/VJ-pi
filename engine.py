@@ -160,6 +160,8 @@ class Engine:
         self._cinematic_proc = None
         self._cinematic_log_handle = None
         self._cinematic_log = Path(__file__).resolve().parent / "vj_last_cinematic.log"
+        self.cinematic_status = "off"
+        self.cinematic_source = None
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
         self._mapping_persist_dirty = False
@@ -390,8 +392,10 @@ class Engine:
         player = root / "cinematic4k.py"
         assets_4k = root / "assets" / "4k"
         processed = assets_4k / "processed"
-        clips_dir = processed if self._has_video_files(processed) else assets_4k
+        clips_dir = processed if self._has_processed_cinematic_files(processed) else assets_4k
         if not self._has_video_files(clips_dir):
+            self.cinematic_status = "no files in assets/4k"
+            self.cinematic_source = None
             print("[vj] cinematic: no files in assets/4k or assets/4k/processed")
             return
 
@@ -410,12 +414,16 @@ class Engine:
                 bufsize=1,
             )
         except Exception as exc:  # noqa: BLE001
+            self.cinematic_status = f"launch failed: {exc!r}"
+            self.cinematic_source = None
             print(f"[vj] cinematic: launch failed: {exc!r}")
             self._cinematic_proc = None
             return
 
         self._mode_before_cinematic = self.mode if self.mode != "cinematic" else "live"
         self.mode = "cinematic"
+        self.cinematic_status = "starting"
+        self.cinematic_source = str(clips_dir)
         self.disengage_auto()
         self.gpu_generators.pause()
         print(f"[vj] cinematic: started from {clips_dir}")
@@ -437,12 +445,15 @@ class Engine:
         self.mode = self._mode_before_cinematic if self._mode_before_cinematic else "live"
         if self.mode == "cinematic":
             self.mode = "live"
+        self.cinematic_status = "off"
+        self.cinematic_source = None
         print("[vj] cinematic: stopped")
 
     def poll_cinematic_mode(self):
         if self.mode != "cinematic" or self._cinematic_proc is None:
             return
         if self._cinematic_proc.poll() is None:
+            self.cinematic_status = "playing"
             return
         self._cinematic_proc = None
         if self._cinematic_log_handle is not None:
@@ -454,6 +465,7 @@ class Engine:
         self.mode = self._mode_before_cinematic if self._mode_before_cinematic else "live"
         if self.mode == "cinematic":
             self.mode = "live"
+        self.cinematic_status = "player exited; check vj_last_cinematic.log"
         print("[vj] cinematic: player exited")
 
     def cinematic_step(self, delta):
@@ -477,8 +489,17 @@ class Engine:
     def _has_video_files(path):
         if not path.exists():
             return False
-        exts = {".mp4", ".mov", ".mkv", ".m4v"}
+        exts = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".avi"}
         return any(p.is_file() and p.suffix.lower() in exts for p in path.iterdir())
+
+    @staticmethod
+    def _has_processed_cinematic_files(path):
+        if not path.exists():
+            return False
+        return any(
+            p.is_file() and p.suffix.lower() == ".mp4" and not p.name.startswith("_")
+            for p in path.iterdir()
+        )
 
     def toggle_fx(self, name):
         if self._in_mapping():

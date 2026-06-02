@@ -8,6 +8,8 @@ vj_last_process.log
 vj_last_cinematic.log
 vj_last_4k_process.log
 vj_last_fsrule.log
+assets/vj_last_4k_process.log
+vj_last_portrait_process.log
 
 # Never let git stash / commit grab user media. The clips and
 # overlays folders are operator data — large binaries that have no
@@ -28,3 +30,8 @@ assets/4k/*
 !assets/4k/processed/
 assets/4k/processed/*
 !assets/4k/processed/.gitkeep
+assets/portrait/*
+!assets/portrait/.gitkeep
+!assets/portrait/landscape/
+assets/portrait/landscape/*
+!assets/portrait/landscape/.gitkeep

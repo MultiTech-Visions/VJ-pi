@@ -8,8 +8,8 @@ class Config:
     # what size to bake clips to, so KEEP THESE IN SYNC with main.py's
     # argparse defaults — otherwise pre-processed clips get pointlessly
     # resized every frame at runtime.
-    width: int = 1280
-    height: int = 720
+    width: int = 1920
+    height: int = 1080
     fps: int = 30
     fullscreen: bool = False
     display: int = 0

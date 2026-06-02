@@ -28,9 +28,10 @@ def find_clips(clips_dir):
     d = Path(clips_dir)
     if not d.exists():
         return []
+    exts = {".mp4"} if d.name == "processed" else VIDEO_EXTS
     return sorted(
         p for p in d.iterdir()
-        if p.is_file() and p.suffix.lower() in VIDEO_EXTS and not p.name.startswith("_")
+        if p.is_file() and p.suffix.lower() in exts and not p.name.startswith("_")
     )
 
 

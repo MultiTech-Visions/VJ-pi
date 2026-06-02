@@ -16,9 +16,9 @@ OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
 CONTROL_SIZE="680x720"
 
-# Render canvas resolution. Leave empty to use config.py's default (1280x720).
-# To test the 1080p sweet spot, FIRST run "Process Assets (1080p).sh", then
-# set these to 1920 / 1080 so clips play at canvas res (no per-frame resize).
+# Render canvas resolution. Leave empty to use config.py's default (1920x1080).
+# If you override this, run Process Assets.sh again so clips play at canvas
+# res (no per-frame resize).
 # GPU scaling (below) presents the canvas to the projector either way.
 RENDER_WIDTH=""
 RENDER_HEIGHT=""

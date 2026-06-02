@@ -11,11 +11,10 @@ from state import load_state, save_state
 
 def parse_args():
     p = argparse.ArgumentParser(description="pi-paint VJ — manual mode")
-    p.add_argument("--width", type=int, default=1280,
-                   help="Render width (output is scaled to display size, default 1280)")
-    p.add_argument("--height", type=int, default=720,
-                   help="Render height (default 720). 854x480 is the lighter Pi 4 default; "
-                        "1920x1080 is full quality on Pi 5 if you have the headroom.")
+    p.add_argument("--width", type=int, default=1920,
+                   help="Render width (output is scaled to display size, default 1920)")
+    p.add_argument("--height", type=int, default=1080,
+                   help="Render height (default 1080). Use 1280x720 for a lighter fallback.")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--fullscreen", action="store_true",
                    help="Run the OUTPUT window fullscreen on the chosen display")
@@ -89,7 +88,7 @@ def _open_output_window(cfg):
     build and can be re-opened on any monitor by calling set_mode again.
 
     Manual frame scaling already happens in Engine.blit_to_output, so
-    rendering at 854x480 onto a display-sized surface is fine.
+    the render canvas can be lighter than the physical display when needed.
     """
     if cfg.fullscreen:
         dw, dh = _display_size(cfg.display, (cfg.width, cfg.height))

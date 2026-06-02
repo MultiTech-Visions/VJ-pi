@@ -488,6 +488,18 @@ class ControlWindow:
 
     def _draw_status(self, surface, x, y, width):
         e = self.engine
+        if e.mode == "cinematic" or getattr(e, "cinematic_status", "off") != "off":
+            title = self.font_h.render("4K CINEMATIC", True, (220, 220, 240))
+            surface.blit(title, (x, y))
+            y += 22
+            self._row(surface, "STATUS", getattr(e, "cinematic_status", "off"),
+                      x, y, width); y += 19
+            self._row(surface, "SOURCE", getattr(e, "cinematic_source", None) or "—",
+                      x, y, width); y += 19
+            self._row(surface, "KEYS", "N/Esc exit · -/= prev/next",
+                      x, y, width); y += 22
+            return
+
         clip_text = self._library_label(e.clips)
         gen_name = e.active_generative or "—"
         fx_on = [k for k, v in e.fx_state.items() if v]
@@ -514,6 +526,10 @@ class ControlWindow:
                 badges.append(("MAPPING · PERFORM", (160, 220, 255)))
             if e.mapping.bind_armed:
                 badges.append(("BIND: next click", (200, 255, 200)))
+        if e.mode == "cinematic":
+            badges.append(("4K CINEMATIC", (160, 220, 255)))
+        elif getattr(e, "cinematic_status", "off") != "off":
+            badges.append(("4K: " + e.cinematic_status, (255, 200, 80)))
         if getattr(e, "auto_mode", False):
             badges.append(("AUTOPILOT", (120, 220, 140)))
         if e.blackout:

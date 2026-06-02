@@ -20,9 +20,14 @@ Then double-click these files in order:
    into `assets/images/`; the donut generator cycles through those as
    textures each time you return to it.
 
-   For clean high-detail playback, drop raw 4K video files into
-   `assets/4k/`, then double-click **`Process 4K Assets.sh`** once. It
+   For clean high-detail playback, drop raw cinematic video files into
+   `assets/4k/`, then double-click **`Process 4K Assets.sh`** once. The
+   file can be 4K, 2K, or any other high-detail source; the processor
    writes Pi 5 GPU-playable HEVC clips into `assets/4k/processed/`.
+
+   For portrait/vertical clips, drop them into `assets/portrait/`, then
+   double-click **`Process Portrait Assets.sh`**. It creates 1920×1080
+   landscape versions in `assets/portrait/landscape/`.
 
 3. To launch, double-click one of these scripts and choose **"Execute"**:
    - **`Start VJ.sh`** — **dual display** (the main mode). Opens a
@@ -102,7 +107,7 @@ cd vj
 # Single window, no HUD
 ./venv/bin/python main.py
 
-# Bump rendered resolution
+# Lighter fallback if 1080p FX load is too high
 ./venv/bin/python main.py --width 1280 --height 720 --fullscreen --output-display 1
 ```
 
@@ -360,11 +365,25 @@ Controls while cinematic mode is active:
 | `−` / `=` | Previous / next 4K clip        |
 
 Drop raw large files into `assets/4k/` and run **`Process 4K Assets.sh`**
-before a set. The processor writes HEVC/H.265 MP4 files capped at
+before a set. It also works if launched from inside the `assets/` folder.
+The processor writes HEVC/H.265 MP4 files capped at
 3840×2160 and 30 fps into `assets/4k/processed/`, leaving the raw source
 files in place. If no processed files exist, cinematic mode will try the
 top-level `assets/4k/` files directly, but unsupported codecs will fail
 or skip; processing ahead of time is the reliable path.
+
+### Portrait to landscape conversion
+
+Drop vertical videos into `assets/portrait/`, then run
+**`Process Portrait Assets.sh`**. The output lands in
+`assets/portrait/landscape/` as 1920×1080 H.264 MP4.
+
+The conversion preserves the full portrait frame in the center and fills
+the landscape side space with a blurred/dimmed copy of the same video, so
+you get a proper 16:9 clip without cutting off the subject. Move the
+finished files into `assets/clips/` for the regular VJ app, or into
+`assets/4k/` and run **`Process 4K Assets.sh`** if you want them in the
+cinematic playlist.
 
 ## Architecture
 
@@ -403,11 +422,11 @@ blit to pygame screen
 
 ## Performance notes
 
-- Default render resolution is **1280×720** (HD); the output surface
-  scales to the display via `pygame.transform.smoothscale` (bilinear)
-  so it doesn't look pixelated on a 1080p projector. Clip downsampling
-  uses `cv2.INTER_AREA` for clean anti-aliased shrinking and
-  `cv2.INTER_LINEAR` for upscaling.
+- Default render resolution is **1920×1080**. The output surface scales
+  to the display via `pygame.transform.smoothscale` (bilinear) or the
+  optional GPU scaler, so the same canvas can still present cleanly on
+  the 4K projector. Clip downsampling uses `cv2.INTER_AREA` for clean
+  anti-aliased shrinking and `cv2.INTER_LINEAR` for upscaling.
 - **`Process Assets.sh` bakes every clip to the render
   resolution** so the per-frame `cv2.resize` is a no-op at playback —
   the only per-frame cost is the unavoidable H.264 decode and a BGR→RGB
@@ -416,17 +435,13 @@ blit to pygame screen
   `--width / --height` or by editing `config.py`), **re-run the
   processor** so your library is at the new size; otherwise the engine
   will live-resize every frame and print a one-time warning per file.
-- If 30 fps starts dropping on slower hardware, fall back to the old
-  defaults: `--width 854 --height 480` (and re-process your clips).
-- For Pi 5 + a 1080p projector with detail-heavy 2K source loops, try
-  `--width 1920 --height 1080` (full-quality, ~2× more pixels than 720p
-  — kaleidoscope + feedback at once can get tight). Re-process at the
-  new size.
+- If 30 fps starts dropping under heavy FX load, fall back to
+  `--width 1280 --height 720` and re-run **`Process Assets.sh`**.
 - **Generatives render at `--gen-render-scale × canvas` (default 0.5).**
   They're smooth procedural patterns — pixel-perfect rendering at canvas
   resolution is wasted CPU. At 0.5, a 4-group mapping setup with mixed
-  FX drops from ~200 ms / frame to ~40 ms / frame at 1280×720 (a 4×
-  speedup), with no visual difference for plasma / waves / cells /
+  FX cuts the generative pixel count by 4×, with no visual difference
+  for plasma / waves / cells /
   moire / metaballs. Try `--gen-render-scale 0.33` if you need more
   headroom (almost-3× again); back off to 1.0 if you're driving a tunnel-
   style sharp checker pattern as the base layer and want pixel-perfect
