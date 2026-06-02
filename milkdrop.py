@@ -61,85 +61,72 @@ vec3 pal(float x) {            // smooth cosine palette
 
 # --- presets -----------------------------------------------------------
 
-# "flow": the proven Spike-E look — drifting emitters with rotating,
-# zooming-outward trails. Guaranteed-good baseline.
+# All presets are FULL-FRAME: a per-pixel base pattern fills the whole
+# screen, blended ~80/20 with the warped+faded previous frame, so the
+# feedback adds flowing motion while the screen stays full of colour.
+
+# "flow": full-frame plasma flowing through a gentle rotate+zoom feedback.
 P_FLOW = PRELUDE + """
 void main() {
-    vec2 c = v_uv - 0.5;
-    float ang = 0.012 + 0.010 * sin(u_t * 0.20);
+    vec2 uv = v_uv, c = uv - 0.5;
+    float ang = 0.020 * sin(u_t * 0.20);
     float s = sin(ang), co = cos(ang);
-    c = mat2(co, -s, s, co) * c * 0.985;
-    vec3 prev = texture(u_prev, c + 0.5).rgb * 0.962;
-    vec2 p = v_uv - 0.5;
-    float e = 0.0;
-    for (int i = 0; i < 3; i++) {
-        float fi = float(i);
-        vec2 pos = 0.30 * vec2(sin(u_t * (1.0 + 0.4 * fi) + fi * 2.1),
-                               cos(u_t * (1.3 + 0.3 * fi) - fi * 1.7));
-        e += smoothstep(0.05, 0.0, length(p - pos));
-    }
-    frag = vec4(max(prev, e * pal(u_t * 0.1)), 1.0);
+    vec3 prev = texture(u_prev, (mat2(co, -s, s, co) * c) * 0.99 + 0.5).rgb;
+    float pl = sin(uv.x * 9.0 + u_t)
+             + sin(uv.y * 9.0 + u_t * 1.2)
+             + sin((uv.x + uv.y) * 7.0 + u_t * 0.8)
+             + sin(length(c) * 14.0 - u_t * 2.0);
+    vec3 base = pal(pl * 0.12 + u_t * 0.03);
+    frag = vec4(mix(prev * 0.97, base, 0.18), 1.0);
 }
 """
 
-# "mandala": kaleidoscope symmetry — folds the plane into N wedges so the
-# feedback comes out mirrored, like the symmetric MilkDrop screenshots.
+# "mandala": full-frame kaleidoscope — N-fold mirrored pattern over the
+# whole screen, with a slow rotating feedback. The symmetric MilkDrop look.
 P_MANDALA = PRELUDE + """
 const float SYM = 6.0;
 void main() {
-    vec2 p = v_uv - 0.5;
-    // gentle zoom + rotate warp of the previous frame
-    float ang = 0.010 * sin(u_t * 0.25);
+    vec2 uv = v_uv, c = uv - 0.5;
+    float ang = 0.015 * sin(u_t * 0.25);
     float s = sin(ang), co = cos(ang);
-    vec3 prev = texture(u_prev, (mat2(co, -s, s, co) * p) * 0.99 + 0.5).rgb;
-    prev *= 0.95;
-    // N-fold fold for the new content
-    float a = atan(p.y, p.x);
-    float r = length(p);
+    vec3 prev = texture(u_prev, (mat2(co, -s, s, co) * c) * 0.99 + 0.5).rgb;
+    float a = atan(c.y, c.x), r = length(c);
     float seg = 6.2831853 / SYM;
     a = abs(mod(a, seg) - seg * 0.5);
-    float spokes = sin(a * 10.0 + u_t * 1.5);
-    float rings = sin(r * 36.0 - u_t * 2.0);
-    float e = smoothstep(0.55, 1.0, spokes * rings) * smoothstep(0.5, 0.05, r);
-    frag = vec4(max(prev, e * pal(r * 1.5 + u_t * 0.07)), 1.0);
+    vec2 k = vec2(cos(a), sin(a)) * r;
+    float pat = sin(k.x * 22.0 + u_t)
+              + sin(k.y * 22.0 - u_t * 1.3)
+              + sin(r * 30.0 - u_t * 2.0);
+    vec3 base = pal(pat * 0.12 + r + u_t * 0.04);
+    frag = vec4(mix(prev * 0.965, base, 0.20), 1.0);
 }
 """
 
-# "tunnel": strong zoom toward the centre + a pulsing emission ring -> an
-# endless flying-through-a-tunnel feel.
+# "tunnel": full-frame radial pattern + strong zoom -> flying through an
+# endless tunnel.
 P_TUNNEL = PRELUDE + """
 void main() {
-    vec2 p = v_uv - 0.5;
-    float r = length(p);
-    float rot = 0.05;
-    float s = sin(rot), co = cos(rot);
-    vec3 prev = texture(u_prev, (mat2(co, -s, s, co) * p) * 0.95 + 0.5).rgb;
-    prev *= 0.93;
-    float ring = smoothstep(0.02, 0.0, abs(r - (0.35 + 0.12 * sin(u_t))));
-    float ang = atan(p.y, p.x);
-    float tint = 0.5 + 0.5 * sin(ang * 6.0 + u_t * 2.0);
-    frag = vec4(max(prev, ring * pal(tint + u_t * 0.1)), 1.0);
+    vec2 uv = v_uv, c = uv - 0.5;
+    float rot = 0.04, s = sin(rot), co = cos(rot);
+    vec3 prev = texture(u_prev, (mat2(co, -s, s, co) * c) * 0.96 + 0.5).rgb;
+    float r = length(c), a = atan(c.y, c.x);
+    float pat = sin(1.0 / (r + 0.05) * 4.0 - u_t * 3.0) + sin(a * 8.0 + u_t);
+    vec3 base = pal(pat * 0.15 + r * 2.0 + u_t * 0.05);
+    frag = vec4(mix(prev * 0.95, base, 0.22), 1.0);
 }
 """
 
-# "swirl": radius-dependent rotation (a vortex) dragging emitters into
-# spiral arms.
+# "swirl": full-frame angular pattern dragged by a radius-dependent vortex.
 P_SWIRL = PRELUDE + """
 void main() {
-    vec2 p = v_uv - 0.5;
-    float r = length(p);
-    float ang = 0.18 / (r + 0.15);           // inner spins faster
-    float s = sin(ang), co = cos(ang);
-    vec3 prev = texture(u_prev, (mat2(co, -s, s, co) * p) * 0.992 + 0.5).rgb;
-    prev *= 0.955;
-    float e = 0.0;
-    for (int i = 0; i < 2; i++) {
-        float fi = float(i);
-        vec2 pos = 0.33 * vec2(cos(u_t * 0.7 + fi * 3.14),
-                               sin(u_t * 0.9 + fi * 3.14));
-        e += smoothstep(0.045, 0.0, length(p - pos));
-    }
-    frag = vec4(max(prev, e * pal(u_t * 0.13 + 0.4)), 1.0);
+    vec2 uv = v_uv, c = uv - 0.5;
+    float r = length(c);
+    float ang = 0.15 / (r + 0.18), s = sin(ang), co = cos(ang);
+    vec3 prev = texture(u_prev, (mat2(co, -s, s, co) * c) * 0.992 + 0.5).rgb;
+    float a = atan(c.y, c.x);
+    float pat = sin(a * 5.0 + r * 18.0 - u_t * 2.0) + sin(r * 24.0 + u_t);
+    vec3 base = pal(pat * 0.13 + a * 0.10 + u_t * 0.05);
+    frag = vec4(mix(prev * 0.96, base, 0.20), 1.0);
 }
 """
 
@@ -165,12 +152,16 @@ def open_window(display_idx):
         size = pygame.display.get_desktop_sizes()[display_idx]
     except (pygame.error, IndexError, AttributeError):
         size = (1280, 720)
-    try:
-        pygame.display.set_mode(size, flags, display=display_idx)
-    except (pygame.error, TypeError):
-        print(f"[milkdrop] display={display_idx} failed; using default",
-              flush=True)
-        pygame.display.set_mode(size, flags)
+    # vsync=1 caps to the display refresh and lets the GPU idle between
+    # frames (the projector is ~24Hz). Fall back if a kwarg isn't supported.
+    for kwargs in ({"display": display_idx, "vsync": 1},
+                   {"display": display_idx},
+                   {}):
+        try:
+            pygame.display.set_mode(size, flags, **kwargs)
+            break
+        except (pygame.error, TypeError):
+            continue
     pygame.display.set_caption("VJ MilkDrop")
     return size
 
@@ -248,6 +239,8 @@ def main():
     ap.add_argument("--display", type=int, default=1,
                     help="display index (1 = projector per Start VJ.sh)")
     ap.add_argument("--res", default="1280x720")
+    ap.add_argument("--fps", type=int, default=30,
+                    help="frame cap (projector is ~24Hz; 30 idles the GPU)")
     args = ap.parse_args()
     res0 = tuple(int(x) for x in args.res.lower().split("x"))
 
@@ -318,7 +311,7 @@ def main():
             print(f"[milkdrop] {frames / (now - last_beat):5.1f} fps", flush=True)
             frames = 0
             last_beat = now
-        clock.tick(120)
+        clock.tick(args.fps)      # cap -> GPU idles between frames
 
     pygame.quit()
     print("[milkdrop] DONE.", flush=True)
