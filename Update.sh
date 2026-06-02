@@ -1,7 +1,8 @@
 #!/bin/bash
 # pi-paint VJ — update from GitHub.
 # Double-click this file in the file manager and choose "Execute in Terminal".
-# Pulls the latest from main and runs setup.sh again if its content changed.
+# Pulls the latest from the branch named in BRANCH below (normally "main")
+# and runs setup.sh again if its content changed.
 #
 # Works two ways:
 #   • If this folder is already a git clone: fast-forwards to origin/main.
@@ -29,6 +30,12 @@ date '+[VJ] update start: %Y-%m-%d %H:%M:%S'
 
 REPO_URL="https://github.com/MultiTech-Visions/VJ-pi.git"
 
+# ── Which branch to follow ────────────────────────────────────────────
+# Normally "main". To test work-in-progress, set this to a feature branch
+# name and every update will follow it. Set it back to "main" when done.
+#   >>> THE ONE LINE TO EDIT <<<
+BRANCH="claude/winamp-visualizer-research-YUMpv"
+
 echo ""
 echo "============================================================"
 echo "  pi-paint VJ — Update"
@@ -53,7 +60,7 @@ if [ ! -d ".git" ]; then
   trap 'rm -rf "$TMPDIR"' EXIT
 
   for attempt in 1 2 3 4; do
-    if git clone --branch main "$REPO_URL" "$TMPDIR/repo"; then
+    if git clone --branch "$BRANCH" "$REPO_URL" "$TMPDIR/repo"; then
       break
     fi
     if [ "$attempt" -eq 4 ]; then
@@ -71,10 +78,10 @@ if [ ! -d ".git" ]; then
   rm -rf "$TMPDIR"
   trap - EXIT
 
-  echo "    Syncing tracked files to latest main..."
-  git fetch origin main
-  git reset --hard origin/main
-  git checkout main 2>/dev/null || git checkout -b main origin/main
+  echo "    Syncing tracked files to latest $BRANCH..."
+  git fetch origin "$BRANCH"
+  git reset --hard "origin/$BRANCH"
+  git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
 
   echo "    done. This folder is now a git checkout — future updates will be fast."
   echo ""
@@ -97,7 +104,7 @@ else
 
   echo "[2/3] Fetching latest from GitHub..."
   for attempt in 1 2 3 4; do
-    if git fetch origin main; then
+    if git fetch origin "$BRANCH"; then
       break
     fi
     if [ "$attempt" -eq 4 ]; then
@@ -113,13 +120,13 @@ else
   echo ""
 
   CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  echo "[3/3] Updating to latest main (current branch: $CURRENT_BRANCH)..."
-  if [ "$CURRENT_BRANCH" = "main" ]; then
-    git pull --ff-only origin main
+  echo "[3/3] Updating to latest '$BRANCH' (current branch: $CURRENT_BRANCH)..."
+  if [ "$CURRENT_BRANCH" = "$BRANCH" ]; then
+    git pull --ff-only origin "$BRANCH"
   else
-    echo "    Not on 'main' (on '$CURRENT_BRANCH'). Switching to main..."
-    git checkout main
-    git pull --ff-only origin main
+    echo "    Switching from '$CURRENT_BRANCH' to '$BRANCH'..."
+    git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
+    git pull --ff-only origin "$BRANCH"
   fi
   echo "    done."
   echo ""
