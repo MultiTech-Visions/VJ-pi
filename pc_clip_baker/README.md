@@ -7,7 +7,7 @@ finished clips to the Pi.
 
 The output is tuned to exactly what the Pi already decodes in hardware:
 HEVC, 8-bit `yuv420p`, `main` profile, `hvc1` tag, faststart, scaled to fit
-within **1920×1080**, **30 fps**.
+within **3840×2160** (native pass-through for ~2K sources), **30 fps**.
 
 ## Use it
 

@@ -119,8 +119,11 @@ def main(argv):
     p = argparse.ArgumentParser()
     p.add_argument("--input", default=os.path.join(HERE, "input"))
     p.add_argument("--output", default=os.path.join(HERE, "output"))
-    p.add_argument("--height", type=int, default=1080)
-    p.add_argument("--width", type=int, default=1920)
+    # Default fit-box is 4K so typical ~2K sources pass through at NATIVE res
+    # (goal = highest quality). Only true 4K+ gets scaled down. Lower it
+    # (e.g. --width 2048 --height 1152) once we've picked the sweet-spot res.
+    p.add_argument("--height", type=int, default=2160)
+    p.add_argument("--width", type=int, default=3840)
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--cq", type=int, default=23, help="quality, lower=better")
     p.add_argument("--preset", default="p5", help="nvenc preset p1(fast)..p7(slow)")
