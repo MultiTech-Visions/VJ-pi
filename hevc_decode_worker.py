@@ -31,10 +31,14 @@ def gst_escape(path):
 
 
 def build(path, fmt, w, h):
+    # gl converter: HW decode + GPU detile/convert + readback. FAST, but only
+    # negotiates the Pi SAND format at certain geometries — proven solid at
+    # 2048x1152 (the bake target), fails at 1080p/4K. Bake clips to 2048x1152
+    # and this is the fast path; pispconvert is the robust-but-slow fallback.
     desc = (
         f'filesrc location="{gst_escape(path)}" ! qtdemux ! h265parse ! '
-        f"v4l2slh265dec ! pispconvert ! "
-        f"video/x-raw,format={fmt},width={w},height={h} ! "
+        "v4l2slh265dec ! glupload ! glcolorconvert ! gldownload ! "
+        f"videoconvert ! video/x-raw,format={fmt} ! "
         "appsink name=sink sync=false max-buffers=2 drop=false"
     )
     pipeline = Gst.parse_launch(desc)

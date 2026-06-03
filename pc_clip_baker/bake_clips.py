@@ -63,8 +63,11 @@ def encoder_available(name):
 
 
 def build_cmd(src, dst_tmp, a):
-    vf = (f"scale='min({a.width},iw)':'min({a.height},ih)':"
-          f"force_original_aspect_ratio=decrease:force_divisible_by=2,"
+    # Scale to fit, then letterbox to EXACTLY width x height — a uniform
+    # gl-friendly geometry for every clip (and no runtime resize in the app).
+    vf = (f"scale={a.width}:{a.height}:force_original_aspect_ratio=decrease:"
+          f"force_divisible_by=2,"
+          f"pad={a.width}:{a.height}:(ow-iw)/2:(oh-ih)/2,"
           f"fps={a.fps},format=yuv420p")
     common = ["ffmpeg", "-hide_banner", "-y", "-nostdin", "-i", src,
               "-map", "0:v:0", "-an", "-vf", vf]
@@ -119,11 +122,13 @@ def main(argv):
     p = argparse.ArgumentParser()
     p.add_argument("--input", default=os.path.join(HERE, "input"))
     p.add_argument("--output", default=os.path.join(HERE, "output"))
-    # Default fit-box is 4K so typical ~2K sources pass through at NATIVE res
-    # (goal = highest quality). Only true 4K+ gets scaled down. Lower it
-    # (e.g. --width 2048 --height 1152) once we've picked the sweet-spot res.
-    p.add_argument("--height", type=int, default=2160)
-    p.add_argument("--width", type=int, default=3840)
+    # 2048x1152 is THE sweet spot on the Pi 5: the only geometry where the
+    # fast gl decode path negotiates the HW decoder's tiled format (1080p and
+    # 4K both fail or crawl), and it's higher quality than 1080p. Every clip is
+    # scaled+letterboxed to exactly this so decode is fast AND the engine never
+    # resizes at runtime. 4K-with-FX isn't viable; 4K stays cinematic-only.
+    p.add_argument("--width", type=int, default=2048)
+    p.add_argument("--height", type=int, default=1152)
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--cq", type=int, default=23, help="quality, lower=better")
     p.add_argument("--preset", default="p5", help="nvenc preset p1(fast)..p7(slow)")

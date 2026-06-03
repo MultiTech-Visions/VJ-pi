@@ -6,8 +6,8 @@ here, on a PC with a real GPU encoder (your RTX 4090's NVENC), then copy the
 finished clips to the Pi.
 
 The output is tuned to exactly what the Pi already decodes in hardware:
-HEVC, 8-bit `yuv420p`, `main` profile, `hvc1` tag, faststart, scaled to fit
-within **3840×2160** (native pass-through for ~2K sources), **30 fps**.
+HEVC, 8-bit `yuv420p`, `main` profile, `hvc1` tag, faststart, scaled + letterboxed to exactly
+**2048×1152** — the Pi 5 fast-decode sweet spot (higher quality than 1080p; 4K/1080p decode too slow for live FX), **30 fps**.
 
 ## Use it
 
