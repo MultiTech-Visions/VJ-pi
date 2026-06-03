@@ -1,20 +1,21 @@
-"""Out-of-process HEVC hardware-decode worker (SPIKE).
+"""Out-of-process HEVC hardware-decode worker (pipelined / shared-memory).
 
-Proves the winning bench path end-to-end as a real worker: the Pi 5's HW
-HEVC decoder + GPU detile/convert, frame read back to CPU and shipped to the
-main process over a pipe — so the main pygame/OpenCV app never holds a 2nd GL
-context (the V3D dual-context rule stays intact, like gpu_generator_worker.py).
+The Pi 5 HW-decodes HEVC but the decoder emits a tiled SAND format; pispconvert
+(Pi ISP) detiles + colour-converts it robustly at any resolution. We run that in
+a SEPARATE process so the main pygame/OpenCV app never holds a 2nd GL/V3D
+context (the dual-context rule), then hand frames to the main process through
+shared memory (/dev/shm) — no per-frame copy down a pipe.
 
-Runs under system Python (gi/GStreamer live there on the Pi). Protocol mirrors
-gpu_generators: client writes one request line on stdin per frame; we reply on
-stdout with a JSON header line {"ok",...,"n","width","height"} then n raw BGR
-bytes. Loops the clip on EOS so the client can pull indefinitely.
+    filesrc ! qtdemux ! h265parse ! v4l2slh265dec ! pispconvert ! RGB ! appsink
 
-    filesrc ! qtdemux ! h265parse ! v4l2slh265dec !
-    glupload ! glcolorconvert ! gldownload ! videoconvert ! BGR ! appsink
+Runs under system Python (gi/GStreamer). Protocol: the client creates the shm
+file and a ring of N slots, spawns us with (clip, shm_path, W, H, slots, fmt),
+then per frame writes a slot index as an ascii line on stdin; we decode one
+frame into that slot and reply "1\\n" (ok) or "0\\n" (error). Looping the clip
+on EOS so the client can pull forever.
 """
-import json
-import subprocess
+import mmap
+import os
 import sys
 
 import gi
@@ -29,22 +30,7 @@ def gst_escape(path):
     return str(path).replace("\\", "\\\\").replace('"', '\\"')
 
 
-def probe_dims(path):
-    out = subprocess.check_output(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
-        stderr=subprocess.DEVNULL).decode().strip()
-    w, h = out.split(",")[:2]
-    return int(w), int(h)
-
-
-def build(path, fmt="RGB"):
-    # pispconvert = the Pi ISP hardware detiler: turns v4l2slh265dec's tiled
-    # SAND output into a normal packed format (RGB here) entirely on the ISP,
-    # robustly at any resolution — unlike the gl uploader, which fails to map
-    # the SAND format at some geometries (e.g. 1920x1080). Needs explicit
-    # width/height on its output caps.
-    w, h = probe_dims(path)
+def build(path, fmt, w, h):
     desc = (
         f'filesrc location="{gst_escape(path)}" ! qtdemux ! h265parse ! '
         f"v4l2slh265dec ! pispconvert ! "
@@ -60,54 +46,61 @@ def build(path, fmt="RGB"):
     return pipeline, sink
 
 
-def pull_frame(pipeline, sink):
-    """One BGR sample, looping the clip on EOS. Returns (bytes, w, h) or None."""
+def pull_into(pipeline, sink, mm, off, nbytes):
+    """Decode one frame (looping on EOS) into mm[off:off+nbytes]. True on ok."""
     for _ in range(2):
         sample = sink.emit("try-pull-sample", TIMEOUT_NS)
         if sample is not None:
             buf = sample.get_buffer()
-            caps = sample.get_caps().get_structure(0)
-            w = caps.get_value("width")
-            h = caps.get_value("height")
             ok, info = buf.map(Gst.MapFlags.READ)
             if not ok:
-                return None
-            data = bytes(info.data)
+                return False
+            n = min(nbytes, info.size)
+            mm[off:off + n] = info.data[:n]
             buf.unmap(info)
-            return data, w, h
-        # None → likely EOS; flush-seek to the start and try once more.
+            return True
         pipeline.seek_simple(Gst.Format.TIME,
                              Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT, 0)
-    return None
+    return False
 
 
 def main(argv):
-    if len(argv) < 2:
-        sys.stderr.write("usage: hevc_decode_worker.py CLIP\n")
+    if len(argv) < 7:
+        sys.stderr.write("usage: worker CLIP SHM_PATH W H SLOTS FMT\n")
         return 2
+    clip, shm_path = argv[1], argv[2]
+    w, h, slots = int(argv[3]), int(argv[4]), int(argv[5])
+    fmt = argv[6]
+    bpp = 4 if fmt in ("RGBx", "BGRx", "RGBA", "BGRA") else 3
+    fb = w * h * bpp
+
     Gst.init(None)
-    fmt = argv[2] if len(argv) > 2 else "RGB"
+    fd = os.open(shm_path, os.O_RDWR)
+    mm = mmap.mmap(fd, slots * fb)
     out = sys.stdout.buffer
+
     try:
-        pipeline, sink = build(argv[1], fmt)
+        pipeline, sink = build(clip, fmt, w, h)
     except Exception as exc:  # noqa: BLE001
-        out.write((json.dumps({"ok": False, "error": repr(exc)}) + "\n").encode())
-        out.flush()
+        sys.stderr.write(f"[hevc-worker] build failed: {exc!r}\n")
+        out.write(b"0\n"); out.flush()
         return 1
 
-    for _line in sys.stdin.buffer:          # one frame per request line
-        frame = pull_frame(pipeline, sink)
-        if frame is None:
-            out.write((json.dumps({"ok": False, "error": "no frame"}) + "\n").encode())
-            out.flush()
+    for line in sys.stdin.buffer:
+        line = line.strip()
+        if not line:
             continue
-        data, w, h = frame
-        hdr = json.dumps({"ok": True, "n": len(data), "width": w, "height": h})
-        out.write((hdr + "\n").encode())
-        out.write(data)
+        try:
+            slot = int(line)
+        except ValueError:
+            continue
+        ok = pull_into(pipeline, sink, mm, slot * fb, fb)
+        out.write(b"1\n" if ok else b"0\n")
         out.flush()
 
     pipeline.set_state(Gst.State.NULL)
+    mm.close()
+    os.close(fd)
     return 0
 
 
