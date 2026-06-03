@@ -46,3 +46,6 @@ pc_clip_baker/output/*
 pc_clip_baker/bake.log
 # HEVC decode spike artifacts (local, on the Pi)
 vj_last_hevctest.log
+# HEVC clip library (baked 2K clips live here, like assets/clips)
+assets/clips_hevc/*
+!assets/clips_hevc/.gitkeep

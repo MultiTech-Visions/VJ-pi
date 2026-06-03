@@ -50,9 +50,19 @@ class Config:
     # scales). Exactly one GL context either way — never two (the V3D rule).
     gpu_scale: bool = False
 
+    # Decode clips with the Pi 5 hardware HEVC decoder via an out-of-process
+    # gl worker (hevc_clips.HevcClipPool) instead of OpenCV software decode.
+    # Reads from clips_hevc/ (clips baked to exactly 2048x1152 — the geometry
+    # the gl path handles). Pair with --width 2048 --height 1152 --gpu-scale.
+    hevc: bool = False
+
     @property
     def clips_dir(self) -> Path:
         return self.assets_dir / "clips"
+
+    @property
+    def hevc_clips_dir(self) -> Path:
+        return self.assets_dir / "clips_hevc"
 
     @property
     def overlays_dir(self) -> Path:
