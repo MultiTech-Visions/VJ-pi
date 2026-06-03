@@ -11,10 +11,10 @@ from state import load_state, save_state
 
 def parse_args():
     p = argparse.ArgumentParser(description="pi-paint VJ — manual mode")
-    p.add_argument("--width", type=int, default=1920,
-                   help="Render width (output is scaled to display size, default 1920)")
-    p.add_argument("--height", type=int, default=1080,
-                   help="Render height (default 1080). Use 1280x720 for a lighter fallback.")
+    p.add_argument("--width", type=int, default=1280,
+                   help="Render width (output is scaled to display size, default 1280)")
+    p.add_argument("--height", type=int, default=720,
+                   help="Render height (default 720). Use 1920x1080 for a heavier full-res mode.")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--fullscreen", action="store_true",
                    help="Run the OUTPUT window fullscreen on the chosen display")

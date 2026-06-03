@@ -10,6 +10,8 @@ vj_last_4k_process.log
 vj_last_fsrule.log
 assets/vj_last_4k_process.log
 vj_last_portrait_process.log
+vj_last_bench.log
+bench_assets/
 
 # Never let git stash / commit grab user media. The clips and
 # overlays folders are operator data — large binaries that have no

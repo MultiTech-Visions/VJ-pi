@@ -1,5 +1,32 @@
 # CLAUDE.md — handoff context for VJ-pi
 
+> # ⛔ THE OPERATOR NEVER USES A TERMINAL/CLI. EVER. ⛔
+>
+> Read this twice. It has been said every session and missed every
+> session. Stop missing it.
+>
+> The operator runs **everything by double-clicking `.sh` launchers in
+> the GUI file manager** ("Execute"). They do **not** open a terminal,
+> do **not** type commands, and will **not** run `git`, `python`,
+> `ffmpeg`, or anything else by hand. It is 2026; do not ask a human to
+> hand-type commands at a prompt.
+>
+> **What this means for you, concretely:**
+> - **NEVER** give the operator a command to run. Not `git pull`, not
+>   `./something.sh`, not `cd`, not one single command. If your reply
+>   contains a command for THEM to type, you have failed.
+> - To ship a change: commit + push. For them to **get** it, they
+>   double-click **`Update.sh`** (it runs the pull). To **run** it, they
+>   double-click the relevant launcher (e.g. `Start VJ.sh`).
+> - Anything you want them to *do* must be a **double-clickable `.sh`
+>   launcher** (log-tee + zenity dialog, like the existing ones) or a
+>   keypress inside the running app. If a capability needs the CLI, YOU
+>   wrap it in a launcher — that is your job, not theirs.
+> - Results come back as a **zenity dialog** and/or a `vj_last_*.log`
+>   file they hand you. Design every workflow to end that way.
+>
+> The CLI is YOUR tool, inside this container. It is never the operator's.
+
 Read this before acting. The project has a long history of expensive
 mistakes; the operator has a low tolerance for repeats. The short
 version: **the working system is the hybrid described below. Build on
@@ -113,6 +140,13 @@ the worker on the Pi is the real test — on failure, grab the
 `claude --teleport`, the loop collapses to edit → run → observe.
 
 ## Workflow rules — DO NOT VIOLATE
+
+0. **NEVER hand the operator a CLI command or a "run this in a terminal"
+   instruction.** They work GUI-only (see the banner at the top). Every
+   action you want them to take is a double-click on a `.sh` launcher or
+   a keypress in the app. Need them to update? `Update.sh`. Need them to
+   run a new tool? Build a launcher for it. This rule has been broken
+   every session — do not be the next.
 
 1. **NEVER `git stash push -u` without confirming what's untracked
    first.** This destroyed the operator's clip library once: the mp4s
