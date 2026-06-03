@@ -37,3 +37,12 @@ assets/portrait/*
 !assets/portrait/landscape/
 assets/portrait/landscape/*
 !assets/portrait/landscape/.gitkeep
+
+# PC clip baker — don't commit source/output clips or its log
+pc_clip_baker/input/*
+!pc_clip_baker/input/.gitkeep
+pc_clip_baker/output/*
+!pc_clip_baker/output/.gitkeep
+pc_clip_baker/bake.log
+# HEVC decode spike artifacts (local, on the Pi)
+vj_last_hevctest.log
