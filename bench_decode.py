@@ -227,46 +227,67 @@ def measure_gst(path, conv, frames, warmup, label):
         return
     sink = pipeline.get_by_name("sink")
     sink.set_property("emit-signals", False)
-    if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
-        print(f"RESULT {label:<28} FAIL :: pipeline refused to start "
-              f"(conv={conv})", flush=True)
+    bus = pipeline.get_bus()
+    TIMEOUT_NS = 5 * Gst.SECOND   # never block longer than this on one frame
+
+    def bus_error():
+        msg = bus.timed_pop_filtered(0, Gst.MessageType.ERROR)
+        if msg:
+            err, _dbg = msg.parse_error()
+            return err.message
+        return None
+
+    # Start, and confirm it actually reaches PLAYING. A converter that can't
+    # handle the decoder's tiled SAND output stalls negotiation — catch that
+    # here instead of blocking forever on the first pull.
+    pipeline.set_state(Gst.State.PLAYING)
+    st = pipeline.get_state(TIMEOUT_NS)[0]
+    if st != Gst.StateChangeReturn.SUCCESS:
+        emsg = bus_error() or f"did not reach PLAYING within 5s ({st!r})"
+        print(f"RESULT {label:<28} FAIL :: {emsg} (conv={conv})", flush=True)
         pipeline.set_state(Gst.State.NULL)
         return
 
     def pull():
-        sample = sink.emit("pull-sample")
+        # try-pull-sample returns None on timeout OR EOS — never blocks forever.
+        sample = sink.emit("try-pull-sample", TIMEOUT_NS)
         if sample is None:
-            return None
+            return False
         buf = sample.get_buffer()
         ok, info = buf.map(Gst.MapFlags.READ)
         if not ok:
-            return None
+            return False
         # Force the readback into a real CPU frame, as the FX pipeline would.
         if have_np:
-            frame = np.frombuffer(info.data, np.uint8).copy()
+            _ = np.frombuffer(info.data, np.uint8).copy()
         else:
-            frame = bytes(info.data)
+            _ = bytes(info.data)
         buf.unmap(info)
-        return frame
+        return True
 
     try:
-        got = 0
+        # Warm up, bailing cleanly (with the bus error, if any) on a stall.
         for _ in range(warmup):
-            if pull() is None:
-                break
+            if not pull():
+                emsg = bus_error() or "no frame within 5s (pipeline stalled)"
+                print(f"RESULT {label:<28} FAIL :: {emsg} (conv={conv})", flush=True)
+                pipeline.set_state(Gst.State.NULL)
+                return
         meter = CpuMeter()
         t0 = time.perf_counter()
+        got = 0
         for _ in range(frames):
-            if pull() is None:
+            if not pull():
                 break
             got += 1
         elapsed = time.perf_counter() - t0
         cpu = meter.percent()
     finally:
         pipeline.set_state(Gst.State.NULL)
+
     if got == 0:
-        print(f"RESULT {label:<28} FAIL :: no frames pulled (conv={conv}; "
-              f"decoder or {conv} convert unsupported)", flush=True)
+        emsg = bus_error() or "no frames pulled"
+        print(f"RESULT {label:<28} FAIL :: {emsg} (conv={conv})", flush=True)
         return
     report(label, got, elapsed, cpu, dims=f"{w}x{h}", note=f"conv={conv}")
 
