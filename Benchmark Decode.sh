@@ -6,15 +6,13 @@
 # BGR numpy frame the FX pipeline can use? If it does, we have CPU headroom to
 # raise the base canvas to 1080p (or feed 4K detail) while keeping live FX.
 #
-# Non-destructive: builds short test clips under bench_assets/ and probes
-# several decode paths. Touches nothing in the live app. Results (FPS + CPU%)
-# are written to vj_last_bench.log and shown in a dialog at the end.
+# Uses your EXISTING clips — no transcoding:
+#   * H.264 baseline  : first clip in assets/clips/      (today's path)
+#   * HEVC HW decode  : first clip in assets/4k/processed/
+# Override either by passing them:  ./Benchmark\ Decode.sh H264_CLIP HEVC_CLIP
 #
-# Usage: double-click, or:  ./Benchmark\ Decode.sh [SOURCE_VIDEO]
-#   SOURCE_VIDEO defaults to the first clip found in assets/4k/_originals,
-#   then assets/clips, then assets/4k. A higher-detail source gives a fairer
-#   read on the 1080p/4K paths.
-# Env: BENCH_WITH_4K=1 to also build + test a 4K HEVC clip (slow to encode).
+# Non-destructive: reads clips, probes decode paths, writes FPS + CPU% to
+# vj_last_bench.log and a dialog. Touches nothing in the live app.
 
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
@@ -22,7 +20,6 @@ LOG="$ROOT/vj_last_bench.log"
 VENV_PY="$ROOT/venv/bin/python"
 SYS_PY="/usr/bin/python3"
 [ -x "$SYS_PY" ] || SYS_PY="$(command -v python3)"
-OUTDIR="$ROOT/bench_assets"
 
 show_info() {
   local title="$1" body="$2"
@@ -35,58 +32,46 @@ show_info() {
   fi
 }
 
+first_clip() {  # first non-underscore video in a dir
+  find "$1" -maxdepth 1 -type f \
+    \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.mkv' -o -iname '*.m4v' \) \
+    ! -name '_*' 2>/dev/null | sort | head -n1
+}
+
 : >"$LOG"
 exec > >(tee -a "$LOG") 2>&1
 date '+[bench] start: %Y-%m-%d %H:%M:%S'
 git -C "$ROOT" log --oneline -1 2>/dev/null
 
-if [ ! -x "$VENV_PY" ]; then
-  show_info "VJ-pi: setup needed" \
-    "venv missing — run setup.sh first.\n\nLog: $LOG"
+[ -x "$VENV_PY" ] || { show_info "VJ-pi: setup needed" "venv missing — run setup.sh first.\n\nLog: $LOG"; exit 1; }
+
+H264="${1:-$(first_clip assets/clips)}"
+HEVC="${2:-$(first_clip assets/4k/processed)}"
+[ -z "$HEVC" ] && HEVC="$(first_clip assets/4k)"
+echo "[bench] H.264 clip: ${H264:-<none found in assets/clips>}"
+echo "[bench] HEVC  clip: ${HEVC:-<none found in assets/4k/processed>}"
+
+if [ -z "$H264" ] && [ -z "$HEVC" ]; then
+  show_info "Benchmark: no clips" \
+    "No clips found in assets/clips/ or assets/4k/processed/. Pass paths as arguments.\n\nLog: $LOG"
   exit 1
 fi
 
-# ── pick a source clip ───────────────────────────────────────────────────
-SRC="$1"
-if [ -z "$SRC" ]; then
-  for d in "assets/4k/_originals" "assets/clips" "assets/4k"; do
-    SRC=$(find "$d" -maxdepth 1 -type f \
-            \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.mkv' -o -iname '*.m4v' \) \
-            ! -name '_*' 2>/dev/null | sort | head -n1)
-    [ -n "$SRC" ] && break
-  done
-fi
-if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
-  show_info "Benchmark: no source clip" \
-    "No source video found in assets/. Drop a clip in assets/clips/ (or pass one as an argument) and re-run.\n\nLog: $LOG"
-  exit 1
-fi
-echo "[bench] source clip: $SRC"
+echo "[bench] === baseline: OpenCV / H.264 software decode → numpy (TODAY) ==="
+[ -n "$H264" ] && "$VENV_PY" bench_decode.py opencv "$H264" --label "opencv h264 (TODAY)"
 
-# ── build matched test clips ─────────────────────────────────────────────
-PREP_ARGS=(prep --source "$SRC" --outdir "$OUTDIR")
-[ "${BENCH_WITH_4K:-0}" = "1" ] && PREP_ARGS+=(--with-4k)
-echo "[bench] === prep (transcoding 15s test clips; HEVC encode is slow) ==="
-"$VENV_PY" bench_decode.py "${PREP_ARGS[@]}" || {
-  show_info "Benchmark: prep failed" "ffmpeg transcode failed — see $LOG"; exit 1; }
+if [ -n "$HEVC" ]; then
+  echo "[bench] === ffmpeg -hwaccel drm: HEVC hardware decode → numpy ==="
+  "$VENV_PY" bench_decode.py ffmpeg "$HEVC" --label "ffmpeg-drm hevc"
 
-# ── run the matrix ───────────────────────────────────────────────────────
-echo "[bench] === baselines: OpenCV / H.264 software decode → numpy ==="
-[ -f "$OUTDIR/h264_720p.mp4" ]  && "$VENV_PY" bench_decode.py opencv "$OUTDIR/h264_720p.mp4"  --label "opencv h264 720p (TODAY)"
-[ -f "$OUTDIR/h264_1080p.mp4" ] && "$VENV_PY" bench_decode.py opencv "$OUTDIR/h264_1080p.mp4" --label "opencv h264 1080p (naive)"
-
-echo "[bench] === ffmpeg -hwaccel drm: HEVC hardware decode → numpy ==="
-[ -f "$OUTDIR/h265_1080p.mp4" ] && "$VENV_PY" bench_decode.py ffmpeg "$OUTDIR/h265_1080p.mp4" --label "ffmpeg-drm h265 1080p"
-[ -f "$OUTDIR/h265_2160p.mp4" ] && "$VENV_PY" bench_decode.py ffmpeg "$OUTDIR/h265_2160p.mp4" --label "ffmpeg-drm h265 4K"
-
-echo "[bench] === GStreamer v4l2slh265dec → BGR appsink → numpy (system python) ==="
-if [ -n "$SYS_PY" ]; then
-  for conv in videoconvert gl pisp; do
-    [ -f "$OUTDIR/h265_1080p.mp4" ] && "$SYS_PY" bench_decode.py gst "$OUTDIR/h265_1080p.mp4" --conv "$conv" --label "gst-$conv h265 1080p"
-    [ -f "$OUTDIR/h265_2160p.mp4" ] && "$SYS_PY" bench_decode.py gst "$OUTDIR/h265_2160p.mp4" --conv "$conv" --label "gst-$conv h265 4K"
-  done
-else
-  echo "[bench] no system python3 found — skipping GStreamer paths"
+  echo "[bench] === GStreamer v4l2slh265dec → BGR appsink → numpy (system python) ==="
+  if [ -n "$SYS_PY" ]; then
+    for conv in videoconvert gl pisp; do
+      "$SYS_PY" bench_decode.py gst "$HEVC" --conv "$conv" --label "gst-$conv hevc"
+    done
+  else
+    echo "[bench] no system python3 found — skipping GStreamer paths"
+  fi
 fi
 
 echo "[bench] === summary (floor = 13 fps) ==="
