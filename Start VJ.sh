@@ -16,7 +16,7 @@ OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
 CONTROL_SIZE="680x720"
 
-# Render canvas resolution. Leave empty to use config.py's default (1920x1080).
+# Render canvas resolution. Leave empty to use config.py's default (1280x720).
 # If you override this, run Process Assets.sh again so clips play at canvas
 # res (no per-frame resize).
 # GPU scaling (below) presents the canvas to the projector either way.

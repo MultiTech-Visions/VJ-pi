@@ -107,8 +107,8 @@ cd vj
 # Single window, no HUD
 ./venv/bin/python main.py
 
-# Lighter fallback if 1080p FX load is too high
-./venv/bin/python main.py --width 1280 --height 720 --fullscreen --output-display 1
+# Heavier full-res mode if the Pi has headroom
+./venv/bin/python main.py --width 1920 --height 1080 --fullscreen --output-display 1
 ```
 
 ## Keyboard map
@@ -422,7 +422,7 @@ blit to pygame screen
 
 ## Performance notes
 
-- Default render resolution is **1920×1080**. The output surface scales
+- Default render resolution is **1280×720**. The output surface scales
   to the display via `pygame.transform.smoothscale` (bilinear) or the
   optional GPU scaler, so the same canvas can still present cleanly on
   the 4K projector. Clip downsampling uses `cv2.INTER_AREA` for clean
@@ -435,8 +435,8 @@ blit to pygame screen
   `--width / --height` or by editing `config.py`), **re-run the
   processor** so your library is at the new size; otherwise the engine
   will live-resize every frame and print a one-time warning per file.
-- If 30 fps starts dropping under heavy FX load, fall back to
-  `--width 1280 --height 720` and re-run **`Process Assets.sh`**.
+- If the Pi has spare headroom and you want crisper output, bump to
+  `--width 1920 --height 1080` and re-run **`Process Assets.sh`**.
 - **Generatives render at `--gen-render-scale × canvas` (default 0.5).**
   They're smooth procedural patterns — pixel-perfect rendering at canvas
   resolution is wasted CPU. At 0.5, a 4-group mapping setup with mixed
