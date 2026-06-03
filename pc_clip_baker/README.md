@@ -16,8 +16,9 @@ HEVC, 8-bit `yuv420p`, `main` profile, `hvc1` tag, faststart, scaled + letterbox
 2. Double-click **`Bake Clips.bat`**.
 3. Watch the progress bars. When it finishes, the HEVC `.mp4`s are in the
    **`output`** folder.
-4. Copy the `output` clips onto the Pi (into the VJ clip library folder we'll
-   wire up for HEVC).
+4. Copy the `output` clips onto the Pi into **`assets/clips_hevc/`**, then on
+   the Pi double-click **`Start VJ (2K HEVC).sh`** to run with hardware HEVC
+   decode at 2048×1152.
 
 Already-baked files are skipped, so you can add more clips and re-run without
 redoing everything.
