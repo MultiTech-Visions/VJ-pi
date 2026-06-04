@@ -22,10 +22,18 @@
 cd "$(dirname "$0")"
 
 # ── Hotspot settings (what your phone will see / type) ────────────────
-HOTSPOT_SSID="VJ-PI"
+HOTSPOT_SSID="VJ-PI"         # the WiFi network name your phone joins
 HOTSPOT_PASS="campvibes"     # must be 8+ characters for WiFi
-PORT=8000
+HOTSPOT_IP="10.42.0.1"       # the Pi's address -> you'll open http://<this>:<PORT>
+PORT=8000                    # the port the upload page listens on
 WIFI_IFACE="wlan0"
+HOTSPOT_CON="VJ-Hotspot"     # internal NetworkManager profile name (leave as-is)
+
+# Want a different address? Change HOTSPOT_IP above to anything you like,
+# e.g. 192.168.4.1 or 10.0.0.1. The phone joins the WiFi and you open
+# http://<HOTSPOT_IP>:<PORT>. The Pi hands your phone a matching address
+# automatically. (Use a private range: 10.x.x.x, 192.168.x.x, or
+# 172.16–31.x.x.)
 
 LOG="$(pwd)/vj_last_upload.log"
 : >"$LOG"
@@ -59,22 +67,37 @@ PREV_WIFI=""
 GATEWAY_IP=""
 
 if command -v nmcli >/dev/null 2>&1; then
-  echo "[VJ] bringing up hotspot '$HOTSPOT_SSID' on $WIFI_IFACE" >>"$LOG"
+  echo "[VJ] bringing up hotspot '$HOTSPOT_SSID' at $HOTSPOT_IP on $WIFI_IFACE" >>"$LOG"
   # Remember the WiFi network we're currently on so we can restore it.
   PREV_WIFI=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
                 | awk -F: '$2=="802-11-wireless"{print $1; exit}')
   echo "[VJ] previous wifi connection: ${PREV_WIFI:-<none>}" >>"$LOG"
 
-  if nmcli device wifi hotspot ifname "$WIFI_IFACE" \
-        ssid "$HOTSPOT_SSID" password "$HOTSPOT_PASS" >>"$LOG" 2>&1; then
+  # Create (or update) a dedicated access-point profile with a FIXED IP,
+  # so the upload URL is always the same address you chose above.
+  # ipv4.method=shared runs NetworkManager's built-in dnsmasq, which hands
+  # the phone a matching DHCP lease in this subnet automatically.
+  if nmcli -t -f NAME connection show 2>/dev/null | grep -qx "$HOTSPOT_CON"; then
+    nmcli connection modify "$HOTSPOT_CON" \
+      802-11-wireless.ssid "$HOTSPOT_SSID" \
+      802-11-wireless.mode ap 802-11-wireless.band bg \
+      ipv4.method shared ipv4.addresses "$HOTSPOT_IP/24" \
+      wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$HOTSPOT_PASS" \
+      connection.autoconnect no >>"$LOG" 2>&1
+  else
+    nmcli connection add type wifi ifname "$WIFI_IFACE" con-name "$HOTSPOT_CON" \
+      autoconnect no ssid "$HOTSPOT_SSID" >>"$LOG" 2>&1
+    nmcli connection modify "$HOTSPOT_CON" \
+      802-11-wireless.mode ap 802-11-wireless.band bg \
+      ipv4.method shared ipv4.addresses "$HOTSPOT_IP/24" \
+      wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$HOTSPOT_PASS" >>"$LOG" 2>&1
+  fi
+
+  if nmcli connection up "$HOTSPOT_CON" >>"$LOG" 2>&1; then
     HOTSPOT_UP=1
     sleep 2
-    # NetworkManager's shared mode gives the Pi 10.42.0.1 by default;
-    # read it back to be safe.
-    GATEWAY_IP=$(nmcli -t -f IP4.ADDRESS device show "$WIFI_IFACE" 2>/dev/null \
-                   | head -1 | cut -d: -f2 | cut -d/ -f1)
-    [ -z "$GATEWAY_IP" ] && GATEWAY_IP="10.42.0.1"
-    echo "[VJ] hotspot up, gateway $GATEWAY_IP" >>"$LOG"
+    GATEWAY_IP="$HOTSPOT_IP"
+    echo "[VJ] hotspot up at $GATEWAY_IP" >>"$LOG"
   else
     echo "[VJ] hotspot failed to start — falling back to plain mode" >>"$LOG"
   fi
@@ -93,7 +116,7 @@ cleanup() {
   wait "$SERVER_PID" 2>/dev/null
   if [ "$HOTSPOT_UP" = "1" ]; then
     echo "[VJ] taking hotspot down" >>"$LOG"
-    nmcli connection down Hotspot >>"$LOG" 2>&1
+    nmcli connection down "$HOTSPOT_CON" >>"$LOG" 2>&1
     if [ -n "$PREV_WIFI" ]; then
       echo "[VJ] restoring wifi '$PREV_WIFI'" >>"$LOG"
       nmcli connection up "$PREV_WIFI" >>"$LOG" 2>&1

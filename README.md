@@ -419,8 +419,12 @@ Notes:
   falls back to serving the page on whatever WiFi the Pi is already on
   and shows you the address to use — just make sure your phone is on that
   same WiFi.
-- The default WiFi name/password live at the top of `Upload from
-  Phone.sh` (`HOTSPOT_SSID` / `HOTSPOT_PASS`) if you want to change them.
+- The WiFi name, password, **address, and port** are all settings at the
+  top of `Upload from Phone.sh` (`HOTSPOT_SSID`, `HOTSPOT_PASS`,
+  `HOTSPOT_IP`, `PORT`). The Pi's address is fixed at `HOTSPOT_IP`
+  (default `10.42.0.1`), so the URL is the same every time — change it to
+  anything in a private range (e.g. `192.168.4.1`) if you prefer, and the
+  phone gets a matching address automatically.
 - The full log is written to `vj_last_upload.log`.
 
 ## Architecture
