@@ -1633,13 +1633,28 @@ class Engine:
         if x1 <= x0 or y1 <= y0:
             return None  # Mask and video don't overlap.
 
-        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-        resized = cv2.resize(source, (dw, dh), interpolation=interp)
-
-        sx0, sy0 = x0 - dx, y0 - dy
-        sx1, sy1 = sx0 + (x1 - x0), sy0 + (y1 - y0)
-        return (y0, y1, x0, x1,
-                resized[sy0:sy1, sx0:sx1], mask[y0:y1, x0:x1])
+        # Render ONLY the intersection rect (where the video lands AND the
+        # mask has pixels) by sampling straight from the source through an
+        # affine scale+translate — instead of resampling the ENTIRE source
+        # plane to (dw, dh) and discarding everything outside the window.
+        # For windows smaller than the canvas this is the whole ballgame: we
+        # stop paying to scale millions of pixels we immediately throw away.
+        #
+        # The full placement is canvas_x = source_x*scale + dx; this op's
+        # output origin is (x0, y0), so out_x = source_x*scale + (dx - x0)
+        # (same for y). INTER_LINEAR rather than CUBIC — the result is warped
+        # onto a wall, so the difference is invisible and it's markedly
+        # cheaper. (warpAffine has no INTER_AREA, so a zoomed-way-out source
+        # downsamples with linear; acceptable on a moving projection.)
+        bw, bh = x1 - x0, y1 - y0
+        M = np.array([[scale, 0.0, float(dx - x0)],
+                      [0.0, scale, float(dy - y0)]], dtype=np.float64)
+        win = cv2.warpAffine(
+            source, M, (bw, bh),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        return (y0, y1, x0, x1, win, mask[y0:y1, x0:x1])
 
     def _group_mask(self, group):
         """Return (mask, (x0, y0, x1, y1)) for `group`. Cached by space
