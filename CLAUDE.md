@@ -115,16 +115,48 @@ image from `assets/images/` as `sampler2D tex`.
    GPU generators live in a separate process. Don't co-locate GL
    contexts. (This killed two earlier GPU attempts — see history.)
 
-2. **Pi 5 has no H.264 hardware decode** (the block was removed). Clips
-   decode in software via OpenCV `VideoCapture`. `Process Assets.sh`
-   downsamples + re-encodes the library to render resolution so the
-   only per-frame cost is decode + a BGR→RGB shuffle. Re-run it
-   whenever you change render resolution.
+2. **Pi 5 has no H.264 hardware decode** (the block was removed), **but it
+   DOES hardware-decode HEVC (H.265)** — and that's the current direction
+   for 2K clips (see "2K HEVC migration" below). The legacy H.264 path
+   still works: clips decode in software via OpenCV `VideoCapture`, and
+   `Start VJ.sh` plays `assets/clips/` at render resolution.
 
 3. **The operator launches via the GUI file manager** ("Execute", not
    "Execute in Terminal"), so stdout/stderr go nowhere unless captured.
    The log-tee + zenity dialog in the launchers exist for exactly this.
    Don't break them.
+
+## 2K HEVC migration (current direction)
+
+The Pi 5 hardware-decodes HEVC but can't hardware-*encode* it, so the
+clip pipeline is moving to: **encode once to HEVC (fast on a PC, slow on
+the Pi), then let the Pi hardware-decode.** Key pieces:
+
+- **Playback:** `--hevc` mode (`Start VJ (2K HEVC).sh`) reads
+  `assets/clips_hevc/` and decodes via `hevc_clips.HevcClipPool` +
+  `hevc_decode_worker.py` — an out-of-process GL worker (same V3D
+  one-context-per-process rule as the GPU generators). Clips **must** be
+  exactly **2048×1152 HEVC** (hvc1 / main / yuv420p); that's the only
+  geometry the GL decode path negotiates fast. Canvas runs `--width 2048
+  --height 1152 --gpu-scale`.
+- **PC baking (fast path):** `pc_clip_baker/` (`Bake Clips.bat` /
+  `bake_clips.py`) uses NVENC to make those 2048×1152 HEVC clips; copy
+  them into `assets/clips_hevc/`.
+- **On-Pi processing (fallback):** `Process All Assets.sh` is the unified
+  processor — 2K (`assets/clips/`→`clips_hevc/`), portrait
+  (`assets/portrait/{rotate,crop}/` + loose → `clips_hevc/…-landscape`),
+  and 4K (`assets/4k/`→`assets/4k/processed/`), all HEVC, skipping done.
+  `Process Assets.sh` / `Process Portrait Assets.sh` are thin wrappers
+  (`VJ_ONLY=clips|portrait`). On-Pi HEVC encode is software (slow) — fine
+  for a few field clips, not a whole library.
+- **Uploads:** `upload_server.py` + `Upload from Phone.sh` route phone
+  uploads to the right folder (ready-HEVC→`clips_hevc/`, raw 2K→`clips/`,
+  4K→`4k/`, portrait→`portrait/{rotate,crop}/` or loose) via the page's
+  destination picker.
+- **Legacy H.264 path is intentionally kept** (`Start VJ.sh` +
+  `assets/clips/`) until HEVC is confirmed on the operator's hardware —
+  do not rip it out. `assets/clips/` doubles as the raw-input folder the
+  HEVC bake reads from.
 
 ## How to test changes
 

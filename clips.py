@@ -54,6 +54,12 @@ class ClipPool:
     def __len__(self):
         return len(self.paths)
 
+    def _make_clip(self, path):
+        """Factory for the decoder backing one clip. Subclasses override this
+        to swap the decode path (e.g. HevcClipPool → hardware HEVC worker)
+        while reusing all the selection / LRU / naming logic here."""
+        return Clip(path)
+
     def name(self, idx):
         if idx is None or not 0 <= idx < len(self.paths):
             return None
@@ -74,7 +80,7 @@ class ClipPool:
         if not 0 <= idx < len(self.paths):
             return
         if self.clips[idx] is None:
-            self.clips[idx] = Clip(self.paths[idx])
+            self.clips[idx] = self._make_clip(self.paths[idx])
             self._touch_lru(idx)
             self._evict_lru(protect=idx)
         else:
@@ -144,7 +150,7 @@ class ClipPool:
         if not 0 <= idx < len(self.paths):
             return
         if self.clips[idx] is None:
-            self.clips[idx] = Clip(self.paths[idx])
+            self.clips[idx] = self._make_clip(self.paths[idx])
         self._touch_lru(idx)
         self._evict_lru(protect=idx)
 
@@ -156,7 +162,7 @@ class ClipPool:
             return None
         clip = self.clips[idx]
         if clip is None:
-            clip = Clip(self.paths[idx])
+            clip = self._make_clip(self.paths[idx])
             self.clips[idx] = clip
             self._touch_lru(idx)
             self._evict_lru(protect=idx)

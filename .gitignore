@@ -11,6 +11,7 @@ vj_last_fsrule.log
 assets/vj_last_4k_process.log
 vj_last_portrait_process.log
 vj_last_bench.log
+vj_last_upload.log
 bench_assets/
 
 # Never let git stash / commit grab user media. The clips and
@@ -37,3 +38,21 @@ assets/portrait/*
 !assets/portrait/landscape/
 assets/portrait/landscape/*
 !assets/portrait/landscape/.gitkeep
+!assets/portrait/rotate/
+assets/portrait/rotate/*
+!assets/portrait/rotate/.gitkeep
+!assets/portrait/crop/
+assets/portrait/crop/*
+!assets/portrait/crop/.gitkeep
+
+# PC clip baker — don't commit source/output clips or its log
+pc_clip_baker/input/*
+!pc_clip_baker/input/.gitkeep
+pc_clip_baker/output/*
+!pc_clip_baker/output/.gitkeep
+pc_clip_baker/bake.log
+# HEVC decode spike artifacts (local, on the Pi)
+vj_last_hevctest.log
+# HEVC clip library (baked 2K clips live here, like assets/clips)
+assets/clips_hevc/*
+!assets/clips_hevc/.gitkeep

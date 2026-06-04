@@ -29,6 +29,10 @@ Then double-click these files in order:
    double-click **`Process Portrait Assets.sh`**. It creates 1920×1080
    landscape versions in `assets/portrait/landscape/`.
 
+   **To get videos off your phone**, double-click **`Upload from
+   Phone.sh`** (see "Uploading clips from your phone" below) — no cable,
+   no cloud, works with no internet.
+
 3. To launch, double-click one of these scripts and choose **"Execute"**:
    - **`Start VJ.sh`** — **dual display** (the main mode). Opens a
      control HUD on the small screen (display 0) showing live preview,
@@ -332,18 +336,32 @@ Free libraries (download once, no internet needed at the party):
 Overlay code still exists in the engine, but the controls are shelved
 for now because the rig does not currently need overlay clips.
 
-Recommended pre-processing (one-time, on a desktop):
+### Processing assets (HEVC)
 
-```bash
-# Downsample to projector resolution + re-encode to H.264 for hardware decode
-ffmpeg -i input.mp4 -vf scale=854:480 -c:v libx264 -preset slow -crf 22 -an output.mp4
-```
+The Pi 5 **hardware-decodes HEVC (H.265)** but has no hardware *encoder*,
+so the model is: encode once (fast on a PC, or slowly on the Pi as a field
+fallback), then the Pi just decodes. Everything 2K plays from
+`assets/clips_hevc/` as **2048×1152 HEVC** via **`Start VJ (2K HEVC).sh`**.
 
-…or just drop the raw files into `assets/clips/` and double-click
-**`Process Assets.sh`**. It shows a GUI progress window when available,
-prints progress when run from a terminal, and writes the full log to
-`vj_last_process.log`. Originals are preserved in `assets/clips/_originals/`.
-Clips are scaled + centre-cropped to fill the frame.
+Two ways to make those clips:
+
+- **On your PC (fast — recommended for a library).** Use the
+  `pc_clip_baker/` tool: drop sources in its `input/`, double-click
+  **`Bake Clips.bat`** (NVENC on an RTX-class GPU), and copy the baked
+  `output/` clips onto the Pi (the **`Upload from Phone.sh`** "2K clip —
+  ready to play" destination drops them straight into `assets/clips_hevc/`).
+
+- **On the Pi (slower, good for a few field clips).** Double-click
+  **`Process All Assets.sh`** — one pass that bakes **all three** kinds of
+  source media, skipping anything already done:
+  - `assets/clips/` (raw 2K landscape) → `assets/clips_hevc/`
+  - `assets/portrait/…` (vertical) → `assets/clips_hevc/…-landscape.mp4`
+  - `assets/4k/` (raw hi-res) → `assets/4k/processed/`
+
+  It shows a GUI progress window when available and logs to
+  `vj_last_process.log`. The per-type shortcuts **`Process Assets.sh`**
+  (2K only) and **`Process Portrait Assets.sh`** (portrait only) just run
+  the same processor scoped to one kind.
 
 ### 4K cinematic mode
 
@@ -372,18 +390,80 @@ files in place. If no processed files exist, cinematic mode will try the
 top-level `assets/4k/` files directly, but unsupported codecs will fail
 or skip; processing ahead of time is the reliable path.
 
-### Portrait to landscape conversion
+### Portrait → landscape (three modes)
 
-Drop vertical videos into `assets/portrait/`, then run
-**`Process Portrait Assets.sh`**. The output lands in
-`assets/portrait/landscape/` as 1920×1080 H.264 MP4.
+Vertical phone video becomes a 16:9 HEVC clip in `assets/clips_hevc/`
+(named `…-landscape.mp4`). You choose **how** the tall frame is fitted by
+which folder you drop it into — then run **`Process Portrait Assets.sh`**
+(or **`Process All Assets.sh`**):
 
-The conversion preserves the full portrait frame in the center and fills
-the landscape side space with a blurred/dimmed copy of the same video, so
-you get a proper 16:9 clip without cutting off the subject. Move the
-finished files into `assets/clips/` for the regular VJ app, or into
-`assets/4k/` and run **`Process 4K Assets.sh`** if you want them in the
-cinematic playlist.
+| Drop into | Mode | Best for |
+|-----------|------|----------|
+| `assets/portrait/rotate/` | **Rotate 90°** — spin the frame so it fills 16:9 | footage shot sideways, or where orientation doesn't matter |
+| `assets/portrait/crop/` | **Crop to centre** — fill 16:9, cut top & bottom | a person / subject centred in frame |
+| `assets/portrait/` (loose) | **Blur-fill** — whole frame centred, blurred side bars | anything you don't want cropped or rotated |
+
+When uploading from your phone in the field, the **Portrait** destination
+in `Upload from Phone.sh` offers these same three modes, so you pick per
+clip and they land in the right folder automatically.
+
+### Uploading clips from your phone
+
+Shot something on your phone you want to project — campfire footage, the
+wedding, whatever's happening that weekend? Get it onto the Pi straight
+from the phone's browser. No cable, no cloud, and **no internet or WiFi
+router required** — the Pi can make its own WiFi.
+
+1. On the Pi, double-click **`Upload from Phone.sh`** → "Execute".
+2. A dialog asks **how your phone should reach the Pi** — pick one:
+   - **Pi hotspot (camp)** — for the campsite or anywhere with no router.
+     The Pi becomes its own WiFi network; your phone joins it. This
+     briefly takes the Pi off any WiFi it was on and puts it back when
+     you're done.
+   - **This WiFi (home)** — for home, where the Pi and your phone are
+     already on the same WiFi. Nothing on the Pi switches; your phone
+     keeps its internet.
+3. The next dialog shows the details for the mode you picked — a WiFi
+   name/password to join (hotspot) or just an address (home WiFi). On
+   your phone, get on the right network, then open that address in your
+   browser (hotspot mode is normally **`http://10.42.42.42:8000`**).
+4. On the page, **pick where the videos go**, then tap **Choose videos**,
+   pick clips from your camera roll, and watch the progress bars. The
+   destination dropdown routes each upload to the right folder:
+   - **2K clip — ready to play (HEVC)** → `assets/clips_hevc/`. For clips
+     you already baked on your PC (see *Processing assets* above); they
+     play immediately, no Pi-side processing.
+   - **2K video — raw** → `assets/clips/`, to be baked on the Pi.
+   - **4K video** → `assets/4k/`, for cinematic mode.
+   - **Portrait (vertical)** → `assets/portrait/…`; a second dropdown
+     picks how the tall frame becomes 16:9 — **crop to centre** (good for
+     a person), **rotate 90°** (good for sideways-shot footage), or
+     **blur-fill** (keep the whole frame). Each goes to its own subfolder.
+5. Back on the Pi, click **Done** in the dialog. That stops the upload
+   page (and, in hotspot mode, puts the Pi's WiFi back to normal).
+6. If you uploaded anything **raw** (2K/4K/portrait), double-click
+   **`Process All Assets.sh`** and go eat dinner — it bakes everything to
+   play-ready HEVC while you're away. Clips you uploaded as *ready HEVC*
+   need no processing.
+
+Notes:
+- **Shoot in landscape when you can.** For vertical footage, use the
+  Portrait destination and pick crop / rotate / blur-fill to suit the
+  shot.
+- Uploads stream straight to disk and only become visible once fully
+  received, so a dropped connection mid-upload won't leave a broken clip
+  for the processor to choke on.
+- If the Pi's own hotspot can't start on a given machine, the launcher
+  falls back to serving the page on whatever WiFi the Pi is already on
+  and shows you the address to use — just make sure your phone is on that
+  same WiFi.
+- The WiFi name, password, **address, and port** are all settings at the
+  top of `Upload from Phone.sh` (`HOTSPOT_SSID`, `HOTSPOT_PASS`,
+  `HOTSPOT_IP`, `PORT`). The Pi's address is fixed at `HOTSPOT_IP`
+  (default `10.42.42.42`), so the URL is the same every time — change it to
+  anything in a private range (e.g. `192.168.4.1`) if you prefer, and the
+  phone gets a matching address automatically.
+- The full log is written to `vj_last_upload.log`.
 
 ## Architecture
 
