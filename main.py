@@ -255,6 +255,8 @@ def main():
 
     print(f"[vj] output:      {cfg.width}x{cfg.height} fullscreen={cfg.fullscreen} display={cfg.display}")
     print(f"[vj] gpu-scale:   requested={args.gpu_scale} active={gpu_out_ok}")
+    print(f"[vj] mapping:     {cfg.mapping_threads} warp thread(s) "
+          f"({os.cpu_count()} cores)")
     if control is not None:
         print(f"[vj] control HUD: display {args.control_display}, size {args.control_size}")
     print(f"[vj] clips dir:    {cfg.clips_dir}")
