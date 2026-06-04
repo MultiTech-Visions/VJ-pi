@@ -99,7 +99,12 @@ class Engine:
         self._gpu_out = None
         self._gpu_tex_size = None
 
-        self.clips = ClipPool(cfg.clips_dir, (self.w, self.h))
+        if getattr(cfg, "hevc", False):
+            from hevc_clips import HevcClipPool
+            self.clips = HevcClipPool(cfg.hevc_clips_dir, (self.w, self.h))
+            print(f"[vj] clips: hardware HEVC decode from {cfg.hevc_clips_dir}")
+        else:
+            self.clips = ClipPool(cfg.clips_dir, (self.w, self.h))
         self.overlays = ClipPool(cfg.overlays_dir, (self.w, self.h))
 
         self.active_generative = None

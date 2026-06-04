@@ -51,6 +51,11 @@ def parse_args():
                         "projector resolution (crisp 2K/4K cheaply). The "
                         "control HUD then renders in software. One GL context "
                         "either way.")
+    p.add_argument("--hevc", action="store_true",
+                   help="Decode clips with the Pi 5 hardware HEVC decoder via "
+                        "an out-of-process gl worker (reads assets/clips_hevc/, "
+                        "clips baked to 2048x1152). Pair with --width 2048 "
+                        "--height 1152 --gpu-scale.")
     return p.parse_args()
 
 
@@ -167,6 +172,7 @@ def main():
                          else min(4, os.cpu_count() or 1)),
         display_filter=args.display_filter,
         gpu_scale=args.gpu_scale,
+        hevc=args.hevc,
     )
 
     # Two window layouts, both with exactly ONE GL context (the V3D rule):
