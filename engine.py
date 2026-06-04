@@ -81,6 +81,13 @@ class Engine:
         self._perf = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
         self._perf_ms = {"clip": 0.0, "gen": 0.0, "fx": 0.0, "warp": 0.0}
         self._disp_ms = 0.0   # smoothed display upscale+blit time (ms)
+        # Threaded-mapping diagnostic breakdown (ms, smoothed) — splits the
+        # lumped "warp" bucket so we can see parallel-phase wall time vs the
+        # serial composite, and total fx-work vs geom-work across groups.
+        self._map_par_ms = 0.0    # wall time of the parallel fx+geom map
+        self._map_comp_ms = 0.0   # serial cv2.copyTo composite loop
+        self._map_fxsum_ms = 0.0  # summed fx work across groups (CPU, not wall)
+        self._map_geomsum_ms = 0.0  # summed geom (warpAffine) work across groups
         self._perf_log_at = 0.0   # last stdout perf-line timestamp
         self._display_interp = (cv2.INTER_CUBIC
                                 if getattr(cfg, "display_filter", "linear") == "cubic"
@@ -1340,18 +1347,32 @@ class Engine:
                 jobs.append((base, ov, group, mask_info))
 
             # Phase 2 (parallel): FX + overlay + warp into paint ops — pure
-            # cv2 on each group's own arrays, no shared writes. (The "warp"
-            # timer here covers fx+warp combined since they run together.)
+            # cv2 on each group's own arrays, no shared writes. Each job
+            # returns its own (fx, geom) timings; we sum them on the main
+            # thread AFTER the map drains (no race) to see total work vs the
+            # parallel WALL time — i.e. whether the threads actually overlap.
             def _fx_warp(j):
+                _a = time.perf_counter()
                 frame = self._apply_fx_overlay(j[0], j[1], j[2], now)
-                return self._group_paint_ops(frame, j[2], j[3])
+                _b = time.perf_counter()
+                ops = self._group_paint_ops(frame, j[2], j[3])
+                return ops, (_b - _a), (time.perf_counter() - _b)
 
             _tw = time.perf_counter()
-            ops_lists = list(self._map_pool.map(_fx_warp, jobs))
+            results = list(self._map_pool.map(_fx_warp, jobs))
+            _tpar = time.perf_counter()
             # Phase 3 (serial): composite, in group order, onto the canvas.
-            for ops in ops_lists:
+            for ops, _fxs, _gms in results:
                 self._apply_paint_ops(canvas, ops)
-            self._perf["warp"] += time.perf_counter() - _tw
+            _tend = time.perf_counter()
+            self._perf["warp"] += _tend - _tw
+            # Diagnostic split (smoothed) — stdout only, see the perf line.
+            _fx_sum = sum(r[1] for r in results)
+            _geom_sum = sum(r[2] for r in results)
+            self._map_par_ms += ((_tpar - _tw) * 1000.0 - self._map_par_ms) * 0.2
+            self._map_comp_ms += ((_tend - _tpar) * 1000.0 - self._map_comp_ms) * 0.2
+            self._map_fxsum_ms += (_fx_sum * 1000.0 - self._map_fxsum_ms) * 0.2
+            self._map_geomsum_ms += (_geom_sum * 1000.0 - self._map_geomsum_ms) * 0.2
         else:
             for group in renderable:
                 source = self._compose_group_source(group, now)
@@ -2068,6 +2089,12 @@ class Engine:
                 print("[vj] %.0f fps | clip %.0f gen %.0f fx %.0f warp %.0f "
                       "disp %.0f ms" % (self.fps_measured, p["clip"], p["gen"],
                       p["fx"], p["warp"], self._disp_ms), flush=True)
+                if self.mode == "mapping":
+                    print("[vj]   warp split: par %.0f (fxΣ %.0f geomΣ %.0f) "
+                          "+ composite %.0f ms" % (
+                              self._map_par_ms, self._map_fxsum_ms,
+                              self._map_geomsum_ms, self._map_comp_ms),
+                          flush=True)
             self.update_auto(now)
             self.update_params_from_keys(dt)
             self.update_held_hits(HIT_KEYS)
