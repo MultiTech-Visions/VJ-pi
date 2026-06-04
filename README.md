@@ -29,6 +29,10 @@ Then double-click these files in order:
    double-click **`Process Portrait Assets.sh`**. It creates 1920×1080
    landscape versions in `assets/portrait/landscape/`.
 
+   **To get videos off your phone**, double-click **`Upload from
+   Phone.sh`** (see "Uploading clips from your phone" below) — no cable,
+   no cloud, works with no internet.
+
 3. To launch, double-click one of these scripts and choose **"Execute"**:
    - **`Start VJ.sh`** — **dual display** (the main mode). Opens a
      control HUD on the small screen (display 0) showing live preview,
@@ -384,6 +388,40 @@ you get a proper 16:9 clip without cutting off the subject. Move the
 finished files into `assets/clips/` for the regular VJ app, or into
 `assets/4k/` and run **`Process 4K Assets.sh`** if you want them in the
 cinematic playlist.
+
+### Uploading clips from your phone
+
+Shot something on your phone you want to project — campfire footage, the
+wedding, whatever's happening that weekend? Get it onto the Pi straight
+from the phone's browser. No cable, no cloud, and **no internet or WiFi
+router required** — the Pi makes its own WiFi.
+
+1. On the Pi, double-click **`Upload from Phone.sh`** → "Execute".
+2. A dialog appears with a WiFi network name, a password, and a web
+   address. On your phone, join that WiFi, then open that address in your
+   browser (it's normally **`http://10.42.0.1:8000`**).
+3. Tap **Choose videos**, pick clips from your camera roll, and watch the
+   progress bars. Files land directly in `assets/clips/`.
+4. Back on the Pi, click **Done** in the dialog. That stops the upload
+   page and puts the Pi's WiFi back to normal.
+5. Double-click **`Process Assets.sh`** and go eat dinner — it scales,
+   crops, and re-encodes everything to play-ready clips while you're away.
+
+Notes:
+- **Shoot in landscape.** Portrait phone videos get centre-cropped to
+  16:9 by `Process Assets.sh` (you'll lose the top/bottom). If you only
+  have portrait footage, drop it into `assets/portrait/` and use
+  **`Process Portrait Assets.sh`** instead (see above).
+- Uploads stream straight to disk and only become visible once fully
+  received, so a dropped connection mid-upload won't leave a broken clip
+  for the processor to choke on.
+- If the Pi's own hotspot can't start on a given machine, the launcher
+  falls back to serving the page on whatever WiFi the Pi is already on
+  and shows you the address to use — just make sure your phone is on that
+  same WiFi.
+- The default WiFi name/password live at the top of `Upload from
+  Phone.sh` (`HOTSPOT_SSID` / `HOTSPOT_PASS`) if you want to change them.
+- The full log is written to `vj_last_upload.log`.
 
 ## Architecture
 

@@ -1,0 +1,140 @@
+#!/bin/bash
+# pi-paint VJ — upload videos from your phone.
+# Double-click in the file manager and choose "Execute".
+#
+# What it does, in order:
+#   1. Turns the Pi into its own WiFi hotspot (so it works at a campsite
+#      with no router/internet). Your phone joins it like any WiFi.
+#   2. Starts a little upload web page that drops videos straight into
+#      assets/clips/.
+#   3. Pops a dialog telling you the WiFi name, password, and the URL to
+#      open on your phone. Leave that dialog OPEN while you upload.
+#   4. When you click "Done", it stops the server and puts the Pi's WiFi
+#      back the way it was.
+#
+# If the hotspot can't start (no NetworkManager, no spare WiFi radio),
+# it falls back to plain mode: it just runs the upload page on whatever
+# network the Pi is already on and shows you the address to type.
+#
+# After uploading, double-click "Process Assets.sh" to make the clips
+# ready to play.
+
+cd "$(dirname "$0")"
+
+# ── Hotspot settings (what your phone will see / type) ────────────────
+HOTSPOT_SSID="VJ-PI"
+HOTSPOT_PASS="campvibes"     # must be 8+ characters for WiFi
+PORT=8000
+WIFI_IFACE="wlan0"
+
+LOG="$(pwd)/vj_last_upload.log"
+: >"$LOG"
+date '+[VJ] upload start: %Y-%m-%d %H:%M:%S' >>"$LOG"
+
+show_error() {
+  local title="$1" body="$2"
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --error --width=720 --title="$title" --text="$body" 2>/dev/null
+  elif command -v xmessage >/dev/null 2>&1; then
+    printf '%s\n\n%s\n' "$title" "$body" | xmessage -file - 2>/dev/null
+  else
+    printf '%s\n\n%s\n' "$title" "$body" >&2
+  fi
+}
+
+# ── Pick a Python (stdlib only, so the venv is optional) ──────────────
+if [ -x "./venv/bin/python" ]; then
+  PY="./venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PY="python3"
+else
+  show_error "VJ-pi: Python missing" \
+    "Couldn't find python3.\n\nDouble-click setup.sh first.\n\nLog: $LOG"
+  exit 1
+fi
+
+# ── 1. Try to bring up the Pi's own hotspot ───────────────────────────
+HOTSPOT_UP=0
+PREV_WIFI=""
+GATEWAY_IP=""
+
+if command -v nmcli >/dev/null 2>&1; then
+  echo "[VJ] bringing up hotspot '$HOTSPOT_SSID' on $WIFI_IFACE" >>"$LOG"
+  # Remember the WiFi network we're currently on so we can restore it.
+  PREV_WIFI=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+                | awk -F: '$2=="802-11-wireless"{print $1; exit}')
+  echo "[VJ] previous wifi connection: ${PREV_WIFI:-<none>}" >>"$LOG"
+
+  if nmcli device wifi hotspot ifname "$WIFI_IFACE" \
+        ssid "$HOTSPOT_SSID" password "$HOTSPOT_PASS" >>"$LOG" 2>&1; then
+    HOTSPOT_UP=1
+    sleep 2
+    # NetworkManager's shared mode gives the Pi 10.42.0.1 by default;
+    # read it back to be safe.
+    GATEWAY_IP=$(nmcli -t -f IP4.ADDRESS device show "$WIFI_IFACE" 2>/dev/null \
+                   | head -1 | cut -d: -f2 | cut -d/ -f1)
+    [ -z "$GATEWAY_IP" ] && GATEWAY_IP="10.42.0.1"
+    echo "[VJ] hotspot up, gateway $GATEWAY_IP" >>"$LOG"
+  else
+    echo "[VJ] hotspot failed to start — falling back to plain mode" >>"$LOG"
+  fi
+else
+  echo "[VJ] nmcli not found — plain mode (use existing WiFi)" >>"$LOG"
+fi
+
+# ── 2. Start the upload server ────────────────────────────────────────
+"$PY" upload_server.py --port "$PORT" --host 0.0.0.0 >>"$LOG" 2>&1 &
+SERVER_PID=$!
+sleep 1
+
+cleanup() {
+  echo "[VJ] stopping server (pid $SERVER_PID)" >>"$LOG"
+  kill "$SERVER_PID" 2>/dev/null
+  wait "$SERVER_PID" 2>/dev/null
+  if [ "$HOTSPOT_UP" = "1" ]; then
+    echo "[VJ] taking hotspot down" >>"$LOG"
+    nmcli connection down Hotspot >>"$LOG" 2>&1
+    if [ -n "$PREV_WIFI" ]; then
+      echo "[VJ] restoring wifi '$PREV_WIFI'" >>"$LOG"
+      nmcli connection up "$PREV_WIFI" >>"$LOG" 2>&1
+    fi
+  fi
+  date '+[VJ] upload end: %Y-%m-%d %H:%M:%S' >>"$LOG"
+}
+trap cleanup EXIT
+
+if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+  TAIL=$(tail -25 "$LOG" 2>/dev/null)
+  show_error "VJ-pi: upload server didn't start" \
+    "The upload page failed to start (port $PORT may be in use).\n\nLog: $LOG\n\nLast lines:\n\n$TAIL"
+  exit 1
+fi
+
+# ── 3. Build the instructions and show them ───────────────────────────
+if [ "$HOTSPOT_UP" = "1" ]; then
+  URL="http://${GATEWAY_IP}:${PORT}"
+  BODY="<b>Step 1.</b> On your phone, open WiFi settings and join:\n\n   Network:  <b>${HOTSPOT_SSID}</b>\n   Password: <b>${HOTSPOT_PASS}</b>\n\n<b>Step 2.</b> Open your phone's browser and go to:\n\n   <b>${URL}</b>\n\n<b>Step 3.</b> Tap “Choose videos” and pick your clips.\n\nLeave THIS window open while you upload.\nClick <b>Done</b> below when you've finished — that stops the\nserver and puts the Pi's WiFi back to normal.\n\nThen double-click <b>Process Assets.sh</b> to make the\nclips ready to play."
+  TITLE="📲 Upload from Phone — hotspot ready"
+else
+  IPS=$(hostname -I 2>/dev/null)
+  URLLIST=""
+  for ip in $IPS; do
+    case "$ip" in
+      *.*) URLLIST="${URLLIST}   <b>http://${ip}:${PORT}</b>\n" ;;
+    esac
+  done
+  [ -z "$URLLIST" ] && URLLIST="   (couldn't detect this Pi's IP — check the network)\n"
+  BODY="The Pi's own hotspot couldn't start, so the upload page is\nrunning on the network the Pi is ALREADY connected to.\n\n<b>Make sure your phone is on the same WiFi as the Pi</b>,\nthen open your phone's browser and go to one of:\n\n${URLLIST}\nTap “Choose videos” and pick your clips.\n\nLeave THIS window open while you upload. Click <b>Done</b>\nbelow when finished.\n\nThen double-click <b>Process Assets.sh</b> to make the\nclips ready to play."
+  TITLE="📲 Upload from Phone — server running"
+fi
+
+if command -v zenity >/dev/null 2>&1; then
+  zenity --info --width=600 --title="$TITLE" --text="$BODY" \
+    --ok-label="Done — stop server" 2>/dev/null
+else
+  # No zenity: fall back to waiting on the server in the foreground.
+  show_error "$TITLE" "$BODY\n\n(Close this to stop the server.)"
+fi
+
+# Dialog closed -> trap cleanup runs on exit.
+exit 0
