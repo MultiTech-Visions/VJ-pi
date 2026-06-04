@@ -2028,10 +2028,23 @@ class Engine:
 
     def run(self, control=None):
         from keymap import dispatch, NAV_KEYS, FAV_KEYS, HIT_KEYS, fav_tap, fav_long
-        # Enable system key-repeat. We filter below so only NAV_KEYS
-        # auto-fire on hold — toggle/hit keys still need a fresh press.
-        pygame.key.set_repeat(350, 80)
+        # System key-repeat drives hold-to-scrub on the NAV keys. The initial
+        # delay must sit comfortably above a deliberate tap on the operator's
+        # mushy wireless mini-keyboard — at 350ms a single longish press
+        # crossed the threshold and auto-advanced a second time (the clip
+        # would flash then jump to the one after). 500ms initial + a calmer
+        # 150ms repeat means a tap is always one step, while a genuine hold
+        # still scrubs (~6-7/s). A short per-key debounce below catches any
+        # hardware double-KEYDOWN (key chatter) that would otherwise slip
+        # through as a repeat.
+        pygame.key.set_repeat(500, 150)
         held_keys = set()
+        # NAV (cycle) keys debounce: drop any repeat/duplicate landing within
+        # this window of the last advance for the same key, so one physical
+        # tap is one step regardless of key chatter. Comfortably under the
+        # 150ms repeat interval so a real hold-to-scrub is unaffected.
+        nav_last_fire = {}        # key → timestamp of last NAV advance
+        NAV_DEBOUNCE_S = 0.10
         # Favourite-key timing: tap = on release (< threshold), long-press
         # = held past threshold without release.
         fav_pressed_at = {}      # key → initial-press timestamp
@@ -2090,6 +2103,12 @@ class Engine:
                             long_press_fired.discard(event.key)
                         # Ignore auto-repeats for favourite keys.
                     elif is_initial or event.key in NAV_KEYS:
+                        if event.key in NAV_KEYS:
+                            now_t = time.time()
+                            if (now_t - nav_last_fire.get(event.key, 0.0)
+                                    < NAV_DEBOUNCE_S):
+                                continue   # bounce / too-fast repeat — drop it
+                            nav_last_fire[event.key] = now_t
                         dispatch(self, event.key, event.mod)
 
                 elif event.type == pygame.KEYUP:
