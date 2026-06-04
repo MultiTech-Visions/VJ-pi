@@ -101,8 +101,10 @@ image from `assets/images/` as `sampler2D tex`.
 - `assets/images/` — stills for texture generators (donut). Gitignored.
 - `setup.sh` — system libs (SDL2/GL/GStreamer) + a Python venv with
   pygame + opencv + numpy. Re-runnable.
-- `Process Assets.sh` — bulk-downsamples/re-encodes clips to render
-  resolution; originals preserved in `assets/clips/_originals/`.
+- `assets/Process All Assets.sh` — unified HEVC processor (2K + portrait +
+  4K → the formats the app plays). `assets/Process {Assets,Portrait
+  Assets,4K Assets}.sh` are thin `VJ_ONLY=` wrappers. All the processing
+  launchers live in `assets/` (with the assets), not the repo root.
 - `Start VJ.sh` / `Test (single screen).sh` — launchers (log-tee +
   zenity error dialog; see operator note below).
 - `Update.sh` — git pull + setup-change warning.
@@ -150,11 +152,11 @@ the Pi), then let the Pi hardware-decode.** Key pieces:
 - **PC baking (fast path):** `pc_clip_baker/` (`Bake Clips.bat` /
   `bake_clips.py`) uses NVENC to make those 2048×1152 HEVC clips; copy
   them into `assets/clips_hevc/`.
-- **On-Pi processing (fallback):** `Process All Assets.sh` is the unified
+- **On-Pi processing (fallback):** `assets/Process All Assets.sh` is the unified
   processor — 2K (`assets/clips/`→`clips_hevc/`), portrait
   (`assets/portrait/{rotate,crop}/` + loose → `clips_hevc/…-landscape`),
   and 4K (`assets/4k/`→`assets/4k/processed/`), all HEVC, skipping done.
-  `Process Assets.sh` / `Process Portrait Assets.sh` are thin wrappers
+  `assets/Process Assets.sh` / `assets/Process Portrait Assets.sh` are thin wrappers
   (`VJ_ONLY=clips|portrait`). On-Pi HEVC encode is software (slow) — fine
   for a few field clips, not a whole library.
 - **Uploads:** `upload_server.py` + `Upload from Phone.sh` route phone

@@ -29,7 +29,9 @@
 # this). Works double-clicked (zenity progress) or from a terminal.
 
 set -uo pipefail
-cd "$(dirname "$0")"
+# This script lives in assets/ but operates on the repo root (paths below
+# are like assets/clips, assets/clips_hevc, …), so step up one level.
+cd "$(dirname "$0")/.."
 
 LOG="$(pwd)/vj_last_process.log"
 ONLY="${VJ_ONLY:-all}"
