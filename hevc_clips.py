@@ -23,6 +23,9 @@ from clips import ClipPool
 
 HERE = Path(__file__).resolve().parent
 WORKER = str(HERE / "hevc_decode_worker.py")
+# Worker diagnostics land here (which converter it chose / why it failed).
+# Sending worker stderr to /dev/null is what hid the black-screen cause.
+WORKER_LOG = str(HERE / "vj_last_hevc_worker.log")
 SYS_PY = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else "python3"
 SLOTS = 3            # ring depth; returned frame stays valid for SLOTS-1 reads
 FMT = "RGB"          # matches the engine's RGB clip frames (Clip.read cvtColors)
@@ -52,6 +55,7 @@ class HevcClip:
         self.mm = None
         self.fd = None
         self.shm_path = None
+        self._errlog = None
         try:
             self.w, self.h = _probe_dims(path)
             self.fb = self.w * self.h * BPP
@@ -62,11 +66,16 @@ class HevcClip:
             self.views = [
                 np.frombuffer(self.mm, np.uint8, self.fb, s * self.fb)
                 .reshape(self.h, self.w, 3) for s in range(SLOTS)]
+            try:
+                self._errlog = open(WORKER_LOG, "a", buffering=1)
+                self._errlog.write("--- %s ---\n" % self.path.name)
+            except OSError:
+                self._errlog = None
             self.proc = subprocess.Popen(
                 [SYS_PY, WORKER, str(path), self.shm_path,
                  str(self.w), str(self.h), str(SLOTS), FMT],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL)
+                stderr=(self._errlog or subprocess.DEVNULL))
             self._seq = 0
             self._pending = 0
             self._req(0)              # one frame in flight; first read() collects it
@@ -132,6 +141,11 @@ class HevcClip:
             os.unlink(self.shm_path)
         except OSError:
             pass
+        try:
+            if self._errlog is not None:
+                self._errlog.close()
+        except Exception:
+            pass
 
 
 class HevcClipPool(ClipPool):
@@ -139,6 +153,10 @@ class HevcClipPool(ClipPool):
     # open set small (vs cv2's 12). Plenty for the active clip + a few mapping
     # groups; spawning a worker on clip-switch costs ~1s (GStreamer init).
     def __init__(self, directory, target_size, max_open=4):
+        try:
+            open(WORKER_LOG, "w").close()   # fresh worker log each app run
+        except OSError:
+            pass
         super().__init__(directory, target_size, max_open=max_open)
 
     def _make_clip(self, path):

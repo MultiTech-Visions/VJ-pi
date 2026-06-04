@@ -30,15 +30,35 @@ def gst_escape(path):
     return str(path).replace("\\", "\\\\").replace('"', '\\"')
 
 
-def build(path, fmt, w, h):
-    # gl converter: HW decode + GPU detile/convert + readback. FAST, but only
-    # negotiates the Pi SAND format at certain geometries — proven solid at
-    # 2048x1152 (the bake target), fails at 1080p/4K. Bake clips to 2048x1152
-    # and this is the fast path; pispconvert is the robust-but-slow fallback.
+def _conv_chains(w, h):
+    # Detile the decoder's tiled SAND output -> packed RGB the client reads.
+    # CRITICAL: this worker runs as a child of the pygame app, which already
+    # holds a V3D GL context. A SECOND GL context (glupload/glcolorconvert)
+    # silently produces ALL-BLACK frames on V3D — the dual-context blackout.
+    # So the GL path is LAST resort; prefer the no-GL ISP detiler.
+    #   pisp : pispconvert (Pi ISP HW detile) -> NV12 -> videoconvert -> RGB.
+    #          No GL context, fast. pispconvert needs explicit output W/H and
+    #          can't emit RGB itself, hence the trailing videoconvert.
+    #   videoconvert : pure CPU; slow, and may not detile SAND on every build.
+    #   gl   : glupload!glcolorconvert!gldownload; fast ONLY with no other GL
+    #          context in play (e.g. standalone) — blacks out inside the app.
+    return {
+        "pisp": f"pispconvert ! video/x-raw,format=NV12,width={w},height={h} ! videoconvert",
+        "videoconvert": "videoconvert",
+        "gl": "glupload ! glcolorconvert ! gldownload ! videoconvert",
+    }
+
+
+CONV_ORDER = ["pisp", "videoconvert", "gl"]
+
+
+def _try_build(path, chain, fmt, w, h):
+    caps = f"video/x-raw,format={fmt}"
+    if w and h:
+        caps += f",width={w},height={h}"
     desc = (
         f'filesrc location="{gst_escape(path)}" ! qtdemux ! h265parse ! '
-        "v4l2slh265dec ! glupload ! glcolorconvert ! gldownload ! "
-        f"videoconvert ! video/x-raw,format={fmt} ! "
+        f"v4l2slh265dec ! {chain} ! {caps} ! "
         "appsink name=sink sync=false max-buffers=2 drop=false"
     )
     pipeline = Gst.parse_launch(desc)
@@ -46,8 +66,27 @@ def build(path, fmt, w, h):
     sink.set_property("emit-signals", False)
     pipeline.set_state(Gst.State.PLAYING)
     if pipeline.get_state(TIMEOUT_NS)[0] != Gst.StateChangeReturn.SUCCESS:
-        raise RuntimeError("pipeline failed to reach PLAYING")
+        pipeline.set_state(Gst.State.NULL)
+        raise RuntimeError("did not reach PLAYING")
     return pipeline, sink
+
+
+def build(path, fmt, w, h):
+    chains = _conv_chains(w, h)
+    forced = os.environ.get("VJ_HEVC_CONV", "").strip()
+    order = [forced] if forced in chains else CONV_ORDER
+    last = None
+    for name in order:
+        try:
+            pipeline, sink = _try_build(path, chains[name], fmt, w, h)
+            sys.stderr.write("[hevc-worker] using converter '%s'\n" % name)
+            sys.stderr.flush()
+            return pipeline, sink
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            sys.stderr.write("[hevc-worker] converter '%s' failed: %r\n" % (name, exc))
+            sys.stderr.flush()
+    raise RuntimeError("no working converter (last: %r)" % (last,))
 
 
 def pull_into(pipeline, sink, mm, off, nbytes):
