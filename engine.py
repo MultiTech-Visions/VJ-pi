@@ -1109,6 +1109,17 @@ class Engine:
         self.mapping.cycle_border_color()
         self._persist_mapping()
 
+    def mapping_adjust_render_scale(self, delta):
+        """F9/F10: change the mapping compositing resolution live. The cached
+        group masks are built at the render-size, so a size change must drop
+        them — otherwise the next frame composites a stale-sized mask onto the
+        new canvas."""
+        new = self.mapping.adjust_render_scale(delta)
+        self._group_mask_cache.clear()
+        print(f"[vj] mapping render scale → {new:.2f} "
+              f"({int(self.w * new)}x{int(self.h * new)})")
+        self._persist_mapping()
+
     # ── Frame controls (per-group zoom / pan / fit mode) ─────────────
 
     def mapping_cycle_fit_mode(self, step=1):
@@ -1279,6 +1290,34 @@ class Engine:
     # ── Mapping render pipeline ───────────────────────────────────────
 
     def _compose_mapping_frame(self):
+        """Render the mapping composite at the (possibly reduced) internal
+        resolution set by mapping.render_scale, then hand the small canvas
+        straight to the display — --gpu-scale stretches it to the projector
+        on the GPU (free), so the wall still gets a full-size image while the
+        per-pixel FX/warp work shrinks with the pixel count.
+
+        Implementation: point self.w/self.h at the reduced size for the whole
+        pass. EVERY mapping helper (masks, window/warp ops, FX target,
+        generator size, hits, borders, edit overlay) derives geometry from
+        self.w/self.h, so this single swap scales the entire pipeline
+        consistently — including the worker threads, which are spawned AND
+        joined inside the inner call. Restored in `finally` so an exception
+        can never leave the engine on the wrong dims. Clip decode is
+        untouched (the pool keeps its own full-res target); only compositing
+        shrinks.
+        """
+        scale = getattr(self.mapping, "render_scale", 1.0)
+        if scale >= 0.999:
+            return self._compose_mapping_frame_inner()
+        full_w, full_h = self.w, self.h
+        self.w = max(2, int(round(full_w * scale)))
+        self.h = max(2, int(round(full_h * scale)))
+        try:
+            return self._compose_mapping_frame_inner()
+        finally:
+            self.w, self.h = full_w, full_h
+
+    def _compose_mapping_frame_inner(self):
         """Render projection-mapping: one source per group, painted onto
         the canvas under a mask built from the UNION of the group's
         spaces. Multiple spaces in one group act as multiple windows
@@ -1916,11 +1955,17 @@ class Engine:
         so blit_to_output falls back to the CPU path for the session."""
         g = self._gpu_out
         renderer = g["renderer"]
-        if g["tex"] is None or self._gpu_tex_size != (self.w, self.h):
-            g["tex"] = g["Texture"](renderer, (self.w, self.h), streaming=True)
-            self._gpu_tex_size = (self.w, self.h)
+        # Size the texture to the FRAME, not the canvas — mapping mode renders
+        # a smaller composite (mapping.render_scale) and the renderer's
+        # logical_size still stretches it to fill the projector on the GPU.
+        # The (fw, fh) key recreates the streaming texture only when the frame
+        # size actually changes (e.g. toggling mapping mode), not every frame.
+        fh, fw = frame.shape[:2]
+        if g["tex"] is None or self._gpu_tex_size != (fw, fh):
+            g["tex"] = g["Texture"](renderer, (fw, fh), streaming=True)
+            self._gpu_tex_size = (fw, fh)
         surface = pygame.image.frombuffer(
-            np.ascontiguousarray(frame), (self.w, self.h), "RGB")
+            np.ascontiguousarray(frame), (fw, fh), "RGB")
         g["tex"].update(surface)
         renderer.clear()
         g["tex"].draw()           # logical_size → fills the window (GPU scale)
@@ -1939,20 +1984,22 @@ class Engine:
                       f"reverting to CPU scaling for the rest of the session")
                 self._gpu_out = None
                 # fall through to CPU path below
+        fh, fw = frame.shape[:2]
         tw, th = self.screen.get_size()
-        if (tw, th) != (self.w, self.h):
+        if (tw, th) != (fw, fh):
             # Final upscale to the display. cv2 takes (width, height); frame
-            # is (h, w, 3). Default INTER_LINEAR — on a projector in motion
-            # it's visually ~indistinguishable from cubic but markedly
-            # cheaper; --display-filter cubic restores the sharper (slower)
-            # path.
+            # is (h, w, 3). Sized off the FRAME (not the canvas) so a reduced
+            # mapping composite upscales correctly. Default INTER_LINEAR — on
+            # a projector in motion it's visually ~indistinguishable from cubic
+            # but markedly cheaper; --display-filter cubic restores the sharper
+            # (slower) path.
             frame = cv2.resize(frame, (tw, th), interpolation=self._display_interp)
             # cv2.resize output is C-contiguous, so hand the array straight to
             # frombuffer (no full-frame tobytes() copy).
             surface = pygame.image.frombuffer(frame, (tw, th), "RGB")
         else:
             surface = pygame.image.frombuffer(
-                np.ascontiguousarray(frame), (self.w, self.h), "RGB")
+                np.ascontiguousarray(frame), (fw, fh), "RGB")
         self.screen.blit(surface, (0, 0))
         pygame.display.flip()
         self._disp_ms += ((time.perf_counter() - _t) * 1000.0 - self._disp_ms) * 0.2
