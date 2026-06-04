@@ -142,6 +142,7 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `← →`               | Adjust PARAM X (active-FX horizontal control)      |
 | `↑ ↓`               | Adjust PARAM Y (active-FX vertical control)        |
 | `Enter Enter`       | Engage **AUTOPILOT** (double-tap within 600 ms). Any other key takes over again and executes immediately. While engaged, `↑/↓` tune the clip-change rate and `←/→` tune the FX-change rate. |
+| `F9` `F10`          | **Mapping only:** lower / raise the mapping compositing resolution (trades sharpness for framerate). The projector still gets a full-size GPU-upscaled image; only the internal composite shrinks. Shown on the HUD as `map res NN%`; persists. |
 | `F11`               | Cycle the pending output display                   |
 | `F12`               | Apply the pending output display (and persist it)  |
 | `Space`             | Blackout toggle (panic button)                     |

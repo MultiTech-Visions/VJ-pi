@@ -219,6 +219,16 @@ class ControlWindow:
                 bsurf = self.font_m.render(btxt, True, (175, 180, 200))
                 surface.blit(bsurf, (pad, y))
                 y += bsurf.get_height() + 6
+                # Mapping render resolution (F9/F10) — show the % and the
+                # actual internal pixels so the operator sees the quality/
+                # speed dial they're turning.
+                rs = getattr(e.mapping, "render_scale", 1.0)
+                rtxt = "map res %d%%  (%d×%d)  F9/F10" % (
+                    round(rs * 100), int(e.cfg.width * rs), int(e.cfg.height * rs))
+                rcol = (150, 200, 150) if rs >= 0.999 else (210, 190, 120)
+                rsurf = self.font_m.render(rtxt, True, rcol)
+                surface.blit(rsurf, (pad, y))
+                y += rsurf.get_height() + 6
         else:
             y += 4
 

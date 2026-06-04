@@ -238,6 +238,17 @@ class MappingManager:
         self.border_intensity = _clamp01(persisted.get("border_intensity", 1.0))
         self.show_borders = bool(persisted.get("show_borders", True))
 
+        # Internal compositing resolution for mapping mode, as a fraction of
+        # the output canvas. Mapping pushes every group's FX + warp at canvas
+        # resolution, so the per-pixel cost dominates; rendering the composite
+        # smaller and letting --gpu-scale stretch it to the projector (free,
+        # on the GPU) is the biggest framerate lever. 1.0 = full canvas res.
+        # Live-adjustable with F9/F10. Clamped to a sane floor so it can't be
+        # dialled into mush. Live mode is unaffected — this only scales the
+        # mapping composite.
+        self.render_scale = max(0.4, min(1.0, float(
+            persisted.get("render_scale", 0.6))))
+
         groups_data = persisted.get("groups") or []
         self.groups: List[Group] = [Group.from_dict(g) for g in groups_data
                                     if isinstance(g, dict)]
@@ -278,8 +289,15 @@ class MappingManager:
             "border_thickness": self.border_thickness,
             "border_intensity": self.border_intensity,
             "show_borders": self.show_borders,
+            "render_scale": self.render_scale,
             "groups": [g.to_dict() for g in self.groups],
         }
+
+    def adjust_render_scale(self, delta):
+        """Nudge the mapping compositing resolution (F9/F10). Returns the new
+        value so the caller can log / invalidate size-dependent caches."""
+        self.render_scale = max(0.4, min(1.0, round(self.render_scale + delta, 3)))
+        return self.render_scale
 
     # ── Group selection / mutation ───────────────────────────────────
 

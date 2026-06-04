@@ -261,7 +261,7 @@ def main():
         print(f"[vj] control HUD: display {args.control_display}, size {args.control_size}")
     print(f"[vj] clips dir:    {cfg.clips_dir}")
     print(f"[vj] {len(engine.clips)} clip(s) loaded")
-    print("[vj] keys: -/= cycle clips · [/] cycle generators · 1-0 clip favs (tap=play, hold=assign) · ASDFGHJKL; generator favs · ZXCVB hits · F1-F7 FX · ←→↑↓ params · Enter Enter autopilot · F11/F12 display · Space blackout · Esc panic · Shift+Esc quit")
+    print("[vj] keys: -/= cycle clips · [/] cycle generators · 1-0 clip favs (tap=play, hold=assign) · ASDFGHJKL; generator favs · ZXCVB hits · F1-F7 FX · ←→↑↓ params · Enter Enter autopilot · F9/F10 mapping res · F11/F12 display · Space blackout · Esc panic · Shift+Esc quit")
 
     try:
         engine.run(control=control)

@@ -124,6 +124,14 @@ def dispatch(engine, key, mod):
         if key == pygame.K_e and not (mod & pygame.KMOD_CTRL):
             engine.toggle_edit_mode()
             return
+        # F9 / F10 — lower / raise the mapping compositing resolution live
+        # (trade sharpness for framerate). Works in perform and edit mode.
+        if key == pygame.K_F9:
+            engine.mapping_adjust_render_scale(-0.05)
+            return
+        if key == pygame.K_F10:
+            engine.mapping_adjust_render_scale(0.05)
+            return
         if engine.mapping.edit_mode:
             if key == pygame.K_b and not (mod & pygame.KMOD_CTRL):
                 engine.mapping_arm_bind()
