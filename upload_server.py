@@ -15,7 +15,7 @@ Design notes (why it looks like this):
     (or multi-GB at 4K); we never buffer a whole file in RAM.
   * Each upload is written to a ".uploading.*" temp name in the clips dir
     and only os.replace()'d to its real ".mp4"/".mov"/... name once the
-    full Content-Length has arrived. That mirrors Process Assets.sh's
+    full Content-Length has arrived. That mirrors assets/Process Assets.sh's
     ".processing.*" convention so a half-finished or interrupted upload
     can never be picked up by the processor or shown as a clip.
   * Filenames are reduced to a safe basename; collisions get a _1, _2
@@ -39,7 +39,7 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-# Extensions Process Assets.sh knows how to normalize. Keep in sync with
+# Extensions assets/Process Assets.sh knows how to normalize. Keep in sync with
 # the find() filter in that script.
 ALLOWED_EXTS = {
     ".mp4", ".mov", ".mkv", ".webm", ".avi", ".gif", ".m4v", ".wmv", ".flv",
@@ -52,7 +52,7 @@ ASSETS_DIR = ""  # absolute path to assets/, set in main()
 
 # Upload destinations -> subfolder under assets/. The phone picks one of
 # these; portrait additionally picks a mode (which subfolder). Keep the keys
-# in sync with the <select>s in PAGE and with "Process All Assets.sh".
+# in sync with the <select>s in PAGE and with "assets/Process All Assets.sh".
 #   clips_hevc : finished 2K HEVC from the PC baker -> plays immediately
 #   clips_raw  : raw 2K landscape -> bake on the Pi (Process All)
 #   4k         : raw hi-res -> bake to cinematic (Process All)
@@ -219,9 +219,9 @@ const hint = document.getElementById('hint');
 
 const HINTS = {
   clips_hevc: 'These are baked HEVC clips from the PC — they play right away, no processing needed.',
-  clips_raw: 'Raw 2K video. After uploading, run <b>Process All Assets.sh</b> on the Pi to bake it.',
-  '4k': 'Raw hi-res video. After uploading, run <b>Process All Assets.sh</b> on the Pi; press N for cinematic mode.',
-  portrait: 'Vertical phone video. After uploading, run <b>Process All Assets.sh</b> on the Pi to make a landscape clip.'
+  clips_raw: 'Raw 2K video. After uploading, run <b>assets/Process All Assets.sh</b> on the Pi to bake it.',
+  '4k': 'Raw hi-res video. After uploading, run <b>assets/Process All Assets.sh</b> on the Pi; press N for cinematic mode.',
+  portrait: 'Vertical phone video. After uploading, run <b>assets/Process All Assets.sh</b> on the Pi to make a landscape clip.'
 };
 function syncDest() {
   const isPortrait = dest.value === 'portrait';

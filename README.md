@@ -21,12 +21,12 @@ Then double-click these files in order:
    textures each time you return to it.
 
    For clean high-detail playback, drop raw cinematic video files into
-   `assets/4k/`, then double-click **`Process 4K Assets.sh`** once. The
+   `assets/4k/`, then double-click **`assets/Process 4K Assets.sh`** once. The
    file can be 4K, 2K, or any other high-detail source; the processor
    writes Pi 5 GPU-playable HEVC clips into `assets/4k/processed/`.
 
    For portrait/vertical clips, drop them into `assets/portrait/`, then
-   double-click **`Process Portrait Assets.sh`**. It creates 1920×1080
+   double-click **`assets/Process Portrait Assets.sh`**. It creates 1920×1080
    landscape versions in `assets/portrait/landscape/`.
 
    **To get videos off your phone**, double-click **`Upload from
@@ -352,15 +352,15 @@ Two ways to make those clips:
   ready to play" destination drops them straight into `assets/clips_hevc/`).
 
 - **On the Pi (slower, good for a few field clips).** Double-click
-  **`Process All Assets.sh`** — one pass that bakes **all three** kinds of
+  **`assets/Process All Assets.sh`** — one pass that bakes **all three** kinds of
   source media, skipping anything already done:
   - `assets/clips/` (raw 2K landscape) → `assets/clips_hevc/`
   - `assets/portrait/…` (vertical) → `assets/clips_hevc/…-landscape.mp4`
   - `assets/4k/` (raw hi-res) → `assets/4k/processed/`
 
   It shows a GUI progress window when available and logs to
-  `vj_last_process.log`. The per-type shortcuts **`Process Assets.sh`**
-  (2K only) and **`Process Portrait Assets.sh`** (portrait only) just run
+  `vj_last_process.log`. The per-type shortcuts **`assets/Process Assets.sh`**
+  (2K only) and **`assets/Process Portrait Assets.sh`** (portrait only) just run
   the same processor scoped to one kind.
 
 ### 4K cinematic mode
@@ -382,7 +382,7 @@ Controls while cinematic mode is active:
 | `Esc`     | Leave cinematic mode           |
 | `−` / `=` | Previous / next 4K clip        |
 
-Drop raw large files into `assets/4k/` and run **`Process 4K Assets.sh`**
+Drop raw large files into `assets/4k/` and run **`assets/Process 4K Assets.sh`**
 before a set. It also works if launched from inside the `assets/` folder.
 The processor writes HEVC/H.265 MP4 files capped at
 3840×2160 and 30 fps into `assets/4k/processed/`, leaving the raw source
@@ -394,8 +394,8 @@ or skip; processing ahead of time is the reliable path.
 
 Vertical phone video becomes a 16:9 HEVC clip in `assets/clips_hevc/`
 (named `…-landscape.mp4`). You choose **how** the tall frame is fitted by
-which folder you drop it into — then run **`Process Portrait Assets.sh`**
-(or **`Process All Assets.sh`**):
+which folder you drop it into — then run **`assets/Process Portrait Assets.sh`**
+(or **`assets/Process All Assets.sh`**):
 
 | Drop into | Mode | Best for |
 |-----------|------|----------|
@@ -442,7 +442,7 @@ router required** — the Pi can make its own WiFi.
 5. Back on the Pi, click **Done** in the dialog. That stops the upload
    page (and, in hotspot mode, puts the Pi's WiFi back to normal).
 6. If you uploaded anything **raw** (2K/4K/portrait), double-click
-   **`Process All Assets.sh`** and go eat dinner — it bakes everything to
+   **`assets/Process All Assets.sh`** and go eat dinner — it bakes everything to
    play-ready HEVC while you're away. Clips you uploaded as *ready HEVC*
    need no processing.
 
@@ -507,7 +507,7 @@ blit to pygame screen
   optional GPU scaler, so the same canvas can still present cleanly on
   the 4K projector. Clip downsampling uses `cv2.INTER_AREA` for clean
   anti-aliased shrinking and `cv2.INTER_LINEAR` for upscaling.
-- **`Process Assets.sh` bakes every clip to the render
+- **`assets/Process Assets.sh` bakes every clip to the render
   resolution** so the per-frame `cv2.resize` is a no-op at playback —
   the only per-frame cost is the unavoidable H.264 decode and a BGR→RGB
   shuffle. The processor reads its target size from `config.py`, so
@@ -516,7 +516,7 @@ blit to pygame screen
   processor** so your library is at the new size; otherwise the engine
   will live-resize every frame and print a one-time warning per file.
 - If the Pi has spare headroom and you want crisper output, bump to
-  `--width 1920 --height 1080` and re-run **`Process Assets.sh`**.
+  `--width 1920 --height 1080` and re-run **`assets/Process Assets.sh`**.
 - **Generatives render at `--gen-render-scale × canvas` (default 0.5).**
   They're smooth procedural patterns — pixel-perfect rendering at canvas
   resolution is wasted CPU. At 0.5, a 4-group mapping setup with mixed

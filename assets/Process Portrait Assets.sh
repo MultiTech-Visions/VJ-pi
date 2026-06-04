@@ -12,8 +12,8 @@
 # Output goes to  assets/clips_hevc/<name>-landscape.mp4  (2048x1152 HEVC),
 # ready to play with "Start VJ (2K HEVC).sh". Already-done clips are skipped.
 #
-# This is a portrait-only shortcut for the unified processor — to process
-# everything in one pass, double-click "Process All Assets.sh".
+# Portrait-only shortcut for the unified processor — to process everything in
+# one pass, double-click "Process All Assets.sh" in this folder.
 
 cd "$(dirname "$0")"
 exec env VJ_ONLY=portrait bash "Process All Assets.sh"

@@ -103,7 +103,7 @@ class CinematicPlayer:
     def _skip_failed(self):
         self.fail_count += 1
         if self.fail_count >= len(self.clips):
-            print("[cinematic] every clip failed. Run Process 4K Assets.sh "
+            print("[cinematic] every clip failed. Run assets/Process 4K Assets.sh "
                   "to create Pi-playable HEVC MP4s.", flush=True)
             if self.mainloop is not None:
                 self.mainloop.quit()
