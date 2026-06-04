@@ -399,7 +399,7 @@ router required** — the Pi makes its own WiFi.
 1. On the Pi, double-click **`Upload from Phone.sh`** → "Execute".
 2. A dialog appears with a WiFi network name, a password, and a web
    address. On your phone, join that WiFi, then open that address in your
-   browser (it's normally **`http://10.42.0.1:8000`**).
+   browser (it's normally **`http://10.42.42.42:8000`**).
 3. Tap **Choose videos**, pick clips from your camera roll, and watch the
    progress bars. Files land directly in `assets/clips/`.
 4. Back on the Pi, click **Done** in the dialog. That stops the upload
@@ -422,7 +422,7 @@ Notes:
 - The WiFi name, password, **address, and port** are all settings at the
   top of `Upload from Phone.sh` (`HOTSPOT_SSID`, `HOTSPOT_PASS`,
   `HOTSPOT_IP`, `PORT`). The Pi's address is fixed at `HOTSPOT_IP`
-  (default `10.42.0.1`), so the URL is the same every time — change it to
+  (default `10.42.42.42`), so the URL is the same every time — change it to
   anything in a private range (e.g. `192.168.4.1`) if you prefer, and the
   phone gets a matching address automatically.
 - The full log is written to `vj_last_upload.log`.

@@ -24,7 +24,7 @@ cd "$(dirname "$0")"
 # ── Hotspot settings (what your phone will see / type) ────────────────
 HOTSPOT_SSID="VJ-PI"         # the WiFi network name your phone joins
 HOTSPOT_PASS="campvibes"     # must be 8+ characters for WiFi
-HOTSPOT_IP="10.42.0.1"       # the Pi's address -> you'll open http://<this>:<PORT>
+HOTSPOT_IP="10.42.42.42"     # the Pi's address -> you'll open http://<this>:<PORT>
 PORT=8000                    # the port the upload page listens on
 WIFI_IFACE="wlan0"
 HOTSPOT_CON="VJ-Hotspot"     # internal NetworkManager profile name (leave as-is)
