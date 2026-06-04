@@ -134,11 +134,19 @@ the Pi), then let the Pi hardware-decode.** Key pieces:
 
 - **Playback:** `--hevc` mode (`Start VJ (2K HEVC).sh`) reads
   `assets/clips_hevc/` and decodes via `hevc_clips.HevcClipPool` +
-  `hevc_decode_worker.py` — an out-of-process GL worker (same V3D
-  one-context-per-process rule as the GPU generators). Clips **must** be
-  exactly **2048×1152 HEVC** (hvc1 / main / yuv420p); that's the only
-  geometry the GL decode path negotiates fast. Canvas runs `--width 2048
-  --height 1152 --gpu-scale`.
+  `hevc_decode_worker.py` — an out-of-process worker doing HW HEVC decode
+  (`v4l2slh265dec`) + **ISP detile (`pispconvert`), NOT GL**. ⚠️ The worker
+  MUST stay GL-free: the main app holds a V3D GL context (`--gpu-scale`),
+  and a *second* GL context in the worker (the old
+  `glupload!glcolorconvert!gldownload` path) silently outputs ALL-BLACK
+  frames — the V3D dual-context blackout, manifesting **across processes**.
+  This wasted a debug cycle (symptom: clips "cycle" but projector stays
+  black). The converter order is `pisp → videoconvert → gl` (gl last,
+  in-app-broken); override with `VJ_HEVC_CONV`. Worker errors log to
+  `vj_last_hevc_worker.log` (never `/dev/null` again — that hid the cause).
+  Needs `gstreamer1.0-pispconvert`. Clips are baked to **2048×1152 HEVC**
+  (hvc1 / main / yuv420p); canvas runs `--width 2048 --height 1152
+  --gpu-scale`.
 - **PC baking (fast path):** `pc_clip_baker/` (`Bake Clips.bat` /
   `bake_clips.py`) uses NVENC to make those 2048×1152 HEVC clips; copy
   them into `assets/clips_hevc/`.
