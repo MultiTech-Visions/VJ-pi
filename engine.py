@@ -1310,8 +1310,13 @@ class Engine:
         if scale >= 0.999:
             return self._compose_mapping_frame_inner()
         full_w, full_h = self.w, self.h
-        self.w = max(2, int(round(full_w * scale)))
-        self.h = max(2, int(round(full_h * scale)))
+        # Snap to a multiple of 8 so every derived size stays on clean,
+        # even dimensions — the GL generator worker in particular needs
+        # multiple-of-4 widths (see _gen_render_size), and gen size is
+        # canvas × gen_render_scale, so a mult-of-8 canvas keeps that safe
+        # at the default 0.5 scale too.
+        self.w = max(8, (int(round(full_w * scale)) // 8) * 8)
+        self.h = max(8, (int(round(full_h * scale)) // 8) * 8)
         try:
             return self._compose_mapping_frame_inner()
         finally:
@@ -1550,10 +1555,21 @@ class Engine:
     def _gen_render_size(self):
         """Internal generative resolution = cfg.width/height × scale,
         floored at 64×36 so we never burn cycles below the cv2 minimum
-        practical block size."""
+        practical block size.
+
+        Width is snapped DOWN to a multiple of 4 (and height to a multiple of
+        2). The GL worker returns the raw GStreamer buffer, and video/x-raw
+        RGB rows are padded to a 4-byte stride — for a non-multiple-of-4 width
+        the buffer is larger than width×height×3, so the client-side reshape
+        throws and the generator gets retired. Snapping keeps stride == w×3 so
+        the buffer is exactly the size the client expects. This matters at any
+        scale; the mapping render-scale (odd canvas dims) is just what first
+        exposed it."""
         scale = max(0.1, min(1.0, getattr(self.cfg, "gen_render_scale", 1.0)))
         gw = max(64, int(self.w * scale))
         gh = max(36, int(self.h * scale))
+        gw -= gw % 4
+        gh -= gh % 2
         return gw, gh
 
     def _place_group_into_canvas(self, canvas, source, group):
