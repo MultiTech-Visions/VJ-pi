@@ -48,7 +48,35 @@ ALLOWED_EXTS = {
 # Read uploads in ~1 MiB chunks.
 CHUNK = 1024 * 1024
 
-CLIPS_DIR = ""  # set in main()
+ASSETS_DIR = ""  # absolute path to assets/, set in main()
+
+# Upload destinations -> subfolder under assets/. The phone picks one of
+# these; portrait additionally picks a mode (which subfolder). Keep the keys
+# in sync with the <select>s in PAGE and with "Process All Assets.sh".
+#   clips_hevc : finished 2K HEVC from the PC baker -> plays immediately
+#   clips_raw  : raw 2K landscape -> bake on the Pi (Process All)
+#   4k         : raw hi-res -> bake to cinematic (Process All)
+#   portrait/* : raw vertical phone video -> bake to landscape (Process All)
+_PORTRAIT_MODES = {"rotate": "portrait/rotate",
+                   "crop": "portrait/crop",
+                   "blur": "portrait"}
+
+
+def _dest_subdir(dest: str, mode: str) -> str:
+    """Resolve a (destination, portrait-mode) pair to an absolute folder
+    inside assets/. Falls back to the ready-HEVC library for anything
+    unrecognized, and refuses to escape assets/."""
+    rel = {"clips_hevc": "clips_hevc",
+           "clips_raw": "clips",
+           "4k": "4k"}.get(dest)
+    if rel is None and dest == "portrait":
+        rel = _PORTRAIT_MODES.get(mode, "portrait")
+    if rel is None:
+        rel = "clips_hevc"
+    path = os.path.normpath(os.path.join(ASSETS_DIR, rel))
+    if path != ASSETS_DIR and not path.startswith(ASSETS_DIR + os.sep):
+        return os.path.join(ASSETS_DIR, "clips_hevc")
+    return path
 
 
 def _safe_basename(name: str) -> str:
@@ -88,12 +116,15 @@ def _unique_path(directory: str, filename: str) -> str:
 
 
 def _list_clips() -> list[str]:
+    """Names of the playable HEVC library (assets/clips_hevc/), for the
+    'N clips in the library' readout on the page."""
+    hevc_dir = os.path.join(ASSETS_DIR, "clips_hevc")
     try:
         names = []
-        for n in os.listdir(CLIPS_DIR):
+        for n in os.listdir(hevc_dir):
             if n.startswith(".") or n.startswith("_"):
                 continue
-            p = os.path.join(CLIPS_DIR, n)
+            p = os.path.join(hevc_dir, n)
             if os.path.isfile(p) and os.path.splitext(n)[1].lower() in ALLOWED_EXTS:
                 names.append(n)
         return sorted(names)
@@ -127,6 +158,13 @@ PAGE = """<!DOCTYPE html>
   .pick:active { filter: brightness(.9); }
   input[type=file] { display: none; }
   .hint { color: #889; font-size: .8rem; margin: -8px 0 20px; }
+  label.fld { display: block; color: #9aa; font-size: .78rem; margin: 0 0 6px 2px; text-transform: uppercase; letter-spacing: .04em; }
+  select {
+    display: block; width: 100%; padding: 13px 12px; margin: 0 0 14px;
+    font-size: 1rem; color: #e8e8f0; background: #16161f;
+    border: 1px solid #2a2a38; border-radius: 12px; appearance: none;
+  }
+  #modeWrap.hide { display: none; }
   .row {
     display: flex; align-items: center; gap: 10px;
     padding: 10px 12px; margin-bottom: 8px;
@@ -143,12 +181,28 @@ PAGE = """<!DOCTYPE html>
 </head>
 <body>
   <h1>🎥 Upload to VJ-pi</h1>
-  <p class="sub">Pick videos from your phone — they drop straight into the clip library.</p>
+  <p class="sub">Pick videos from your phone — they drop straight into the right folder on the Pi.</p>
+
+  <label class="fld" for="dest">Where should these go?</label>
+  <select id="dest">
+    <option value="clips_hevc">2K clip — ready to play (already baked HEVC)</option>
+    <option value="clips_raw">2K video — raw, bake on the Pi</option>
+    <option value="4k">4K video — cinematic, bake on the Pi</option>
+    <option value="portrait">Portrait (vertical) phone video</option>
+  </select>
+
+  <div id="modeWrap" class="hide">
+    <label class="fld" for="mode">How should the tall video fit 16:9?</label>
+    <select id="mode">
+      <option value="crop">Crop to centre — good for a person (cuts top &amp; bottom)</option>
+      <option value="rotate">Rotate 90° — good for sideways-shot footage</option>
+      <option value="blur">Blur-fill — keep the whole frame, blurred side bars</option>
+    </select>
+  </div>
 
   <button class="pick" id="pickBtn">Choose videos</button>
   <input type="file" id="file" accept="video/*" multiple>
-  <p class="hint">Tip: shoot in <b>landscape</b>. After uploading, run
-     <b>Process Assets.sh</b> on the Pi to make them ready to play.</p>
+  <p class="hint" id="hint">Tip: shoot in <b>landscape</b> when you can.</p>
 
   <div id="list"></div>
   <div class="lib" id="lib"></div>
@@ -158,6 +212,24 @@ const pickBtn = document.getElementById('pickBtn');
 const fileInput = document.getElementById('file');
 const list = document.getElementById('list');
 const lib = document.getElementById('lib');
+const dest = document.getElementById('dest');
+const mode = document.getElementById('mode');
+const modeWrap = document.getElementById('modeWrap');
+const hint = document.getElementById('hint');
+
+const HINTS = {
+  clips_hevc: 'These are baked HEVC clips from the PC — they play right away, no processing needed.',
+  clips_raw: 'Raw 2K video. After uploading, run <b>Process All Assets.sh</b> on the Pi to bake it.',
+  '4k': 'Raw hi-res video. After uploading, run <b>Process All Assets.sh</b> on the Pi; press N for cinematic mode.',
+  portrait: 'Vertical phone video. After uploading, run <b>Process All Assets.sh</b> on the Pi to make a landscape clip.'
+};
+function syncDest() {
+  const isPortrait = dest.value === 'portrait';
+  modeWrap.classList.toggle('hide', !isPortrait);
+  hint.innerHTML = HINTS[dest.value] || '';
+}
+dest.addEventListener('change', syncDest);
+syncDest();
 
 pickBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', () => {
@@ -174,11 +246,12 @@ function fmt(bytes) {
 }
 
 async function uploadQueue(files) {
-  for (const f of files) await uploadOne(f);
+  const d = dest.value, m = mode.value;   // snapshot for the whole batch
+  for (const f of files) await uploadOne(f, d, m);
   refreshLib();
 }
 
-function uploadOne(file) {
+function uploadOne(file, d, m) {
   return new Promise((resolve) => {
     const row = document.createElement('div');
     row.className = 'row';
@@ -195,6 +268,8 @@ function uploadOne(file) {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/upload');
     xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+    xhr.setRequestHeader('X-Dest', d);
+    xhr.setRequestHeader('X-Mode', m);
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
       const pct = Math.round(e.loaded / e.total * 100);
@@ -267,6 +342,13 @@ class Handler(BaseHTTPRequestHandler):
 
         raw_name = self.headers.get("X-Filename", "")
         filename = _safe_basename(raw_name)
+        dest_dir = _dest_subdir(self.headers.get("X-Dest", ""),
+                                self.headers.get("X-Mode", ""))
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except OSError as exc:
+            self._send_json(500, {"error": "cannot create %s: %s" % (dest_dir, exc)})
+            return
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -278,9 +360,9 @@ class Handler(BaseHTTPRequestHandler):
 
         # Stream to a temp file in the SAME dir (so the final rename is
         # atomic and never crosses a filesystem boundary). The .uploading.
-        # prefix keeps partials invisible to Process Assets.sh.
+        # prefix keeps partials invisible to the processors.
         fd, tmp_path = tempfile.mkstemp(
-            prefix=".uploading.", suffix=os.path.splitext(filename)[1], dir=CLIPS_DIR
+            prefix=".uploading.", suffix=os.path.splitext(filename)[1], dir=dest_dir
         )
         received = 0
         try:
@@ -311,7 +393,7 @@ class Handler(BaseHTTPRequestHandler):
                                   "received": received, "expected": length})
             return
 
-        final_path = _unique_path(CLIPS_DIR, filename)
+        final_path = _unique_path(dest_dir, filename)
         try:
             os.replace(tmp_path, final_path)
         except OSError as exc:
@@ -347,22 +429,23 @@ def _local_ips() -> list[str]:
 
 
 def main(argv=None):
-    global CLIPS_DIR
+    global ASSETS_DIR
     here = os.path.dirname(os.path.abspath(__file__))
-    default_dir = os.path.join(here, "assets", "clips")
+    default_assets = os.path.join(here, "assets")
 
     ap = argparse.ArgumentParser(description="VJ-pi phone clip uploader")
-    ap.add_argument("--dir", default=default_dir, help="destination clip folder")
+    ap.add_argument("--assets", default=default_assets,
+                    help="path to the assets/ folder (uploads route into its subfolders)")
     ap.add_argument("--port", type=int, default=8000, help="listen port")
     ap.add_argument("--host", default="0.0.0.0", help="bind address")
     args = ap.parse_args(argv)
 
-    CLIPS_DIR = os.path.abspath(args.dir)
-    os.makedirs(CLIPS_DIR, exist_ok=True)
+    ASSETS_DIR = os.path.abspath(args.assets)
+    os.makedirs(os.path.join(ASSETS_DIR, "clips_hevc"), exist_ok=True)
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     ips = _local_ips() or ["<this-pi-ip>"]
-    sys.stderr.write("[upload] serving %s on port %d\n" % (CLIPS_DIR, args.port))
+    sys.stderr.write("[upload] serving assets at %s on port %d\n" % (ASSETS_DIR, args.port))
     for ip in ips:
         sys.stderr.write("[upload]   http://%s:%d\n" % (ip, args.port))
     sys.stderr.flush()

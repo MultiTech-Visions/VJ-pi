@@ -38,6 +38,12 @@ assets/portrait/*
 !assets/portrait/landscape/
 assets/portrait/landscape/*
 !assets/portrait/landscape/.gitkeep
+!assets/portrait/rotate/
+assets/portrait/rotate/*
+!assets/portrait/rotate/.gitkeep
+!assets/portrait/crop/
+assets/portrait/crop/*
+!assets/portrait/crop/.gitkeep
 
 # PC clip baker — don't commit source/output clips or its log
 pc_clip_baker/input/*

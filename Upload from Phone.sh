@@ -159,7 +159,7 @@ fi
 # ── 3. Build the instructions and show them ───────────────────────────
 if [ "$HOTSPOT_UP" = "1" ]; then
   URL="http://${GATEWAY_IP}:${PORT}"
-  BODY="<b>Step 1.</b> On your phone, open WiFi settings and join:\n\n   Network:  <b>${HOTSPOT_SSID}</b>\n   Password: <b>${HOTSPOT_PASS}</b>\n\n<b>Step 2.</b> Open your phone's browser and go to:\n\n   <b>${URL}</b>\n\n<b>Step 3.</b> Tap “Choose videos” and pick your clips.\n\nLeave THIS window open while you upload.\nClick <b>Done</b> below when you've finished — that stops the\nserver and puts the Pi's WiFi back to normal.\n\nThen double-click <b>Process Assets.sh</b> to make the\nclips ready to play."
+  BODY="<b>Step 1.</b> On your phone, open WiFi settings and join:\n\n   Network:  <b>${HOTSPOT_SSID}</b>\n   Password: <b>${HOTSPOT_PASS}</b>\n\n<b>Step 2.</b> Open your phone's browser and go to:\n\n   <b>${URL}</b>\n\n<b>Step 3.</b> Pick where the videos go (2K / 4K / portrait),\nthen tap “Choose videos” and select your clips.\n\nLeave THIS window open while you upload.\nClick <b>Done</b> below when you've finished — that stops the\nserver and puts the Pi's WiFi back to normal.\n\nFinished HEVC clips play right away. Anything raw\n(2K / 4K / portrait) needs <b>Process All Assets.sh</b> next."
   TITLE="📲 Upload from Phone — hotspot ready"
 else
   IPS=$(hostname -I 2>/dev/null)
@@ -175,7 +175,7 @@ else
   else
     INTRO="The upload page is running on the WiFi the Pi is\nALREADY connected to — nothing on the Pi changed."
   fi
-  BODY="${INTRO}\n\n<b>Make sure your phone is on the same WiFi as the Pi</b>,\nthen open your phone's browser and go to one of:\n\n${URLLIST}\nTap “Choose videos” and pick your clips.\n\nLeave THIS window open while you upload. Click <b>Done</b>\nbelow when finished.\n\nThen double-click <b>Process Assets.sh</b> to make the\nclips ready to play."
+  BODY="${INTRO}\n\n<b>Make sure your phone is on the same WiFi as the Pi</b>,\nthen open your phone's browser and go to one of:\n\n${URLLIST}\nPick where the videos go (2K / 4K / portrait), then tap\n“Choose videos” and select your clips.\n\nLeave THIS window open while you upload. Click <b>Done</b>\nbelow when finished.\n\nFinished HEVC clips play right away. Anything raw needs\n<b>Process All Assets.sh</b> next."
   TITLE="📲 Upload from Phone — server running"
 fi
 
