@@ -41,6 +41,15 @@ sudo apt-get install -y \
   libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
   libavcodec-extra \
   ffmpeg
+
+# Pi 5 ISP detiler (pispconvert) — the HEVC decode worker uses it instead of
+# GL, because a 2nd GL context in the worker blacks out under the app's GL
+# context (V3D dual-context rule). Separate, non-fatal install: off-Pi the
+# package won't exist and that must not abort setup.
+echo "    + gstreamer1.0-pispconvert (Pi 5 HEVC detiler)..."
+sudo apt-get install -y gstreamer1.0-pispconvert 2>/dev/null \
+  && echo "      installed." \
+  || echo "      not available here — fine off-Pi (worker falls back)."
 echo "    done."
 echo ""
 

@@ -53,6 +53,14 @@ pc_clip_baker/output/*
 pc_clip_baker/bake.log
 # HEVC decode spike artifacts (local, on the Pi)
 vj_last_hevctest.log
+vj_last_hevc_worker.log
 # HEVC clip library (baked 2K clips live here, like assets/clips)
 assets/clips_hevc/*
 !assets/clips_hevc/.gitkeep
+
+# Catch-all for run logs + local test media so a stray `git add -A` can't
+# sweep them in (a 68MB test mp4 + spike logs got committed once).
+vj_last_*.log
+tests/*.mp4
+tests/*.mov
+tests/*.mkv
