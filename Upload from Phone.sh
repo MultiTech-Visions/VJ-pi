@@ -61,12 +61,35 @@ else
   exit 1
 fi
 
-# ── 1. Try to bring up the Pi's own hotspot ───────────────────────────
+# ── 1. Pick a mode: Pi hotspot (camp) or existing WiFi (home) ─────────
+# Hotspot mode makes the Pi its own WiFi — great at a campsite, but it
+# kicks the Pi off whatever WiFi it's currently on (one radio). At home,
+# where the Pi and phone already share a WiFi, you want "this WiFi" so
+# nothing switches and your phone keeps its internet.
 HOTSPOT_UP=0
 PREV_WIFI=""
 GATEWAY_IP=""
+WANT_HOTSPOT=1
 
-if command -v nmcli >/dev/null 2>&1; then
+if command -v zenity >/dev/null 2>&1; then
+  MODE=$(zenity --list --radiolist \
+    --title="Upload from Phone" \
+    --text="How should your phone reach the Pi?" \
+    --column="" --column="mode" --column="Choose one" \
+    TRUE  hotspot "Pi makes its OWN WiFi  —  camping / no router" \
+    FALSE wifi    "Use the WiFi the Pi is ALREADY on  —  home" \
+    --hide-column=2 --print-column=2 \
+    --width=540 --height=260 --ok-label="Start" 2>/dev/null)
+  # Cancel or window-close -> abort without touching anything.
+  if [ -z "$MODE" ]; then
+    echo "[VJ] mode picker cancelled — exiting" >>"$LOG"
+    exit 0
+  fi
+  [ "$MODE" = "wifi" ] && WANT_HOTSPOT=0
+fi
+echo "[VJ] mode: $([ "$WANT_HOTSPOT" = 1 ] && echo hotspot || echo existing-wifi)" >>"$LOG"
+
+if [ "$WANT_HOTSPOT" = "1" ] && command -v nmcli >/dev/null 2>&1; then
   echo "[VJ] bringing up hotspot '$HOTSPOT_SSID' at $HOTSPOT_IP on $WIFI_IFACE" >>"$LOG"
   # Remember the WiFi network we're currently on so we can restore it.
   PREV_WIFI=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
@@ -101,8 +124,8 @@ if command -v nmcli >/dev/null 2>&1; then
   else
     echo "[VJ] hotspot failed to start — falling back to plain mode" >>"$LOG"
   fi
-else
-  echo "[VJ] nmcli not found — plain mode (use existing WiFi)" >>"$LOG"
+elif [ "$WANT_HOTSPOT" = "1" ]; then
+  echo "[VJ] nmcli not found — using existing WiFi instead" >>"$LOG"
 fi
 
 # ── 2. Start the upload server ────────────────────────────────────────
@@ -147,7 +170,12 @@ else
     esac
   done
   [ -z "$URLLIST" ] && URLLIST="   (couldn't detect this Pi's IP — check the network)\n"
-  BODY="The Pi's own hotspot couldn't start, so the upload page is\nrunning on the network the Pi is ALREADY connected to.\n\n<b>Make sure your phone is on the same WiFi as the Pi</b>,\nthen open your phone's browser and go to one of:\n\n${URLLIST}\nTap “Choose videos” and pick your clips.\n\nLeave THIS window open while you upload. Click <b>Done</b>\nbelow when finished.\n\nThen double-click <b>Process Assets.sh</b> to make the\nclips ready to play."
+  if [ "$WANT_HOTSPOT" = "1" ]; then
+    INTRO="The Pi's own hotspot couldn't start, so the upload page is\nrunning on the network the Pi is ALREADY connected to."
+  else
+    INTRO="The upload page is running on the WiFi the Pi is\nALREADY connected to — nothing on the Pi changed."
+  fi
+  BODY="${INTRO}\n\n<b>Make sure your phone is on the same WiFi as the Pi</b>,\nthen open your phone's browser and go to one of:\n\n${URLLIST}\nTap “Choose videos” and pick your clips.\n\nLeave THIS window open while you upload. Click <b>Done</b>\nbelow when finished.\n\nThen double-click <b>Process Assets.sh</b> to make the\nclips ready to play."
   TITLE="📲 Upload from Phone — server running"
 fi
 

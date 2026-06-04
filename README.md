@@ -394,17 +394,26 @@ cinematic playlist.
 Shot something on your phone you want to project — campfire footage, the
 wedding, whatever's happening that weekend? Get it onto the Pi straight
 from the phone's browser. No cable, no cloud, and **no internet or WiFi
-router required** — the Pi makes its own WiFi.
+router required** — the Pi can make its own WiFi.
 
 1. On the Pi, double-click **`Upload from Phone.sh`** → "Execute".
-2. A dialog appears with a WiFi network name, a password, and a web
-   address. On your phone, join that WiFi, then open that address in your
-   browser (it's normally **`http://10.42.42.42:8000`**).
-3. Tap **Choose videos**, pick clips from your camera roll, and watch the
+2. A dialog asks **how your phone should reach the Pi** — pick one:
+   - **Pi hotspot (camp)** — for the campsite or anywhere with no router.
+     The Pi becomes its own WiFi network; your phone joins it. This
+     briefly takes the Pi off any WiFi it was on and puts it back when
+     you're done.
+   - **This WiFi (home)** — for home, where the Pi and your phone are
+     already on the same WiFi. Nothing on the Pi switches; your phone
+     keeps its internet.
+3. The next dialog shows the details for the mode you picked — a WiFi
+   name/password to join (hotspot) or just an address (home WiFi). On
+   your phone, get on the right network, then open that address in your
+   browser (hotspot mode is normally **`http://10.42.42.42:8000`**).
+4. Tap **Choose videos**, pick clips from your camera roll, and watch the
    progress bars. Files land directly in `assets/clips/`.
-4. Back on the Pi, click **Done** in the dialog. That stops the upload
-   page and puts the Pi's WiFi back to normal.
-5. Double-click **`Process Assets.sh`** and go eat dinner — it scales,
+5. Back on the Pi, click **Done** in the dialog. That stops the upload
+   page (and, in hotspot mode, puts the Pi's WiFi back to normal).
+6. Double-click **`Process Assets.sh`** and go eat dinner — it scales,
    crops, and re-encodes everything to play-ready clips while you're away.
 
 Notes:
