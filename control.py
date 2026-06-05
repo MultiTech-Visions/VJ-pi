@@ -5,6 +5,8 @@ status sharing the top row to claim back horizontal space.
 """
 import pygame
 
+from state import load_state, update_state
+
 
 KEY_CHEAT = [
     ("− / =",        "Prev / next CLIP (hold to scrub)"),
@@ -105,6 +107,9 @@ class ControlWindow:
         self._cheat_panel = self._build_cheat_panel(KEY_CHEAT)
         self._mapping_cheat_panel = self._build_cheat_panel(MAPPING_KEY_CHEAT)
 
+        self.preview_enabled = load_state().get("hud_preview", True)
+        self._preview_toggle_rect = pygame.Rect(0, 0, 0, 0)
+
     # ── Event handling ───────────────────────────────────────────────
 
     def handle_event(self, event):
@@ -141,6 +146,11 @@ class ControlWindow:
             return
         pos = getattr(event, "pos", None)
         if pos is None:
+            return
+
+        if self._preview_toggle_rect.collidepoint(pos):
+            self.preview_enabled = not self.preview_enabled
+            update_state(hud_preview=self.preview_enabled)
             return
 
         if (e.mode == "mapping" and e.mapping.edit_mode
@@ -295,7 +305,7 @@ class ControlWindow:
 
     def _draw_preview(self, surface, x, y, frame):
         self._preview_rect = pygame.Rect(x, y, self.preview_w, self.preview_h)
-        if frame is not None:
+        if self.preview_enabled and frame is not None:
             preview = pygame.image.frombuffer(
                 frame.tobytes(), (frame.shape[1], frame.shape[0]), "RGB"
             )
@@ -305,8 +315,34 @@ class ControlWindow:
         else:
             pygame.draw.rect(surface, (40, 40, 50),
                              (x, y, self.preview_w, self.preview_h))
+            if not self.preview_enabled:
+                off_label = self.font_m.render("PREVIEW OFF", True,
+                                               (100, 100, 120))
+                surface.blit(off_label,
+                             (x + (self.preview_w - off_label.get_width()) // 2,
+                              y + (self.preview_h - off_label.get_height()) // 2))
         pygame.draw.rect(surface, (90, 90, 120),
                          (x, y, self.preview_w, self.preview_h), 1)
+
+        # Clickable toggle button just below the preview
+        tog_w, tog_h = 70, 20
+        tog_x = x + self.preview_w - tog_w
+        tog_y = y + self.preview_h + 4
+        self._preview_toggle_rect = pygame.Rect(tog_x, tog_y, tog_w, tog_h)
+        if self.preview_enabled:
+            bg, border, fg = (50, 90, 60), (100, 180, 120), (180, 255, 190)
+            label = "LIVE"
+        else:
+            bg, border, fg = (60, 45, 45), (160, 100, 100), (220, 160, 160)
+            label = "OFF"
+        pygame.draw.rect(surface, bg, self._preview_toggle_rect,
+                         border_radius=4)
+        pygame.draw.rect(surface, border, self._preview_toggle_rect, 1,
+                         border_radius=4)
+        tog_label = self.font_s.render(label, True, fg)
+        surface.blit(tog_label,
+                     (tog_x + (tog_w - tog_label.get_width()) // 2,
+                      tog_y + (tog_h - tog_label.get_height()) // 2))
 
     def _draw_space_overlay(self, surface):
         """Outline every group's spaces on the preview, highlight the
