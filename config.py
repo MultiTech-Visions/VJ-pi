@@ -56,6 +56,14 @@ class Config:
     # the gl path handles). Pair with --width 2048 --height 1152 --gpu-scale.
     hevc: bool = False
 
+    # Live USB-webcam base layer (toggled with `\` in the app). camera_device
+    # < 0 auto-probes /dev/video0-5 for the first one that delivers frames, so
+    # the operator never needs to know an index. camera_mirror flips the feed
+    # left/right (selfie-natural) — toggle live with Shift+\.
+    camera_device: int = -1
+    camera_size: tuple = (1280, 720)
+    camera_mirror: bool = True
+
     @property
     def clips_dir(self) -> Path:
         return self.assets_dir / "clips"

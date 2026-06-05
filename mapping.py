@@ -112,7 +112,7 @@ class Group:
     spaces: List[Space] = field(default_factory=lambda: [Space.fullscreen()])
 
     # Content selection
-    content_kind: str = "blackout"        # "blackout" | "clip" | "generative"
+    content_kind: str = "blackout"        # "blackout"|"clip"|"generative"|"camera"
     clip_stem: Optional[str] = None
     gen_name: Optional[str] = None
     overlay_stem: Optional[str] = None
@@ -211,6 +211,8 @@ class Group:
             return f"clip: {self.clip_stem or '—'}"
         if self.content_kind == "generative":
             return f"gen:  {self.gen_name or '—'}"
+        if self.content_kind == "camera":
+            return "live cam"
         return "—"
 
 
