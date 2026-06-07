@@ -90,6 +90,10 @@ image from `assets/images/` as `sampler2D tex`.
 - `effects.py` — numpy/OpenCV FX + CPU generator fallbacks.
 - `mapping.py` — projection-mapping mode (spaces, groups, warps).
 - `clips.py` — `ClipPool`: lazy MP4 loader, LRU-evicted handles.
+- `camera.py` — `CameraSource`: threaded USB-webcam capture (the live
+  base layer, toggled with `\`). Pure CPU/V4L2, no GL — auto-probes for
+  the camera. `list_cameras.py` + `List Cameras.sh` report detected
+  devices; `Start VJ (Live Cam).sh` boots straight into it.
 - `keymap.py` — pygame key → engine action dispatch.
 - `shader_catalog.py` — GLSL generator catalogue (`GPU_GENERATORS`).
 - `gpu_generator_worker.py` — out-of-process GStreamer/GL renderer.

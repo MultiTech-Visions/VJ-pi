@@ -148,6 +148,7 @@ def dispatch(engine, key, mod):
             # Tab / M / Esc above.
             if (key in FAV_KEYS or key in HIT_KEYS
                     or key in FX_KEYS
+                    or key == pygame.K_BACKSLASH
                     or key in (pygame.K_LEFT, pygame.K_RIGHT,
                                pygame.K_UP, pygame.K_DOWN)):
                 return
@@ -232,6 +233,16 @@ def dispatch(engine, key, mod):
         return
     if key == CYCLE_GENS_NEXT:
         engine.browse_generatives(1)
+        return
+
+    # Live webcam: `\` toggles the camera as the base layer (or, in mapping
+    # perform mode, as the selected group's content). Shift+\ flips the
+    # selfie mirror. All existing FX/overlays/hits then run on the feed.
+    if key == pygame.K_BACKSLASH:
+        if mod & pygame.KMOD_SHIFT:
+            engine.toggle_camera_mirror()
+        else:
+            engine.toggle_camera()
         return
 
     # Favourite keys (1-0, A-L, ;) are handled in Engine.run()'s long-press

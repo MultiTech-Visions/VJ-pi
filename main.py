@@ -56,6 +56,20 @@ def parse_args():
                         "an out-of-process gl worker (reads assets/clips_hevc/, "
                         "clips baked to 2048x1152). Pair with --width 2048 "
                         "--height 1152 --gpu-scale.")
+    p.add_argument("--camera", action="store_true",
+                   help="Start with the live USB webcam as the base layer "
+                        "(otherwise toggle it any time with the `\\` key).")
+    p.add_argument("--camera-device", type=int, default=-1,
+                   help="Webcam V4L2 index. Default -1 auto-probes "
+                        "/dev/video0-5 for the first one that delivers frames "
+                        "(handy on the Pi, where the USB cam isn't video0).")
+    p.add_argument("--camera-size", default="1280x720",
+                   help="Requested webcam capture size as WxH (default "
+                        "1280x720, captured as MJPG). The feed is resized to "
+                        "the render canvas like any clip.")
+    p.add_argument("--camera-no-mirror", action="store_true",
+                   help="Don't mirror the webcam left/right. Default mirrors "
+                        "it (selfie-natural); toggle live with Shift+\\.")
     return p.parse_args()
 
 
@@ -163,6 +177,12 @@ def main():
               f"(only {num} display(s) attached); using 0")
         display = 0
 
+    try:
+        cam_w, cam_h = (int(x) for x in args.camera_size.lower().split("x"))
+    except ValueError:
+        print(f"[vj] bad --camera-size {args.camera_size!r}, using 1280x720")
+        cam_w, cam_h = 1280, 720
+
     cfg = Config(
         width=args.width, height=args.height, fps=args.fps,
         fullscreen=args.fullscreen, display=display,
@@ -173,6 +193,9 @@ def main():
         display_filter=args.display_filter,
         gpu_scale=args.gpu_scale,
         hevc=args.hevc,
+        camera_device=args.camera_device,
+        camera_size=(cam_w, cam_h),
+        camera_mirror=not args.camera_no_mirror,
     )
 
     # Two window layouts, both with exactly ONE GL context (the V3D rule):
@@ -261,7 +284,11 @@ def main():
         print(f"[vj] control HUD: display {args.control_display}, size {args.control_size}")
     print(f"[vj] clips dir:    {cfg.clips_dir}")
     print(f"[vj] {len(engine.clips)} clip(s) loaded")
-    print("[vj] keys: -/= cycle clips · [/] cycle generators · 1-0 clip favs (tap=play, hold=assign) · ASDFGHJKL; generator favs · ZXCVB hits · F1-F7 FX · ←→↑↓ params · Enter Enter autopilot · F9/F10 mapping res · F11/F12 display · Space blackout · Esc panic · Shift+Esc quit")
+    print("[vj] keys: -/= cycle clips · [/] cycle generators · 1-0 clip favs (tap=play, hold=assign) · ASDFGHJKL; generator favs · ZXCVB hits · F1-F7 FX · \\ live cam (Shift+\\ mirror) · ←→↑↓ params · Enter Enter autopilot · F9/F10 mapping res · F11/F12 display · Space blackout · Esc panic · Shift+Esc quit")
+
+    if args.camera:
+        print("[vj] --camera: starting with the live webcam as the base layer")
+        engine.enable_camera_base()
 
     try:
         engine.run(control=control)

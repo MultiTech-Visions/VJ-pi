@@ -11,6 +11,7 @@ import numpy as np
 import cv2
 
 from clips import ClipPool
+from camera import CameraSource
 from mapping import MappingManager
 from state import load_state, save_state
 from effects import (
@@ -117,6 +118,13 @@ class Engine:
         self.active_generative = None
         self.current_generator_idx = 0
         self._generator_activation_token = 0
+
+        # Live webcam as a base layer. Lazily opened on first use (toggling
+        # the camera key) so the device isn't held while it's unused. When
+        # camera_active, the camera frame is the base instead of a clip /
+        # generator, so the whole FX chain runs on the live feed.
+        self.camera = None
+        self.camera_active = False
         self.fx_state = {fx: False for fx in FX_TOGGLES}
         self.hit_type = None
         self.hit_frames_left = 0
@@ -269,6 +277,7 @@ class Engine:
         if idx < len(self.clips):
             self.clips.select(idx)
             self.active_generative = None
+            self.camera_active = False
 
     def toggle_overlay(self, idx):
         if idx >= len(self.overlays):
@@ -295,6 +304,7 @@ class Engine:
         self._browse(self.clips, action, arg)
         if self.clips.active_idx is not None:
             self.active_generative = None
+            self.camera_active = False
 
     def browse_overlays(self, action, arg=None):
         if self._in_mapping():
@@ -372,6 +382,7 @@ class Engine:
         else:
             self.active_generative = name
             self.clips.deselect()
+            self.camera_active = False
 
     def browse_generatives(self, step):
         if not GENERATIVES:
@@ -386,6 +397,66 @@ class Engine:
         # Hits stay global — they're a panic-button visual smash.
         self.hit_type = kind
         self.hit_frames_left = frames
+
+    # ── Live camera ───────────────────────────────────────────────────
+
+    def _ensure_camera(self):
+        """Lazily create + start the webcam capture. Returns the live
+        CameraSource or None if no camera could be opened."""
+        if self.camera is None:
+            w, h = getattr(self.cfg, "camera_size", (1280, 720))
+            self.camera = CameraSource(
+                device=getattr(self.cfg, "camera_device", -1),
+                request_size=(w, h),
+                fps=getattr(self.cfg, "fps", 30),
+                mirror=getattr(self.cfg, "camera_mirror", True),
+            )
+        if not self.camera.is_live():
+            self.camera.start()
+        return self.camera if self.camera.is_live() else None
+
+    def toggle_camera(self):
+        """Toggle the live webcam. In live mode it becomes the base layer
+        (taking over from clip / generator). In mapping perform mode it
+        sets the selected group's content to the camera (toggle → blackout).
+        Every existing FX / overlay / hit then runs on the live feed."""
+        if self._in_mapping():
+            g = self.mapping.selected_group()
+            if g.content_kind == "camera":
+                g.content_kind = "blackout"
+            elif self._ensure_camera() is not None:
+                g.content_kind = "camera"
+            else:
+                print("[vj] camera: could not start — see vj_last_run.log")
+            self._persist_mapping()
+            return
+        if self.camera_active:
+            self.camera_active = False
+            return
+        if self._ensure_camera() is not None:
+            self.camera_active = True
+            self.clips.deselect()
+            self.active_generative = None
+        else:
+            print("[vj] camera: could not start — see vj_last_run.log")
+
+    def enable_camera_base(self):
+        """Force the live camera on as the base layer (used by --camera at
+        boot) — drops mapping so the operator sees the feed immediately."""
+        if self.mode == "mapping":
+            self.mode = "live"
+            self.mapping.enabled = False
+        if self._ensure_camera() is not None:
+            self.camera_active = True
+            self.clips.deselect()
+            self.active_generative = None
+        else:
+            print("[vj] camera: --camera requested but no camera started")
+
+    def toggle_camera_mirror(self):
+        if self.camera is not None:
+            on = self.camera.toggle_mirror()
+            print(f"[vj] camera mirror {'on' if on else 'off'}")
 
     # ── Cinematic 4K mode ────────────────────────────────────────────
 
@@ -570,6 +641,7 @@ class Engine:
             return
         self.clips.select(idx)
         self.active_generative = None
+        self.camera_active = False
 
     def save_clip_favorite(self, slot):
         """Long-press handler. With nothing playing, clears the slot."""
@@ -692,11 +764,13 @@ class Engine:
             if len(self.clips) > 0 and random.random() < 0.75:
                 self.clips.pick_random()
                 self.active_generative = None
+                self.camera_active = False
             elif GENERATIVES:
                 self.current_generator_idx = random.randrange(len(GENERATIVES))
                 self.active_generative = GENERATIVES[self.current_generator_idx]
                 self._generator_activation_token += 1
                 self.clips.deselect()
+                self.camera_active = False
             self._auto_next_clip_at = now + self.auto_clip_interval * random.uniform(0.6, 1.7)
 
         # FX toggling — keep total active count manageable.
@@ -1144,6 +1218,15 @@ class Engine:
         """Live-mode base layer. Clips read at canvas resolution; generatives
         render at the reduced internal resolution and get upscaled in
         compose_frame() before overlay/hits paint on top."""
+        if self.camera_active:
+            frame = self.camera.read() if self.camera is not None else None
+            self._base_was_generator = False
+            if frame is not None:
+                return frame
+            # Camera chosen but no frame yet (warming up / unplugged) —
+            # show black rather than falling back to a clip the operator
+            # didn't ask for. Toggle the camera off to return to clips.
+            return np.zeros((self.h, self.w, 3), dtype=np.uint8)
         clip_frame = self.clips.read()
         if clip_frame is not None:
             self._base_was_generator = False
@@ -1493,6 +1576,15 @@ class Engine:
             self._perf["gen"] += time.perf_counter() - _tg
             if frame is None:
                 frame = np.zeros((h, w, 3), dtype=np.uint8)
+        elif group.content_kind == "camera":
+            _tc = time.perf_counter()
+            cam = self._ensure_camera()
+            frame = cam.read() if cam is not None else None
+            self._perf["clip"] += time.perf_counter() - _tc
+            if frame is None:
+                frame = np.zeros((h, w, 3), dtype=np.uint8)
+            elif frame.shape[:2] != (h, w):
+                frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
         else:
             frame = np.zeros((h, w, 3), dtype=np.uint8)
 
@@ -2187,6 +2279,8 @@ class Engine:
         self._flush_mapping_persist()
         self.clips.release_all()
         self.overlays.release_all()
+        if self.camera is not None:
+            self.camera.release()
         self.gpu_generators.shutdown()
         if self._map_pool is not None:
             self._map_pool.shutdown(wait=False)

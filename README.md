@@ -40,6 +40,11 @@ Then double-click these files in order:
      fullscreen to the projector (display 1).
    - **`Test (single screen).sh`** — both windows on the primary
      display, no fullscreen. Use this when no projector is connected.
+   - **`Start VJ (Live Cam).sh`** — same as `Start VJ.sh` but boots
+     straight into the **live USB webcam** as the base layer. (You can
+     also just press `\` any time during a normal run.) Plug in a USB
+     webcam first; **`List Cameras.sh`** pops a dialog confirming it's
+     detected.
 
 4. (Optional) Double-click **`Install Desktop Shortcuts.sh`** to drop
    launcher icons on your desktop so you don't have to navigate into
@@ -139,6 +144,8 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `F6`                | FX: edge detect                                    |
 | `F7`                | FX: RGB split / chromatic aberration (offset = PARAM X) |
 | `F8`                | FX: melt — warp the base layer with a generator's colour field (kaliset by default; PARAM X = shimmer → full liquefy). Live mode only. |
+| `\`                 | **LIVE CAM** — toggle the USB webcam as the base layer (takes over from clip / generator). In mapping PERFORM mode it sets the selected group's content to the live feed. Every FX / hit / overlay then runs on your live video. Auto-detects the camera; switch back to clips/generators with `−/=` or `[/]`. |
+| `Shift+\`           | Flip the webcam left/right (selfie mirror; on by default) |
 | `← →`               | Adjust PARAM X (active-FX horizontal control)      |
 | `↑ ↓`               | Adjust PARAM Y (active-FX vertical control)        |
 | `Enter Enter`       | Engage **AUTOPILOT** (double-tap within 600 ms). Any other key takes over again and executes immediately. While engaged, `↑/↓` tune the clip-change rate and `←/→` tune the FX-change rate. |
@@ -167,8 +174,8 @@ There are two sub-modes:
   spaces together. No content gets assigned in this sub-mode (content / FX
   / favourite keys are swallowed) so you can focus on layout.
 - **PERFORM** — keyboard-first. The keys you already know
-  (`1-0`, `Q-P`, `A-L`, `F1-F7`, `←→↑↓`, `−/=`, `[/]`) target the currently
-  selected group. `Tab` cycles between groups.
+  (`1-0`, `Q-P`, `A-L`, `F1-F7`, `←→↑↓`, `−/=`, `[/]`, `\` live cam) target
+  the currently selected group. `Tab` cycles between groups.
 
 Press `M` to enter / leave mapping mode entirely. Press `E` to switch
 between EDIT and PERFORM inside it. The first time you enter mapping mode
@@ -239,7 +246,7 @@ you set up for a show is there again the next time you launch.
 | Key                 | Action                                              |
 |---------------------|-----------------------------------------------------|
 | `Tab` / `Shift+Tab` | Next / previous group (the active group's spaces get a coloured border on the projector) |
-| `1-0` `Q-P` `A-L` `F1-F7` `←→↑↓` `−/=` `[/]` | Apply to the SELECTED group only — each group keeps its own state |
+| `1-0` `Q-P` `A-L` `F1-F7` `←→↑↓` `−/=` `[/]` `\` | Apply to the SELECTED group only — each group keeps its own state (`\` sets the group's content to the live webcam) |
 | `Ctrl+N`            | New group                                          |
 | `Ctrl+Backspace`    | Delete the current group                           |
 | `Ctrl+=` / `Ctrl+-` | Add / remove a space in the current group          |
@@ -391,6 +398,31 @@ files in place. If no processed files exist, cinematic mode will try the
 top-level `assets/4k/` files directly, but unsupported codecs will fail
 or skip; processing ahead of time is the reliable path.
 
+### Live webcam (carry-around / wireless setups)
+
+Plug a **USB webcam** into the Pi and press `\` — the live feed becomes the
+base layer, and **every effect you already have runs on it**: kaleidoscope,
+mirror, feedback trails, RGB split, edges, melt, the strobe/zoom hits,
+overlays, and projection-map warps. It's the same pipeline as a clip, just
+fed live. Great paired with a **wireless HDMI** transmitter so the Pi (with
+the camera on top) becomes a roaming handheld unit.
+
+- `\` — toggle the live cam on / off. `Shift+\` — flip the selfie mirror
+  (on by default, so pointing it at yourself feels like a mirror).
+- Switch back to clips / generators with `−/=` or `[/]` (that turns the
+  cam off automatically).
+- In **mapping** mode, `\` sets the selected group's content to the live
+  feed — so you can project yourselves onto mapped shapes.
+- Double-click **`Start VJ (Live Cam).sh`** to boot straight into the
+  camera, or **`List Cameras.sh`** to confirm the webcam is detected.
+
+The camera is **auto-detected** (the first `/dev/videoN` that delivers
+frames — handy on the Pi, where the USB cam usually isn't `video0`), so
+you don't need to know an index. It's captured at 1280×720 MJPG by
+default and runs entirely on the CPU (no GL), exactly like the software
+clip path. Heavy FX stacks on a live 720p feed will cost some frames on
+the Pi 5 — drop a couple of effects if it dips.
+
 ### Portrait → landscape (three modes)
 
 Vertical phone video becomes a 16:9 HEVC clip in `assets/clips_hevc/`
@@ -482,6 +514,7 @@ effects.py     Transformative numpy/OpenCV effects + CPU generator fallbacks
 shader_catalog.py / gpu_generator_worker.py
                GStreamer/GL shader generators in a separate process
 clips.py       ClipPool: lazy MP4 loader keyed by slot index
+camera.py      CameraSource: threaded USB-webcam capture (live base layer)
 keymap.py      Pygame key → engine action dispatch table
 config.py      Config dataclass
 cinematic4k.py System-Python GStreamer/GL player for N-key 4K cinematic mode
@@ -490,7 +523,7 @@ cinematic4k.py System-Python GStreamer/GL player for N-key 4K cinematic mode
 Render pipeline each frame:
 
 ```
-base layer   →  active clip OR active generative OR black
+base layer   →  live webcam OR active clip OR active generative OR black
    ↓
 FX chain     →  kaleido, mirror, rgb_split, posterize, edges, invert, feedback, melt
    ↓

@@ -557,6 +557,9 @@ class ControlWindow:
 
         self._row(surface, "CLIP",    clip_text, x, y, width); y += 19
         self._row(surface, "GEN",     gen_name,  x, y, width); y += 19
+        if getattr(e, "camera_active", False) or e.camera is not None:
+            self._row(surface, "CAM", self._camera_label(e), x, y, width)
+            y += 19
         self._row(surface, "FX",      fx_text,   x, y, width); y += 22
 
         self._param_bar(surface, "PARAM X", e.param_x, x, y, width); y += 18
@@ -576,6 +579,8 @@ class ControlWindow:
             badges.append(("4K CINEMATIC", (160, 220, 255)))
         elif getattr(e, "cinematic_status", "off") != "off":
             badges.append(("4K: " + e.cinematic_status, (255, 200, 80)))
+        if getattr(e, "camera_active", False):
+            badges.append(("LIVE CAM", (255, 150, 200)))
         if getattr(e, "auto_mode", False):
             badges.append(("AUTOPILOT", (120, 220, 140)))
         if e.blackout:
@@ -714,6 +719,18 @@ class ControlWindow:
         if idx is None:
             return f"—  [0/{total}]"
         return f"{pool.name(idx)}  [{idx + 1}/{total}]"
+
+    @staticmethod
+    def _camera_label(e):
+        cam = e.camera
+        if cam is None:
+            return "—"
+        mirror = "  ·  mirror" if getattr(cam, "mirror", False) else ""
+        if getattr(e, "camera_active", False):
+            dev = (f"/dev/video{cam.opened_index}"
+                   if cam.opened_index is not None else cam.status)
+            return f"LIVE  ({dev}){mirror}"
+        return f"{cam.status}{mirror}"
 
     def _row(self, surface, label, value, x, y, width=None):
         if width is None:
