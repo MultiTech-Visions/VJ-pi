@@ -12,6 +12,7 @@ import cv2
 
 from clips import ClipPool
 from camera import CameraSource
+from facecloud import FacePool
 from mapping import MappingManager
 from state import load_state, save_state
 from effects import (
@@ -51,6 +52,19 @@ AUTO_FX_MAX_HOLD = {"edges": 3.0}
 
 # How fast the arrow keys move param_x / param_y (units of 0..1 per second).
 PARAM_RATE = 0.6
+
+# Face-cloud rotation limits (radians). A single front capture has no data
+# for the back of the head, so rotation is clamped well short of profile —
+# enough to "turn toward / away" and tip up/down to catch an angle, never a
+# full 360 into the hollow side. param_x → yaw, param_y → pitch.
+FACE_MAX_YAW = 0.66    # ~38°
+FACE_MAX_PITCH = 0.48  # ~28°
+# Gentle automatic drift added on top of the operator's offset so a face
+# slowly rotates on its own (amplitude radians, speed rad/s).
+FACE_AUTO_YAW_AMP = 0.22
+FACE_AUTO_YAW_SPEED = 0.25
+FACE_AUTO_PITCH_AMP = 0.10
+FACE_AUTO_PITCH_SPEED = 0.17
 
 # How many favorite slots per pool (matches the number / QWERTY rows).
 FAV_SLOTS = 10
@@ -125,6 +139,15 @@ class Engine:
         # generator, so the whole FX chain runs on the live feed.
         self.camera = None
         self.camera_active = False
+
+        # Face point-cloud base layer. A library of clouds baked offline by
+        # face_capture.py (assets/faces/*.npz); when face_active, the selected
+        # cloud is the base (rotating in a clamped yaw/pitch range) instead of
+        # a clip / generator / camera, so the whole FX chain runs on it. Pure
+        # numpy/cv2 — no GL, no MediaPipe at runtime.
+        self.faces = FacePool(cfg.faces_dir)
+        self.face_active = False
+
         self.fx_state = {fx: False for fx in FX_TOGGLES}
         self.hit_type = None
         self.hit_frames_left = 0
@@ -278,6 +301,7 @@ class Engine:
             self.clips.select(idx)
             self.active_generative = None
             self.camera_active = False
+            self.face_active = False
 
     def toggle_overlay(self, idx):
         if idx >= len(self.overlays):
@@ -305,6 +329,7 @@ class Engine:
         if self.clips.active_idx is not None:
             self.active_generative = None
             self.camera_active = False
+            self.face_active = False
 
     def browse_overlays(self, action, arg=None):
         if self._in_mapping():
@@ -383,6 +408,7 @@ class Engine:
             self.active_generative = name
             self.clips.deselect()
             self.camera_active = False
+            self.face_active = False
 
     def browse_generatives(self, step):
         if not GENERATIVES:
@@ -437,6 +463,7 @@ class Engine:
             self.camera_active = True
             self.clips.deselect()
             self.active_generative = None
+            self.face_active = False
         else:
             print("[vj] camera: could not start — see vj_last_run.log")
 
@@ -450,6 +477,7 @@ class Engine:
             self.camera_active = True
             self.clips.deselect()
             self.active_generative = None
+            self.face_active = False
         else:
             print("[vj] camera: --camera requested but no camera started")
 
@@ -457,6 +485,50 @@ class Engine:
         if self.camera is not None:
             on = self.camera.toggle_mirror()
             print(f"[vj] camera mirror {'on' if on else 'off'}")
+
+    # ── Face point cloud ──────────────────────────────────────────────
+
+    def _activate_face(self):
+        """Make the face cloud the live base layer, clearing the others."""
+        self.face_active = True
+        self.clips.deselect()
+        self.active_generative = None
+        self.camera_active = False
+
+    def toggle_facecloud(self):
+        """Toggle the face point cloud as the base layer (live mode only)."""
+        if self.face_active:
+            self.face_active = False
+            return
+        if len(self.faces) == 0:
+            print("[vj] facecloud: no faces in assets/faces/ — "
+                  "run 'Capture Face.sh' first")
+        self._activate_face()
+
+    def cycle_face(self, step):
+        """Step to the previous/next baked face, turning the layer on if it
+        wasn't already (so `,`/`.` both selects and activates)."""
+        if len(self.faces) == 0:
+            print("[vj] facecloud: no faces in assets/faces/ — "
+                  "run 'Capture Face.sh' first")
+            self._activate_face()
+            return
+        if not self.face_active:
+            self._activate_face()
+        else:
+            self.faces.step(step)
+        print(f"[vj] facecloud: {self.faces.name()}")
+
+    def enable_face_base(self):
+        """Force the face cloud on at boot (used by --faces). Drops mapping
+        so the operator sees it immediately."""
+        if self.mode == "mapping":
+            self.mode = "live"
+            self.mapping.enabled = False
+        if len(self.faces) == 0:
+            print("[vj] --faces: no faces in assets/faces/ — "
+                  "run 'Capture Face.sh' to bake some")
+        self._activate_face()
 
     # ── Cinematic 4K mode ────────────────────────────────────────────
 
@@ -642,6 +714,7 @@ class Engine:
         self.clips.select(idx)
         self.active_generative = None
         self.camera_active = False
+        self.face_active = False
 
     def save_clip_favorite(self, slot):
         """Long-press handler. With nothing playing, clears the slot."""
@@ -765,12 +838,14 @@ class Engine:
                 self.clips.pick_random()
                 self.active_generative = None
                 self.camera_active = False
+                self.face_active = False
             elif GENERATIVES:
                 self.current_generator_idx = random.randrange(len(GENERATIVES))
                 self.active_generative = GENERATIVES[self.current_generator_idx]
                 self._generator_activation_token += 1
                 self.clips.deselect()
                 self.camera_active = False
+                self.face_active = False
             self._auto_next_clip_at = now + self.auto_clip_interval * random.uniform(0.6, 1.7)
 
         # FX toggling — keep total active count manageable.
@@ -1227,6 +1302,12 @@ class Engine:
             # show black rather than falling back to a clip the operator
             # didn't ask for. Toggle the camera off to return to clips.
             return np.zeros((self.h, self.w, 3), dtype=np.uint8)
+        if self.face_active:
+            self._base_was_generator = False
+            frame = self._render_facecloud(ctx)
+            if frame is not None:
+                return frame
+            return np.zeros((self.h, self.w, 3), dtype=np.uint8)
         clip_frame = self.clips.read()
         if clip_frame is not None:
             self._base_was_generator = False
@@ -1242,6 +1323,24 @@ class Engine:
                 return frame
         self._base_was_generator = False
         return np.zeros((self.h, self.w, 3), dtype=np.uint8)
+
+    def _render_facecloud(self, ctx):
+        """Render the selected face cloud at the reduced gen resolution (it's
+        upscaled in compose_frame like a generative). Yaw/pitch = operator
+        offset (param_x/param_y around centre, clamped) + a slow auto-drift so
+        the head turns on its own without ever spinning into its hollow back."""
+        cloud = self.faces.current()
+        if cloud is None:
+            return None
+        t = ctx.t
+        auto_yaw = FACE_AUTO_YAW_AMP * np.sin(t * FACE_AUTO_YAW_SPEED)
+        auto_pitch = FACE_AUTO_PITCH_AMP * np.sin(t * FACE_AUTO_PITCH_SPEED + 1.0)
+        yaw = (ctx.px - 0.5) * 2.0 * FACE_MAX_YAW + auto_yaw
+        pitch = (ctx.py - 0.5) * 2.0 * FACE_MAX_PITCH + auto_pitch
+        yaw = float(np.clip(yaw, -FACE_MAX_YAW, FACE_MAX_YAW))
+        pitch = float(np.clip(pitch, -FACE_MAX_PITCH, FACE_MAX_PITCH))
+        gw, gh = self._gen_render_size()
+        return cloud.render(gw, gh, yaw, pitch)
 
     def _render_generative(self, name, width, height, t, params):
         token = self._generator_activation_token if name == "donut" else 0

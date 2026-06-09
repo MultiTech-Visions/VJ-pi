@@ -248,6 +248,20 @@ def dispatch(engine, key, mod):
     # Favourite keys (1-0, A-L, ;) are handled in Engine.run()'s long-press
     # logic — they don't go through dispatch at all.
 
+    # Face point cloud (live mode only): backtick toggles it as the base
+    # layer; , / . step through the baked faces (and turn it on if it was
+    # off). These keys are unused elsewhere in live mode.
+    if engine.mode == "live":
+        if key == pygame.K_BACKQUOTE:
+            engine.toggle_facecloud()
+            return
+        if key == pygame.K_COMMA:
+            engine.cycle_face(-1)
+            return
+        if key == pygame.K_PERIOD:
+            engine.cycle_face(1)
+            return
+
     if key in HIT_KEYS:
         engine.fire_hit(HIT_KEYS[key], frames=5)
         return

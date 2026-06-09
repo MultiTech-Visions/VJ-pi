@@ -94,6 +94,17 @@ image from `assets/images/` as `sampler2D tex`.
   base layer, toggled with `\`). Pure CPU/V4L2, no GL — auto-probes for
   the camera. `list_cameras.py` + `List Cameras.sh` report detected
   devices; `Start VJ (Live Cam).sh` boots straight into it.
+- `facecloud.py` — `FaceCloud` + `FacePool`: the face point-cloud base
+  layer (toggle `` ` ``, cycle `,`/`.`, arrows turn/tip the head). Loads
+  baked `.npz` faces and software-splats them rotating in a clamped
+  yaw/pitch range. **Pure numpy/cv2, no GL, and no MediaPipe at runtime**
+  — faces are baked offline, so the show pipeline gains the feature
+  without the dependency.
+- `face_capture.py` — offline face scanner (MediaPipe Face Mesh → `.npz`
+  point cloud). Run by `Capture Face.sh` in its **own** `venv_face/`
+  (deps in `requirements-face.txt`); deliberately never imported by the
+  main app so MediaPipe can't perturb the proven venv. Faces live in
+  `assets/faces/` (gitignored, like clips).
 - `keymap.py` — pygame key → engine action dispatch.
 - `shader_catalog.py` — GLSL generator catalogue (`GPU_GENERATORS`).
 - `gpu_generator_worker.py` — out-of-process GStreamer/GL renderer.

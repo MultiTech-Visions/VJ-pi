@@ -45,6 +45,11 @@ Then double-click these files in order:
      also just press `\` any time during a normal run.) Plug in a USB
      webcam first; **`List Cameras.sh`** pops a dialog confirming it's
      detected.
+   - **`Capture Face.sh`** — scan someone's face into a rotating 3D
+     **point cloud** using the webcam (see "Face point clouds" below).
+   - **`Start VJ (Faces).sh`** — same as `Start VJ.sh` but boots straight
+     into the face point cloud as the base layer (or press `` ` `` any time
+     during a normal run).
 
 4. (Optional) Double-click **`Install Desktop Shortcuts.sh`** to drop
    launcher icons on your desktop so you don't have to navigate into
@@ -146,8 +151,10 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `F8`                | FX: melt — warp the base layer with a generator's colour field (kaliset by default; PARAM X = shimmer → full liquefy). Live mode only. |
 | `\`                 | **LIVE CAM** — toggle the USB webcam as the base layer (takes over from clip / generator). In mapping PERFORM mode it sets the selected group's content to the live feed. Every FX / hit / overlay then runs on your live video. Auto-detects the camera; switch back to clips/generators with `−/=` or `[/]`. |
 | `Shift+\`           | Flip the webcam left/right (selfie mirror; on by default) |
-| `← →`               | Adjust PARAM X (active-FX horizontal control)      |
-| `↑ ↓`               | Adjust PARAM Y (active-FX vertical control)        |
+| `` ` `` (backtick)  | **FACE CLOUD** — toggle a baked face point cloud as the base layer (captured with `Capture Face.sh`). The head slowly rotates on its own; switch back to clips/generators with `−/=` or `[/]`. Live mode only. |
+| `,` / `.`           | Previous / next baked face (turns the face cloud on if it was off). Live mode only. |
+| `← →`               | Adjust PARAM X (active-FX horizontal control). **With the face cloud active, turns the head left / right.** |
+| `↑ ↓`               | Adjust PARAM Y (active-FX vertical control). **With the face cloud active, tips the head up / down.** |
 | `Enter Enter`       | Engage **AUTOPILOT** (double-tap within 600 ms). Any other key takes over again and executes immediately. While engaged, `↑/↓` tune the clip-change rate and `←/→` tune the FX-change rate. |
 | `F9` `F10`          | **Mapping only:** lower / raise the mapping compositing resolution (trades sharpness for framerate). The projector still gets a full-size GPU-upscaled image; only the internal composite shrinks. Shown on the HUD as `map res NN%`; persists. |
 | `F11`               | Cycle the pending output display                   |
@@ -423,6 +430,49 @@ default and runs entirely on the CPU (no GL), exactly like the software
 clip path. Heavy FX stacks on a live 720p feed will cost some frames on
 the Pi 5 — drop a couple of effects if it dips.
 
+### Face point clouds (scan a face, rotate it slowly)
+
+Capture someone's face as a 3D **point cloud** from the webcam, then project
+it slowly turning to catch different angles — turn the head left/right, tip it
+up/down. Faces are saved so you can scan a whole bunch and cycle through them.
+
+**Capturing:**
+
+- Double-click **`Capture Face.sh`**. A preview window opens showing the
+  webcam with the detected face mesh dotted on top.
+- Sit so your face fills the frame and the dots track it, then press
+  **SPACE** to bake it. The dialog confirms it saved (e.g. `face_003.npz`).
+- Capture as many people / angles as you like in one session; press **ESC**
+  when done. Each one lands in `assets/faces/`.
+- The very first run installs the face-scanner (MediaPipe) into its own
+  separate environment — a one-time, few-minute download with a progress
+  window. This is kept apart from the main app on purpose, so it can never
+  disturb the proven show pipeline.
+
+**Performing:**
+
+- Press **`` ` ``** (backtick, top-left of the keyboard) to show the face
+  cloud as the base layer. It **slowly rotates on its own**.
+- **`,` / `.`** step to the previous / next face.
+- **Arrow keys** turn it by hand: **← →** turn the head left/right, **↑ ↓**
+  tip it up/down (added on top of the slow auto-drift).
+- Every effect, hit and overlay runs on it, same as a clip. Switch back to
+  clips / generators with `−/=` or `[/]`.
+- Double-click **`Start VJ (Faces).sh`** to boot straight into it.
+
+**Why it doesn't spin a full 360:** a single front-on capture only has data
+for the *front* of the head — there's nothing behind it. So rotation is
+deliberately clamped to a moderate turn/tip range; push past it and you'd be
+looking into a hollow shell. The clamp is both the look you want and the only
+thing one capture can honestly show.
+
+It's pure CPU (numpy/OpenCV), no GL — the baked face is just a small file of
+coloured 3D points, so the app loads it with no extra dependencies.
+
+> *Coming next:* combining two faces into one scene (one on the left, one on
+> the right, looking at each other). The single-face version above is the
+> foundation for it.
+
 ### Portrait → landscape (three modes)
 
 Vertical phone video becomes a 16:9 HEVC clip in `assets/clips_hevc/`
@@ -515,6 +565,12 @@ shader_catalog.py / gpu_generator_worker.py
                GStreamer/GL shader generators in a separate process
 clips.py       ClipPool: lazy MP4 loader keyed by slot index
 camera.py      CameraSource: threaded USB-webcam capture (live base layer)
+facecloud.py   FaceCloud + FacePool: software point-cloud base layer
+               (loads baked .npz faces, rotates + splats them; no GL, no
+               MediaPipe at runtime)
+face_capture.py Offline face-scan tool (MediaPipe Face Mesh → .npz), run in
+               its own venv_face/ by "Capture Face.sh" — never imported by
+               the main app
 keymap.py      Pygame key → engine action dispatch table
 config.py      Config dataclass
 cinematic4k.py System-Python GStreamer/GL player for N-key 4K cinematic mode
@@ -523,7 +579,7 @@ cinematic4k.py System-Python GStreamer/GL player for N-key 4K cinematic mode
 Render pipeline each frame:
 
 ```
-base layer   →  live webcam OR active clip OR active generative OR black
+base layer   →  live webcam OR face point cloud OR active clip OR active generative OR black
    ↓
 FX chain     →  kaleido, mirror, rgb_split, posterize, edges, invert, feedback, melt
    ↓

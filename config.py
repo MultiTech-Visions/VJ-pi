@@ -75,3 +75,10 @@ class Config:
     @property
     def overlays_dir(self) -> Path:
         return self.assets_dir / "overlays"
+
+    @property
+    def faces_dir(self) -> Path:
+        # Baked face point clouds (assets/faces/*.npz) for the face-cloud
+        # base layer. Captured offline by face_capture.py; gitignored like
+        # the rest of the operator's media.
+        return self.assets_dir / "faces"

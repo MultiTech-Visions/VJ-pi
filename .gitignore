@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 venv/
+venv_face/
 vj_state.json
 vj_last_run.log
 vj_last_update.log
@@ -57,6 +58,13 @@ vj_last_hevc_worker.log
 # HEVC clip library (baked 2K clips live here, like assets/clips)
 assets/clips_hevc/*
 !assets/clips_hevc/.gitkeep
+
+# Baked face point clouds — operator media, like assets/clips. The .npz
+# files are captured locally via "Capture Face.sh"; keep the folder + docs.
+assets/faces/*
+!assets/faces/.gitkeep
+!assets/faces/README*
+vj_last_capture.log
 
 # Catch-all for run logs + local test media so a stray `git add -A` can't
 # sweep them in (a 68MB test mp4 + spike logs got committed once).

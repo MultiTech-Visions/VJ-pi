@@ -1,0 +1,11 @@
+# Dependencies for the OFFLINE face-capture tool only (face_capture.py),
+# installed into a SEPARATE venv (venv_face/) by "Capture Face.sh".
+#
+# Deliberately kept out of the main app's venv: MediaPipe is heavy and pins
+# numpy/opencv versions, and the proven VJ pipeline must not inherit that
+# risk. The app loads baked faces (plain .npz) with no extra deps.
+#
+# MediaPipe pulls in opencv-contrib-python + numpy itself, so we don't list
+# opencv here (listing opencv-python too would conflict with the contrib build).
+mediapipe
+pygame>=2.5
