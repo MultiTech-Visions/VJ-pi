@@ -68,6 +68,17 @@ FACE_AUTO_YAW_SPEED = 0.25
 FACE_AUTO_PITCH_AMP = 0.10
 FACE_AUTO_PITCH_SPEED = 0.17
 
+# "Two faces facing each other" view (Shift+` toggles it). The current face
+# sits left, the next face in the library sits right, each turned INWARD by
+# FACE_DUO_YAW so they look at one another (kept inside the usable data range
+# so neither shows its hollow back). FIT shrinks each so both fit; SEP is the
+# half-gap from centre. A slow sway breathes the inward angle so it's alive.
+FACE_DUO_YAW = 0.55      # ~31° inward turn (within FACE_MAX_YAW)
+FACE_DUO_FIT = 0.32      # each face's span as a fraction of min(w, h)
+FACE_DUO_SEP = 0.25      # each face's centre offset from frame centre (frac w)
+FACE_DUO_AUTO_AMP = 0.12
+FACE_DUO_AUTO_SPEED = 0.30
+
 # How many favorite slots per pool (matches the number / QWERTY rows).
 FAV_SLOTS = 10
 
@@ -181,9 +192,12 @@ class Engine:
         # face_capture.py (assets/faces/*.npz); when face_active, the selected
         # cloud is the base (rotating in a clamped yaw/pitch range) instead of
         # a clip / generator / camera, so the whole FX chain runs on it. Pure
-        # numpy/cv2 — no GL, no MediaPipe at runtime.
+        # numpy/cv2 — no GL, no landmark model at runtime.
         self.faces = FacePool(cfg.faces_dir)
         self.face_active = False
+        # When True (and face_active), render TWO faces facing each other
+        # instead of one. Toggled with Shift+` ; see _render_face_duo.
+        self.face_duo = False
 
         self.fx_state = {fx: False for fx in FX_TOGGLES}
         self.hit_type = None
@@ -548,6 +562,21 @@ class Engine:
             print("[vj] facecloud: no faces in assets/faces/ — "
                   "run 'Capture Face.sh' first")
         self._activate_face()
+
+    def toggle_face_duo(self):
+        """Toggle the 'two faces facing each other' view (live mode only),
+        turning the face layer on if it wasn't already so Shift+` works from
+        any base."""
+        self.face_duo = not self.face_duo
+        if self.face_duo and not self.face_active:
+            if len(self.faces) == 0:
+                print("[vj] facecloud: no faces in assets/faces/ — "
+                      "run 'Capture Face.sh' first")
+            self._activate_face()
+        n = len(self.faces)
+        partner = " (one face mirrored — bake another for a pair)" if n == 1 else ""
+        print(f"[vj] facecloud: two-faces {'on' if self.face_duo else 'off'}"
+              f"{partner if self.face_duo else ''}")
 
     def cycle_face(self, step):
         """Step to the previous/next baked face, turning the layer on if it
@@ -1446,6 +1475,8 @@ class Engine:
         upscaled in compose_frame like a generative). Yaw/pitch = operator
         offset (param_x/param_y around centre, clamped) + a slow auto-drift so
         the head turns on its own without ever spinning into its hollow back."""
+        if self.face_duo:
+            return self._render_face_duo(ctx)
         cloud = self.faces.current()
         if cloud is None:
             return None
@@ -1458,6 +1489,34 @@ class Engine:
         pitch = float(np.clip(pitch, -FACE_MAX_PITCH, FACE_MAX_PITCH))
         gw, gh = self._gen_render_size()
         return cloud.render(gw, gh, yaw, pitch)
+
+    def _render_face_duo(self, ctx):
+        """Render two faces facing each other: the current face on the left,
+        the next library face on the right, each turned inward. The operator's
+        param_x pans the pair, param_y tips both; a slow sway breathes the
+        inward angle. Falls back to the same face on both sides if only one is
+        baked. Returns the reduced-res frame (upscaled like a generative)."""
+        left = self.faces.current()
+        if left is None:
+            return None
+        right = self.faces.peek(1) or left
+        gw, gh = self._gen_render_size()
+        t = ctx.t
+        sway = FACE_DUO_AUTO_AMP * np.sin(t * FACE_DUO_AUTO_SPEED)
+        turn = (ctx.px - 0.5) * 2.0 * FACE_MAX_YAW * 0.4   # pan the pair
+        pitch = ((ctx.py - 0.5) * 2.0 * FACE_MAX_PITCH
+                 + FACE_AUTO_PITCH_AMP * 0.5 * np.sin(t * FACE_AUTO_PITCH_SPEED))
+        pitch = float(np.clip(pitch, -FACE_MAX_PITCH, FACE_MAX_PITCH))
+        inward = FACE_DUO_YAW + sway
+        yl = float(np.clip(-inward + turn, -FACE_MAX_YAW, FACE_MAX_YAW))
+        yr = float(np.clip(inward + turn, -FACE_MAX_YAW, FACE_MAX_YAW))
+        cxl = gw * (0.5 - FACE_DUO_SEP)
+        cxr = gw * (0.5 + FACE_DUO_SEP)
+        img = left.render(gw, gh, yl, pitch, cx=cxl, cy=gh * 0.5,
+                          fit=FACE_DUO_FIT)
+        img = right.render(gw, gh, yr, pitch, cx=cxr, cy=gh * 0.5,
+                           fit=FACE_DUO_FIT, into=img)
+        return img
 
     def _render_generative(self, name, width, height, t, params):
         token = self._generator_activation_token if name == "donut" else 0

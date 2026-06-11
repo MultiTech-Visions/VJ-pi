@@ -152,6 +152,7 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `\`                 | **LIVE CAM** — toggle the USB webcam as the base layer (takes over from clip / generator). In mapping PERFORM mode it sets the selected group's content to the live feed. Every FX / hit / overlay then runs on your live video. Auto-detects the camera; switch back to clips/generators with `−/=` or `[/]`. |
 | `Shift+\`           | Flip the webcam left/right (selfie mirror; on by default) |
 | `` ` `` (backtick)  | **FACE CLOUD** — toggle a baked face point cloud as the base layer (captured with `Capture Face.sh`). The head slowly rotates on its own; switch back to clips/generators with `−/=` or `[/]`. Live mode only. |
+| `Shift+` `` ` ``     | **TWO FACES** — toggle a "two faces facing each other" view: the current baked face sits left, the next one right, each turned inward looking at the other (`,`/`.` re-pick the pair, arrows pan/tip them). With only one face baked it mirrors that face on both sides. Live mode only. |
 | `,` / `.`           | Previous / next baked face (turns the face cloud on if it was off). Live mode only. |
 | `← →`               | Adjust PARAM X (active-FX horizontal control). **With the face cloud active, turns the head left / right.** |
 | `↑ ↓`               | Adjust PARAM Y (active-FX vertical control). **With the face cloud active, tips the head up / down.** |
@@ -450,20 +451,24 @@ up/down. Faces are saved so you can scan a whole bunch and cycle through them.
 **Capturing:**
 
 - Double-click **`Capture Face.sh`**. A preview window opens showing the
-  webcam with the detected face mesh dotted on top.
+  webcam with the dense face mesh dotted on top.
 - Sit so your face fills the frame and the dots track it, then press
   **SPACE** to bake it. The dialog confirms it saved (e.g. `face_003.npz`).
 - Capture as many people / angles as you like in one session; press **ESC**
   when done. Each one lands in `assets/faces/`.
-- The very first run installs the face-scanner (MediaPipe) into its own
-  separate environment — a one-time, few-minute download with a progress
-  window. This is kept apart from the main app on purpose, so it can never
-  disturb the proven show pipeline.
+- The very first run installs the face-scanner into its own separate
+  environment, then downloads the detector model — a one-time, few-minute
+  download with a progress window. This is kept apart from the main app on
+  purpose, so it can never disturb the proven show pipeline.
 
 **Performing:**
 
 - Press **`` ` ``** (backtick, top-left of the keyboard) to show the face
   cloud as the base layer. It **slowly rotates on its own**.
+- Press **`Shift+`` ` ``** for the **two-faces-facing-each-other** view —
+  the current face on the left and the next baked face on the right, each
+  turned inward looking at one another (bake at least two friends for the
+  full effect; with one it mirrors the same face). Arrows pan/tip the pair.
 - **`,` / `.`** step to the previous / next face.
 - **Arrow keys** turn it by hand: **← →** turn the head left/right, **↑ ↓**
   tip it up/down (added on top of the slow auto-drift).
@@ -578,9 +583,9 @@ clips.py       ClipPool: lazy MP4 loader keyed by slot index
 camera.py      CameraSource: threaded USB-webcam capture (live base layer)
 facecloud.py   FaceCloud + FacePool: software point-cloud base layer
                (loads baked .npz faces, rotates + splats them; no GL, no
-               MediaPipe at runtime)
-face_capture.py Offline face-scan tool (MediaPipe Face Mesh → .npz), run in
-               its own venv_face/ by "Capture Face.sh" — never imported by
+               landmark model at runtime)
+face_capture.py Offline face-scan tool (MediaPipe Face Mesh ONNX → .npz), run
+               in its own venv_face/ by "Capture Face.sh" — never imported by
                the main app
 keymap.py      Pygame key → engine action dispatch table
 config.py      Config dataclass

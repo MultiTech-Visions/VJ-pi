@@ -1,14 +1,15 @@
 """Face point-cloud base layer for the VJ rig.
 
 A "face" here is a 3D point cloud baked from a single webcam capture by
-`face_capture.py` (which runs MediaPipe Face Mesh in its OWN isolated venv —
-see `Capture Face.sh`). Each face is saved as a tiny `.npz` holding:
+`face_capture.py` (which runs the MediaPipe Face Mesh model via onnxruntime
+in its OWN isolated venv — see `Capture Face.sh`). Each face is saved as a
+tiny `.npz` holding:
 
     points  (N, 3) float32   — centred + radius-normalised, Y is DOWN (image
                                convention) so it renders upright
     colors  (N, 3) uint8     — RGB sampled from the capture, one per point
 
-Crucially, NOTHING in this module needs MediaPipe. The bake is done offline;
+Crucially, NOTHING in this module needs the landmark model. The bake is offline;
 at show time we only load numpy arrays and splat them, so the proven CPU app
 gains a feature without gaining a dependency. Pure numpy/cv2 — no GL context,
 so it stays well clear of the V3D dual-context landmine the hybrid is built
@@ -58,15 +59,28 @@ class FaceCloud:
     def n_points(self):
         return self.points.shape[0]
 
-    def render(self, w, h, yaw, pitch, roll=0.0, point_size=2):
+    def render(self, w, h, yaw, pitch, roll=0.0, point_size=2,
+               cx=None, cy=None, fit=_FIT, into=None):
         """Return an (h, w, 3) uint8 RGB frame of the cloud rotated to
         (yaw, pitch, roll) radians, on black.
 
         yaw   rotates about the vertical axis  (turn head left / right)
         pitch rotates about the horizontal axis(tip head up / down)
         roll  rotates in the image plane.
+
+        cx, cy   pixel centre to project around (default frame centre) — lets
+                 a caller place the face off-centre, e.g. two faces side by
+                 side facing each other.
+        fit      cloud span as a fraction of min(w, h) (default `_FIT`); pass
+                 a smaller value to shrink the face so several fit at once.
+        into     an existing (h, w, 3) frame to draw into instead of a fresh
+                 black one — so multiple clouds can be composited together.
         """
-        img = np.zeros((h, w, 3), dtype=np.uint8)
+        img = into if into is not None else np.zeros((h, w, 3), dtype=np.uint8)
+        if cx is None:
+            cx = w * 0.5
+        if cy is None:
+            cy = h * 0.5
         pts = self.points
         if pts.shape[0] == 0:
             return img
@@ -74,14 +88,15 @@ class FaceCloud:
         # Build the combined rotation. Order: yaw (Y) → pitch (X) → roll (Z),
         # applied to column vectors, so R = Rz @ Rx @ Ry and we transform with
         # pts @ R.T.
-        cy, sy = np.cos(yaw), np.sin(yaw)
-        cx, sx = np.cos(pitch), np.sin(pitch)
-        cz, sz = np.cos(roll), np.sin(roll)
-        Ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]],
+        # NB: keep these trig locals distinct from the cx/cy CENTRE params.
+        cosy, siny = np.cos(yaw), np.sin(yaw)
+        cosx, sinx = np.cos(pitch), np.sin(pitch)
+        cosz, sinz = np.cos(roll), np.sin(roll)
+        Ry = np.array([[cosy, 0.0, siny], [0.0, 1.0, 0.0], [-siny, 0.0, cosy]],
                       dtype=np.float32)
-        Rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]],
+        Rx = np.array([[1.0, 0.0, 0.0], [0.0, cosx, -sinx], [0.0, sinx, cosx]],
                       dtype=np.float32)
-        Rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]],
+        Rz = np.array([[cosz, -sinz, 0.0], [sinz, cosz, 0.0], [0.0, 0.0, 1.0]],
                       dtype=np.float32)
         R = Rz @ Rx @ Ry
         rot = pts @ R.T  # (N,3)
@@ -92,9 +107,9 @@ class FaceCloud:
 
         # Weak-perspective projection. persp shrinks far points slightly.
         persp = _FOCAL / (_FOCAL + rz)
-        scale = min(w, h) * _FIT
-        sx_px = w * 0.5 + rx * scale * persp
-        sy_px = h * 0.5 + ry * scale * persp
+        scale = min(w, h) * fit
+        sx_px = cx + rx * scale * persp
+        sy_px = cy + ry * scale * persp
         xs = sx_px.astype(np.int32)
         ys = sy_px.astype(np.int32)
 
@@ -190,3 +205,20 @@ class FacePool:
             return None
         self.idx = (self.idx + delta) % len(self.files)
         return self.name()
+
+    def peek(self, delta):
+        """Return the FaceCloud `delta` slots from the current selection
+        WITHOUT moving the selection (lazy-loaded + cached), or None. Used by
+        the two-faces view to grab the partner face."""
+        if not self.files:
+            return None
+        path = self.files[(self.idx + delta) % len(self.files)]
+        cloud = self._cache.get(path.stem)
+        if cloud is None:
+            try:
+                cloud = FaceCloud.load(path)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[vj] facecloud: failed to load {path.name}: {exc!r}")
+                return None
+            self._cache[path.stem] = cloud
+        return cloud

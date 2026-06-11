@@ -260,11 +260,15 @@ def dispatch(engine, key, mod):
     # logic — they don't go through dispatch at all.
 
     # Face point cloud (live mode only): backtick toggles it as the base
-    # layer; , / . step through the baked faces (and turn it on if it was
-    # off). These keys are unused elsewhere in live mode.
+    # layer; Shift+backtick toggles the "two faces facing each other" view;
+    # , / . step through the baked faces (and turn it on if it was off).
+    # These keys are unused elsewhere in live mode.
     if engine.mode == "live":
         if key == pygame.K_BACKQUOTE:
-            engine.toggle_facecloud()
+            if mod & pygame.KMOD_SHIFT:
+                engine.toggle_face_duo()
+            else:
+                engine.toggle_facecloud()
             return
         if key == pygame.K_COMMA:
             engine.cycle_face(-1)

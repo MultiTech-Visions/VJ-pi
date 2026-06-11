@@ -1,11 +1,20 @@
 # Dependencies for the OFFLINE face-capture tool only (face_capture.py),
 # installed into a SEPARATE venv (venv_face/) by "Capture Face.sh".
 #
-# Deliberately kept out of the main app's venv: MediaPipe is heavy and pins
-# numpy/opencv versions, and the proven VJ pipeline must not inherit that
-# risk. The app loads baked faces (plain .npz) with no extra deps.
+# Deliberately kept out of the main app's venv: the face-landmark stack is
+# heavy and pins numpy/opencv versions, and the proven VJ pipeline must not
+# inherit that risk. The app loads baked faces (plain .npz) with no extra deps.
 #
-# MediaPipe pulls in opencv-contrib-python + numpy itself, so we don't list
-# opencv here (listing opencv-python too would conflict with the contrib build).
-mediapipe
+# Stack: this Pi is Debian 13 / Python 3.13 on aarch64, for which Google ships
+# NO MediaPipe wheel (and MediaPipe doesn't support 3.13). So we run the dense
+# MediaPipe Face Mesh *model* as ONNX through onnxruntime (native cp313/aarch64
+# wheel) and use InsightFace only to detect the face. Everything installs with
+# no compiler and no Python downgrade.
+#
+# insightface pulls in opencv-python + numpy itself; we list onnxruntime (runs
+# the mesh model, assets/models/face_mesh.onnx) and scipy (Delaunay) explicitly
+# since face_capture.py imports them directly and we want the CPU onnx runtime.
+insightface
+onnxruntime
+scipy
 pygame>=2.5
