@@ -1116,6 +1116,93 @@ void main() {
 
 
 
+# ── Pixelswirl: RGB pointillism vortex (magnified-loupe look) ─────────
+#
+# Recreates the "screen subpixels through a swirling loupe" video: a
+# dense field of pure saturated dots — quantised to six primaries
+# (R Y G C B M) so it reads like a CRT/LCD seen through a magnifier —
+# swept into a spiral vortex.
+#
+# The frame is read in LOG-POLAR space: dots land on a lattice of
+# concentric rings, so they pack ever tighter toward the centre (the
+# vortex throat) exactly like the footage. A log-radius twist shears
+# those rings into spiral arms, and the whole disc rotates while the
+# twist breathes and the dots twinkle.
+#
+# Two seam tricks keep it clean: SECTORS is an integer so the angular
+# phase wraps continuously across the atan() branch cut, and the colour
+# cell index is taken mod SECTORS so dot hues match across that seam.
+PIXELSWIRL_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+uniform float width;
+uniform float height;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+const float TAU = 6.28318530718;
+
+void main() {
+    float asp = (height > 0.5) ? (width / height) : (1280.0 / 720.0);
+    vec2 uv = (v_texcoord - 0.5) * vec2(asp, 1.0);
+    float t = time;
+
+    float rad = length(uv) + 1e-4;
+    float ang = atan(uv.y, uv.x);
+
+    // Spiral twist: spiral the angle with log radius (stronger toward
+    // the centre), breathing slowly, plus a steady global rotation.
+    float lr = log(rad);
+    float twist = 2.2 + 1.3 * sin(t * 0.13);
+    float spiralAng = ang + twist * lr + t * 0.35;
+
+    // Log-polar dot lattice. SECTORS integer -> seamless angular wrap;
+    // ringScale = SECTORS / TAU keeps the dots roughly round on screen.
+    float SECTORS = 30.0;
+    float ringScale = SECTORS / TAU;
+
+    float pa = spiralAng / TAU * SECTORS;   // angular dot index (continuous)
+    float pr = lr * ringScale;              // radial ring index
+
+    vec2 fp = vec2(fract(pa) - 0.5, fract(pr) - 0.5);
+    float d = length(fp);
+
+    vec2 cid = vec2(mod(floor(pa), SECTORS), floor(pr));
+    float rnd = hash(cid);
+    float rnd2 = hash(cid + 17.3);
+
+    // Per-dot twinkle drives both size and brightness so the field
+    // sparkles like the footage.
+    float twinkle = 0.5 + 0.5 * sin(t * (1.5 + rnd2 * 3.0) + rnd * TAU);
+    float radius = 0.34 + 0.10 * twinkle;
+    float dot = smoothstep(radius + 0.06, radius - 0.06, d);
+
+    // Pure saturated colour, hue snapped to six primaries (R Y G C B M).
+    float hue = fract(floor(rnd * 6.0) / 6.0 + t * 0.01);
+    float val = 0.55 + 0.45 * twinkle;
+    vec3 col = hsv2rgb(vec3(hue, 1.0, val)) * dot;
+
+    // Core jewel hides the log singularity; gentle vignette floats it.
+    col += hsv2rgb(vec3(fract(t * 0.2), 0.6, 1.0)) * smoothstep(0.05, 0.0, rad);
+    col *= 1.0 - smoothstep(0.7, 1.25, length(uv)) * 0.45;
+
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+
+
 
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
@@ -1147,6 +1234,7 @@ GPU_GENERATORS = {
     'curlflow': CURLFLOW_SHADER,
     'phyllotaxis': PHYLLOTAXIS_SHADER,
     'sunplasma': SUNPLASMA_SHADER,
+    'pixelswirl': PIXELSWIRL_SHADER,
     'donut': DONUT_SHADER,
 }
 
