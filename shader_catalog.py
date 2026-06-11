@@ -1116,23 +1116,27 @@ void main() {
 
 
 
-# ── Pixelswirl: RGB pointillism vortex (magnified-loupe look) ─────────
+# ── Dotsphere: a tumbling sphere shelled in RGB dots ─────────────────
 #
-# Recreates the "screen subpixels through a swirling loupe" video: a
-# dense field of pure saturated dots — quantised to six primaries
-# (R Y G C B M) so it reads like a CRT/LCD seen through a magnifier —
-# swept into a spiral vortex.
+# A 3D sphere whose surface is a matrix of pure, saturated dots —
+# quantised to six primaries (R Y G C B M) so it reads like a screen's
+# subpixels wrapped onto a ball. The whole thing tumbles on three
+# incommensurate axes, so the apparent rotation never settles into one
+# fixed swirl — dots stream across the face and wrap around the limb.
 #
-# The frame is read in LOG-POLAR space: dots land on a lattice of
-# concentric rings, so they pack ever tighter toward the centre (the
-# vortex throat) exactly like the footage. A log-radius twist shears
-# those rings into spiral arms, and the whole disc rotates while the
-# twist breathes and the dots twinkle.
+# The sphere is analytic, not raymarched: for each pixel inside the
+# projected disc we solve the front-surface z (z = sqrt(R^2 - x^2 -
+# y^2)), giving a unit point on the ball; we also solve the BACK point
+# (-z) and draw it dimmer, so the shell is translucent and you see the
+# dots on the far side through it — that overlap is the busy, dense
+# interior from the footage. Near dots are big and bright, far dots are
+# small and dim (true depth), and toward the silhouette foreshortening
+# crowds the rings together exactly like a real dotted globe.
 #
-# Two seam tricks keep it clean: SECTORS is an integer so the angular
-# phase wraps continuously across the atan() branch cut, and the colour
-# cell index is taken mod SECTORS so dot hues match across that seam.
-PIXELSWIRL_SHADER = """#version 100
+# Dots are placed on latitude RINGS with the per-ring longitude count
+# scaled by cos(lat), so they stay evenly spaced instead of clustering
+# at the poles.
+DOTSPHERE_SHADER = """#version 100
 #ifdef GL_ES
 precision highp float;
 #endif
@@ -1140,6 +1144,9 @@ varying vec2 v_texcoord;
 uniform float time;
 uniform float width;
 uniform float height;
+
+const float PI  = 3.14159265359;
+const float TAU = 6.28318530718;
 
 vec3 hsv2rgb(vec3 c) {
     vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
@@ -1151,52 +1158,79 @@ float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
-const float TAU = 6.28318530718;
+vec3 rotY(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); }
+vec3 rotX(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
+vec3 rotZ(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(c*p.x - s*p.y, s*p.x + c*p.y, p.z); }
+
+// Tumble the lookup with the sphere so the painted dots rotate with it.
+// Three incommensurate rates -> the rotation is always changing.
+vec3 tumble(vec3 p) {
+    p = rotY(p, time * 0.40);
+    p = rotX(p, time * 0.21 + 1.0);
+    p = rotZ(p, time * 0.07);
+    return p;
+}
+
+// Colour + coverage of the dot lattice at a point on the unit sphere.
+// Returns rgb*mask; mask is the round-dot falloff.
+vec3 sphereDots(vec3 sp) {
+    float lat = asin(clamp(sp.y, -1.0, 1.0));   // -PI/2 .. PI/2
+    float lon = atan(sp.z, sp.x);               // -PI .. PI
+
+    float RINGS   = 26.0;                        // latitude bands
+    float LON_MAX = 52.0;                        // longitude dots at equator
+
+    float fLat = lat / PI + 0.5;                 // 0 .. 1
+    float ring = floor(fLat * RINGS);
+    float ringC = (ring + 0.5) / RINGS;
+    float latC = (ringC - 0.5) * PI;             // ring centre latitude
+    float dlat = (fLat - ringC) * PI;            // offset from ring (radians)
+
+    float cl = max(cos(latC), 0.04);
+    float lonCount = max(floor(LON_MAX * cl + 0.5), 1.0);
+    float fLon = lon / TAU + 0.5;                // 0 .. 1
+    float lonIdx = floor(fLon * lonCount);
+    float lonC = (lonIdx + 0.5) / lonCount;
+    float dlon = (fLon - lonC) * TAU * cl;       // metric offset (radians)
+
+    float dist = length(vec2(dlon, dlat));
+    float dotR = (PI / RINGS) * 0.46;
+    float mask = smoothstep(dotR, dotR * 0.68, dist);
+
+    float rnd  = hash(vec2(ring, lonIdx));
+    float rnd2 = hash(vec2(ring, lonIdx) + 19.7);
+    float tw = 0.6 + 0.4 * sin(time * (1.2 + rnd2 * 2.5) + rnd * TAU);
+    float hue = floor(rnd * 6.0) / 6.0;          // six primaries
+    return hsv2rgb(vec3(hue, 1.0, tw)) * mask;
+}
 
 void main() {
     float asp = (height > 0.5) ? (width / height) : (1280.0 / 720.0);
     vec2 uv = (v_texcoord - 0.5) * vec2(asp, 1.0);
-    float t = time;
 
-    float rad = length(uv) + 1e-4;
-    float ang = atan(uv.y, uv.x);
+    vec3 col = vec3(0.010, 0.012, 0.020);        // near-black space
+    float R = 0.46;
+    float d2 = dot(uv, uv);
 
-    // Spiral twist: spiral the angle with log radius (stronger toward
-    // the centre), breathing slowly, plus a steady global rotation.
-    float lr = log(rad);
-    float twist = 2.2 + 1.3 * sin(t * 0.13);
-    float spiralAng = ang + twist * lr + t * 0.35;
+    if (d2 < R * R) {
+        float z = sqrt(R * R - d2);
+        float zf = z / R;                        // 0 at limb .. 1 at centre
 
-    // Log-polar dot lattice. SECTORS integer -> seamless angular wrap;
-    // ringScale = SECTORS / TAU keeps the dots roughly round on screen.
-    float SECTORS = 30.0;
-    float ringScale = SECTORS / TAU;
+        // Front and back surface points (unit sphere), each tumbled.
+        vec3 front = sphereDots(tumble(vec3(uv.x, uv.y,  z) / R));
+        vec3 back  = sphereDots(tumble(vec3(uv.x, uv.y, -z) / R));
 
-    float pa = spiralAng / TAU * SECTORS;   // angular dot index (continuous)
-    float pr = lr * ringScale;              // radial ring index
+        // Translucent shell: far side dim and behind, near side bright.
+        col += back  * (0.18 + 0.18 * zf);
+        col += front * (0.45 + 0.55 * zf);
 
-    vec2 fp = vec2(fract(pa) - 0.5, fract(pr) - 0.5);
-    float d = length(fp);
+        // Soft inner limb darkening for roundness; faint rim halo.
+        col *= 0.7 + 0.3 * zf;
+        col += vec3(0.10, 0.12, 0.20) * smoothstep(0.0, 0.06, R - sqrt(d2));
+    }
 
-    vec2 cid = vec2(mod(floor(pa), SECTORS), floor(pr));
-    float rnd = hash(cid);
-    float rnd2 = hash(cid + 17.3);
-
-    // Per-dot twinkle drives both size and brightness so the field
-    // sparkles like the footage.
-    float twinkle = 0.5 + 0.5 * sin(t * (1.5 + rnd2 * 3.0) + rnd * TAU);
-    float radius = 0.34 + 0.10 * twinkle;
-    float dot = smoothstep(radius + 0.06, radius - 0.06, d);
-
-    // Pure saturated colour, hue snapped to six primaries (R Y G C B M).
-    float hue = fract(floor(rnd * 6.0) / 6.0 + t * 0.01);
-    float val = 0.55 + 0.45 * twinkle;
-    vec3 col = hsv2rgb(vec3(hue, 1.0, val)) * dot;
-
-    // Core jewel hides the log singularity; gentle vignette floats it.
-    col += hsv2rgb(vec3(fract(t * 0.2), 0.6, 1.0)) * smoothstep(0.05, 0.0, rad);
-    col *= 1.0 - smoothstep(0.7, 1.25, length(uv)) * 0.45;
-
+    // Gentle vignette to float the ball in the void.
+    col *= 1.0 - smoothstep(0.6, 1.2, length(uv)) * 0.5;
     gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
 """
@@ -1234,7 +1268,7 @@ GPU_GENERATORS = {
     'curlflow': CURLFLOW_SHADER,
     'phyllotaxis': PHYLLOTAXIS_SHADER,
     'sunplasma': SUNPLASMA_SHADER,
-    'pixelswirl': PIXELSWIRL_SHADER,
+    'dotsphere': DOTSPHERE_SHADER,
     'donut': DONUT_SHADER,
 }
 
