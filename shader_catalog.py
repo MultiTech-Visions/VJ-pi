@@ -1116,6 +1116,144 @@ void main() {
 
 
 
+# ── Dotsphere: a tumbling sphere shelled in RGB dots ─────────────────
+#
+# A 3D sphere whose surface is a matrix of pure, saturated dots —
+# quantised to six primaries (R Y G C B M) so it reads like a screen's
+# subpixels wrapped onto a ball. The whole thing tumbles, and the depth
+# is read purely from dot SIZE: dots on the near (convex) face are big,
+# dots toward the silhouette and on the far side are small — but every
+# dot is the SAME brightness, exactly like the reference footage.
+#
+# The sphere is analytic, not raymarched: for each pixel inside the
+# projected disc we solve the front-surface z (z = sqrt(R^2 - x^2 -
+# y^2)), giving a unit point on the ball; we also solve the BACK point
+# (-z), so the shell is a translucent matrix you see both sides of —
+# that overlap of big near dots and small far dots is the busy interior
+# from the footage. Foreshortening crowds the dots toward the limb just
+# like a real dotted globe.
+#
+# Dots sit on latitude RINGS with the per-ring longitude count scaled by
+# cos(lat), so they stay evenly spaced instead of clustering at the poles.
+#
+# Two live knobs (the arrow keys / PARAM X,Y):
+#   param_x — ROTATION SPEED. 0 freezes the ball; 1 spins it fast.
+#   param_y — DIRECTION-CHANGE DELAY. Low = nervous, frequent reversals;
+#             high = long, lazy sweeps before it turns a new way.
+# The rotation is the integral of a few sines, so its direction reverses
+# on its own every ~param_y seconds while the orientation stays
+# continuous (no jumps) at any setting.
+DOTSPHERE_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+uniform float width;
+uniform float height;
+uniform float param_x;   // rotation speed          (arrow Left/Right)
+uniform float param_y;   // direction-change delay   (arrow Up/Down)
+
+const float PI  = 3.14159265359;
+const float TAU = 6.28318530718;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+vec3 rotY(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); }
+vec3 rotX(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
+vec3 rotZ(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(c*p.x - s*p.y, s*p.x + c*p.y, p.z); }
+
+// Tumble the lookup with the sphere so the painted dots rotate with it.
+// Each axis angle is a sum of two sines whose base period is the
+// direction-change delay; the angular velocity (their derivative) flips
+// sign every ~delay/2, so the ball keeps redirecting on its own. Speed
+// scales the throw. It's a closed form of time, so orientation is always
+// continuous — no snap when the params move.
+vec3 tumble(vec3 p) {
+    float speed = param_x * 1.6;                 // 0 = frozen
+    float delay = mix(1.5, 20.0, clamp(param_y, 0.0, 1.0));
+    float w = TAU / delay;
+    float amp = speed * delay / TAU;             // keep peak rate ~ speed
+
+    float ay = amp * (sin(time * w        + 0.0) + 0.6 * sin(time * w * 1.7 + 1.3));
+    float ax = amp * (sin(time * w * 0.8  + 2.1) + 0.6 * sin(time * w * 1.3 + 4.7));
+    float az = amp * 0.5 * sin(time * w * 1.1 + 5.5);
+    p = rotY(p, ay);
+    p = rotX(p, ax);
+    p = rotZ(p, az);
+    return p;
+}
+
+// Dot lattice at a point on the unit sphere. rgb is a full-brightness
+// primary; .a is the round-dot coverage (so callers keep equal luma).
+vec4 sphereDots(vec3 sp) {
+    float lat = asin(clamp(sp.y, -1.0, 1.0));   // -PI/2 .. PI/2
+    float lon = atan(sp.z, sp.x);               // -PI .. PI
+
+    float RINGS   = 26.0;                        // latitude bands
+    float LON_MAX = 52.0;                        // longitude dots at equator
+
+    float fLat = lat / PI + 0.5;                 // 0 .. 1
+    float ring = floor(fLat * RINGS);
+    float ringC = (ring + 0.5) / RINGS;
+    float latC = (ringC - 0.5) * PI;             // ring centre latitude
+    float dlat = (fLat - ringC) * PI;            // offset from ring (radians)
+
+    float cl = max(cos(latC), 0.04);
+    float lonCount = max(floor(LON_MAX * cl + 0.5), 1.0);
+    float fLon = lon / TAU + 0.5;                // 0 .. 1
+    float lonIdx = floor(fLon * lonCount);
+    float lonC = (lonIdx + 0.5) / lonCount;
+    float dlon = (fLon - lonC) * TAU * cl;       // metric offset (radians)
+
+    float dist = length(vec2(dlon, dlat));
+    float dotR = (PI / RINGS) * 0.46;
+    float mask = smoothstep(dotR, dotR * 0.68, dist);
+
+    float hue = floor(hash(vec2(ring, lonIdx)) * 6.0) / 6.0;   // six primaries
+    return vec4(hsv2rgb(vec3(hue, 1.0, 1.0)), mask);
+}
+
+void main() {
+    float asp = (height > 0.5) ? (width / height) : (1280.0 / 720.0);
+    vec2 uv = (v_texcoord - 0.5) * vec2(asp, 1.0);
+
+    vec3 col = vec3(0.010, 0.012, 0.020);        // near-black space
+    float R = 0.46;
+    float d2 = dot(uv, uv);
+
+    if (d2 < R * R) {
+        float z = sqrt(R * R - d2);
+
+        // Near (convex) and far surface points, both tumbled. Depth is
+        // carried by dot size alone — foreshortening shrinks far dots.
+        vec4 f = sphereDots(tumble(vec3(uv.x, uv.y,  z) / R));
+        vec4 b = sphereDots(tumble(vec3(uv.x, uv.y, -z) / R));
+
+        // Equal brightness: show whichever dot covers this pixel more,
+        // so overlapping near/far dots never read brighter than a lone one.
+        vec4 dot = (f.a >= b.a) ? f : b;
+        vec3 dots = dot.rgb * dot.a;
+
+        // Thin anti-alias only at the silhouette so the rim doesn't crawl.
+        dots *= smoothstep(0.0, 0.012, R - sqrt(d2));
+        col = max(col, dots);
+    }
+
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+
+
 
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
@@ -1147,6 +1285,7 @@ GPU_GENERATORS = {
     'curlflow': CURLFLOW_SHADER,
     'phyllotaxis': PHYLLOTAXIS_SHADER,
     'sunplasma': SUNPLASMA_SHADER,
+    'dotsphere': DOTSPHERE_SHADER,
     'donut': DONUT_SHADER,
 }
 
