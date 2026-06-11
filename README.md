@@ -389,13 +389,18 @@ mapping, no CPU frame copy.
 On the Pi/labwc projector setup, run **`Apply Fullscreen Rule.sh`** once
 if the cinematic video window does not jump to the projector fullscreen.
 
-Controls while cinematic mode is active:
+**Controls while cinematic mode is active.** The 4K video opens its own
+window that takes keyboard focus, so the keys below act **on that window
+directly** (you don't need to click back into the VJ app):
 
-| Keys      | Action                         |
-|-----------|--------------------------------|
-| `N`       | Leave cinematic mode           |
-| `Esc`     | Leave cinematic mode           |
-| `−` / `=` | Previous / next 4K clip        |
+| Keys                | Action                         |
+|---------------------|--------------------------------|
+| `Esc` or `q`        | Leave cinematic mode (returns to whatever you had before) |
+| `→` `↓` / `←` `↑`   | Next / previous 4K clip        |
+| `space` / `n` / `p` | Next (space, n) / previous (p) 4K clip |
+
+`N` / `Esc` and `−` / `=` from the main VJ app still work too, but only
+when the VJ window has focus — the keys above are the reliable way out.
 
 Drop raw large files into `assets/4k/` and run **`assets/Process 4K Assets.sh`**
 before a set. It also works if launched from inside the `assets/` folder.

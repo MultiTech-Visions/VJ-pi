@@ -20,6 +20,17 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst, GLib  # noqa: E402
 
+# GstVideo provides the navigation-event helpers we use to read key presses
+# the glimagesink window receives. Optional: if it's missing, the player still
+# runs (just without in-window keys), driven by stdin from the main app.
+try:
+    gi.require_version("GstVideo", "1.0")
+    from gi.repository import GstVideo  # noqa: E402
+    _HAVE_NAV = True
+except (ValueError, ImportError):
+    GstVideo = None
+    _HAVE_NAV = False
+
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".m4v"}
 
@@ -82,7 +93,43 @@ class CinematicPlayer:
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self._on_bus)
+        # Let the sink's own window drive prev/next/quit by keyboard. The
+        # glimagesink window grabs focus on the projector, so without this the
+        # operator's keys never reach the main VJ app — they land here. Key
+        # presses arrive as upstream NAVIGATION events on the sink pad.
+        if _HAVE_NAV:
+            sink = self.pipeline.get_by_name("sink")
+            pad = sink.get_static_pad("sink") if sink is not None else None
+            if pad is not None:
+                pad.add_probe(Gst.PadProbeType.EVENT_UPSTREAM, self._nav_probe)
         self.pipeline.set_state(Gst.State.PLAYING)
+
+    def _nav_probe(self, _pad, info):
+        event = info.get_event()
+        if event is None or event.type != Gst.EventType.NAVIGATION:
+            return Gst.PadProbeReturn.OK
+        try:
+            if (GstVideo.navigation_event_get_type(event)
+                    == GstVideo.NavigationEventType.KEY_PRESS):
+                ok, key = GstVideo.navigation_event_parse_key_event(event)
+                if ok:
+                    GLib.idle_add(lambda k=key: (self.on_key(k), False)[1])
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cinematic] nav parse failed: {exc!r}", flush=True)
+        return Gst.PadProbeReturn.OK
+
+    def on_key(self, key):
+        """Handle a key press from the sink window. Key names are X keysyms
+        (e.g. 'Escape', 'Left', 'Right', 'space', 'q', 'n', 'p')."""
+        print(f"[cinematic] key: {key}", flush=True)
+        k = (key or "").lower()
+        if k in ("escape", "q"):
+            if self.mainloop is not None:
+                self.mainloop.quit()
+        elif k in ("right", "down", "n", "space", " "):
+            self.switch(1)
+        elif k in ("left", "up", "p"):
+            self.switch(-1)
 
     def _on_bus(self, _bus, msg):
         if msg.type == Gst.MessageType.ASYNC_DONE:

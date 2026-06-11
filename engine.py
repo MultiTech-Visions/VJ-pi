@@ -607,7 +607,8 @@ class Engine:
     def poll_cinematic_mode(self):
         if self.mode != "cinematic" or self._cinematic_proc is None:
             return
-        if self._cinematic_proc.poll() is None:
+        rc = self._cinematic_proc.poll()
+        if rc is None:
             self.cinematic_status = "playing"
             return
         self._cinematic_proc = None
@@ -620,8 +621,11 @@ class Engine:
         self.mode = self._mode_before_cinematic if self._mode_before_cinematic else "live"
         if self.mode == "cinematic":
             self.mode = "live"
-        self.cinematic_status = "player exited; check vj_last_cinematic.log"
-        print("[vj] cinematic: player exited")
+        # rc 0 = the operator quit the 4K window (Esc/q) — a clean exit, not a
+        # fault. Only flag the log when it actually crashed.
+        self.cinematic_status = ("off" if rc == 0
+                                 else "player exited; check vj_last_cinematic.log")
+        print(f"[vj] cinematic: player exited (rc={rc})")
 
     def cinematic_step(self, delta):
         if self.mode != "cinematic":
