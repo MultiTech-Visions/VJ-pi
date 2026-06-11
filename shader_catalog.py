@@ -1192,9 +1192,10 @@ vec3 tumble(vec3 p) {
     return p;
 }
 
-// Dot lattice at a point on the unit sphere. rgb is a full-brightness
-// primary; .a is the round-dot coverage (so callers keep equal luma).
-vec4 sphereDots(vec3 sp) {
+// Dot lattice at a point on the unit sphere. `sizeScale` shrinks the
+// dot radius (used to make the far hemisphere read smaller). rgb is a
+// full-brightness primary; .a is the round-dot coverage.
+vec4 sphereDots(vec3 sp, float sizeScale) {
     float lat = asin(clamp(sp.y, -1.0, 1.0));   // -PI/2 .. PI/2
     float lon = atan(sp.z, sp.x);               // -PI .. PI
 
@@ -1215,7 +1216,7 @@ vec4 sphereDots(vec3 sp) {
     float dlon = (fLon - lonC) * TAU * cl;       // metric offset (radians)
 
     float dist = length(vec2(dlon, dlat));
-    float dotR = (PI / RINGS) * 0.46;
+    float dotR = (PI / RINGS) * 0.46 * sizeScale;
     float mask = smoothstep(dotR, dotR * 0.68, dist);
 
     float hue = floor(hash(vec2(ring, lonIdx)) * 6.0) / 6.0;   // six primaries
@@ -1233,15 +1234,21 @@ void main() {
     if (d2 < R * R) {
         float z = sqrt(R * R - d2);
 
-        // Near (convex) and far surface points, both tumbled. Depth is
-        // carried by dot size alone — foreshortening shrinks far dots.
-        vec4 f = sphereDots(tumble(vec3(uv.x, uv.y,  z) / R));
-        vec4 b = sphereDots(tumble(vec3(uv.x, uv.y, -z) / R));
+        // Perspective cue from signed depth (camera at +Z): the near
+        // (convex) face stays full size/brightness, the far side shrinks
+        // and dims. Both match at the silhouette (z = 0) so it's seamless.
+        float pf = smoothstep(-1.0, 0.25,  z / R);   // near hemisphere
+        float pb = smoothstep(-1.0, 0.25, -z / R);   // far  hemisphere
 
-        // Equal brightness: show whichever dot covers this pixel more,
-        // so overlapping near/far dots never read brighter than a lone one.
-        vec4 dot = (f.a >= b.a) ? f : b;
-        vec3 dots = dot.rgb * dot.a;
+        vec4 f = sphereDots(tumble(vec3(uv.x, uv.y,  z) / R), mix(0.40, 1.0, pf));
+        vec4 b = sphereDots(tumble(vec3(uv.x, uv.y, -z) / R), mix(0.40, 1.0, pb));
+
+        vec3 fcol = f.rgb * f.a * mix(0.60, 1.0, pf);
+        vec3 bcol = b.rgb * b.a * mix(0.60, 1.0, pb);
+
+        // Far side first, near side drawn over it (occlusion) — through
+        // the gaps in the front lattice you still see the small far dots.
+        vec3 dots = mix(bcol, fcol, f.a);
 
         // Thin anti-alias only at the silhouette so the rim doesn't crawl.
         dots *= smoothstep(0.0, 0.012, R - sqrt(d2));
