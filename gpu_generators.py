@@ -69,18 +69,21 @@ class GpuGeneratorBridge:
     def available(self, name):
         return not self.disabled and not self.failed and name in GPU_GENERATORS
 
-    def render(self, name, width, height, token=0):
+    def render(self, name, width, height, token=0, params=(0.5, 0.5)):
         if not self.available(name):
             return None
         proc = self._worker_for(name)
         if proc is None:
             return None
         try:
+            px, py = params
             req = json.dumps({
                 "name": name,
                 "width": int(width),
                 "height": int(height),
                 "token": int(token),
+                "param_x": float(px),
+                "param_y": float(py),
             }, separators=(",", ":"))
             proc.stdin.write((req + "\n").encode("utf-8"))
             proc.stdin.flush()

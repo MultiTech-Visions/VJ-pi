@@ -97,13 +97,26 @@ class Renderer:
         self.pipeline.set_state(Gst.State.PLAYING)
         self.current = key
 
-    def render(self, name, width, height, token):
+    def render(self, name, width, height, token, param_x=0.5, param_y=0.5):
         if name not in GPU_GENERATORS:
             raise ValueError(f"unknown GPU generator: {name}")
         self.ensure(name, width, height, token)
         # Resume if we were paused (blackout/freeze); a no-op if already
         # PLAYING.
         self.pipeline.set_state(Gst.State.PLAYING)
+        # Push the live 0..1 params as custom GLSL uniforms. glshader keeps
+        # its built-in time/width/height/tex regardless, and a shader that
+        # doesn't declare param_x/param_y just ignores them (unknown uniform
+        # locations are silent no-ops), so this is safe for every generator.
+        try:
+            st = Gst.Structure.new_from_string(
+                "uniforms,param_x=(gfloat){:.6f},param_y=(gfloat){:.6f}".format(
+                    float(param_x), float(param_y)))
+            if st is not None:
+                self.shader.set_property("uniforms", st)
+        except Exception as exc:
+            print(f"[gpu-worker] uniform push failed: {exc!r}",
+                  file=sys.stderr, flush=True)
         sample = None
         for _ in range(4):
             sample = self.sink.emit("try-pull-sample", 1 * Gst.SECOND)
@@ -151,7 +164,10 @@ def main():
                 width = int(req["width"])
                 height = int(req["height"])
                 token = int(req.get("token", 0))
-                data = renderer.render(name, width, height, token)
+                param_x = float(req.get("param_x", 0.5))
+                param_y = float(req.get("param_y", 0.5))
+                data = renderer.render(name, width, height, token,
+                                       param_x, param_y)
                 _send({"ok": True, "width": width, "height": height, "n": len(data)}, data)
             except Exception as exc:
                 print(f"[gpu-worker] {exc!r}", file=sys.stderr, flush=True)

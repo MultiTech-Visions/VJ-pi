@@ -68,7 +68,10 @@ The keyboard sends keys to whichever window has focus — click into the
 **control HUD** window once when you start a set and leave it focused.
 Live FX parameters are tuned with the **arrow keys** (← → for PARAM X,
 ↑ ↓ for PARAM Y) so you don't have to fight the trackpad/mouse cursor
-mid-set. The current values show as bars in the HUD.
+mid-set. The current values show as bars in the HUD. A few generators
+also read these knobs — e.g. **dotsphere**: PARAM X (← →) sets rotation
+speed (full left freezes it), PARAM Y (↑ ↓) sets how long it holds a
+heading before it turns a new way (down = nervous, up = long lazy sweeps).
 
 ### Switching the output display
 

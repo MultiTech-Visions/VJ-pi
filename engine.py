@@ -1245,7 +1245,8 @@ class Engine:
 
     def _render_generative(self, name, width, height, t, params):
         token = self._generator_activation_token if name == "donut" else 0
-        frame = self.gpu_generators.render(name, width, height, token=token)
+        frame = self.gpu_generators.render(name, width, height, token=token,
+                                           params=params)
         if frame is not None:
             return frame
         fn = GENERATIVE_FNS.get(name)
@@ -1300,7 +1301,8 @@ class Engine:
             field = self._last_gen_frame
         else:
             dw, dh = self._gen_render_size()
-            field = self.gpu_generators.render(self.melt_source, dw, dh)
+            field = self.gpu_generators.render(self.melt_source, dw, dh,
+                                               params=(self.param_x, self.param_y))
         if field is None:
             return frame
         h, w = frame.shape[:2]

@@ -1120,22 +1120,29 @@ void main() {
 #
 # A 3D sphere whose surface is a matrix of pure, saturated dots —
 # quantised to six primaries (R Y G C B M) so it reads like a screen's
-# subpixels wrapped onto a ball. The whole thing tumbles on three
-# incommensurate axes, so the apparent rotation never settles into one
-# fixed swirl — dots stream across the face and wrap around the limb.
+# subpixels wrapped onto a ball. The whole thing tumbles, and the depth
+# is read purely from dot SIZE: dots on the near (convex) face are big,
+# dots toward the silhouette and on the far side are small — but every
+# dot is the SAME brightness, exactly like the reference footage.
 #
 # The sphere is analytic, not raymarched: for each pixel inside the
 # projected disc we solve the front-surface z (z = sqrt(R^2 - x^2 -
 # y^2)), giving a unit point on the ball; we also solve the BACK point
-# (-z) and draw it dimmer, so the shell is translucent and you see the
-# dots on the far side through it — that overlap is the busy, dense
-# interior from the footage. Near dots are big and bright, far dots are
-# small and dim (true depth), and toward the silhouette foreshortening
-# crowds the rings together exactly like a real dotted globe.
+# (-z), so the shell is a translucent matrix you see both sides of —
+# that overlap of big near dots and small far dots is the busy interior
+# from the footage. Foreshortening crowds the dots toward the limb just
+# like a real dotted globe.
 #
-# Dots are placed on latitude RINGS with the per-ring longitude count
-# scaled by cos(lat), so they stay evenly spaced instead of clustering
-# at the poles.
+# Dots sit on latitude RINGS with the per-ring longitude count scaled by
+# cos(lat), so they stay evenly spaced instead of clustering at the poles.
+#
+# Two live knobs (the arrow keys / PARAM X,Y):
+#   param_x — ROTATION SPEED. 0 freezes the ball; 1 spins it fast.
+#   param_y — DIRECTION-CHANGE DELAY. Low = nervous, frequent reversals;
+#             high = long, lazy sweeps before it turns a new way.
+# The rotation is the integral of a few sines, so its direction reverses
+# on its own every ~param_y seconds while the orientation stays
+# continuous (no jumps) at any setting.
 DOTSPHERE_SHADER = """#version 100
 #ifdef GL_ES
 precision highp float;
@@ -1144,6 +1151,8 @@ varying vec2 v_texcoord;
 uniform float time;
 uniform float width;
 uniform float height;
+uniform float param_x;   // rotation speed          (arrow Left/Right)
+uniform float param_y;   // direction-change delay   (arrow Up/Down)
 
 const float PI  = 3.14159265359;
 const float TAU = 6.28318530718;
@@ -1163,17 +1172,29 @@ vec3 rotX(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(p.x, c*p.
 vec3 rotZ(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(c*p.x - s*p.y, s*p.x + c*p.y, p.z); }
 
 // Tumble the lookup with the sphere so the painted dots rotate with it.
-// Three incommensurate rates -> the rotation is always changing.
+// Each axis angle is a sum of two sines whose base period is the
+// direction-change delay; the angular velocity (their derivative) flips
+// sign every ~delay/2, so the ball keeps redirecting on its own. Speed
+// scales the throw. It's a closed form of time, so orientation is always
+// continuous — no snap when the params move.
 vec3 tumble(vec3 p) {
-    p = rotY(p, time * 0.40);
-    p = rotX(p, time * 0.21 + 1.0);
-    p = rotZ(p, time * 0.07);
+    float speed = param_x * 1.6;                 // 0 = frozen
+    float delay = mix(1.5, 20.0, clamp(param_y, 0.0, 1.0));
+    float w = TAU / delay;
+    float amp = speed * delay / TAU;             // keep peak rate ~ speed
+
+    float ay = amp * (sin(time * w        + 0.0) + 0.6 * sin(time * w * 1.7 + 1.3));
+    float ax = amp * (sin(time * w * 0.8  + 2.1) + 0.6 * sin(time * w * 1.3 + 4.7));
+    float az = amp * 0.5 * sin(time * w * 1.1 + 5.5);
+    p = rotY(p, ay);
+    p = rotX(p, ax);
+    p = rotZ(p, az);
     return p;
 }
 
-// Colour + coverage of the dot lattice at a point on the unit sphere.
-// Returns rgb*mask; mask is the round-dot falloff.
-vec3 sphereDots(vec3 sp) {
+// Dot lattice at a point on the unit sphere. rgb is a full-brightness
+// primary; .a is the round-dot coverage (so callers keep equal luma).
+vec4 sphereDots(vec3 sp) {
     float lat = asin(clamp(sp.y, -1.0, 1.0));   // -PI/2 .. PI/2
     float lon = atan(sp.z, sp.x);               // -PI .. PI
 
@@ -1197,11 +1218,8 @@ vec3 sphereDots(vec3 sp) {
     float dotR = (PI / RINGS) * 0.46;
     float mask = smoothstep(dotR, dotR * 0.68, dist);
 
-    float rnd  = hash(vec2(ring, lonIdx));
-    float rnd2 = hash(vec2(ring, lonIdx) + 19.7);
-    float tw = 0.6 + 0.4 * sin(time * (1.2 + rnd2 * 2.5) + rnd * TAU);
-    float hue = floor(rnd * 6.0) / 6.0;          // six primaries
-    return hsv2rgb(vec3(hue, 1.0, tw)) * mask;
+    float hue = floor(hash(vec2(ring, lonIdx)) * 6.0) / 6.0;   // six primaries
+    return vec4(hsv2rgb(vec3(hue, 1.0, 1.0)), mask);
 }
 
 void main() {
@@ -1214,23 +1232,22 @@ void main() {
 
     if (d2 < R * R) {
         float z = sqrt(R * R - d2);
-        float zf = z / R;                        // 0 at limb .. 1 at centre
 
-        // Front and back surface points (unit sphere), each tumbled.
-        vec3 front = sphereDots(tumble(vec3(uv.x, uv.y,  z) / R));
-        vec3 back  = sphereDots(tumble(vec3(uv.x, uv.y, -z) / R));
+        // Near (convex) and far surface points, both tumbled. Depth is
+        // carried by dot size alone — foreshortening shrinks far dots.
+        vec4 f = sphereDots(tumble(vec3(uv.x, uv.y,  z) / R));
+        vec4 b = sphereDots(tumble(vec3(uv.x, uv.y, -z) / R));
 
-        // Translucent shell: far side dim and behind, near side bright.
-        col += back  * (0.18 + 0.18 * zf);
-        col += front * (0.45 + 0.55 * zf);
+        // Equal brightness: show whichever dot covers this pixel more,
+        // so overlapping near/far dots never read brighter than a lone one.
+        vec4 dot = (f.a >= b.a) ? f : b;
+        vec3 dots = dot.rgb * dot.a;
 
-        // Soft inner limb darkening for roundness; faint rim halo.
-        col *= 0.7 + 0.3 * zf;
-        col += vec3(0.10, 0.12, 0.20) * smoothstep(0.0, 0.06, R - sqrt(d2));
+        // Thin anti-alias only at the silhouette so the rim doesn't crawl.
+        dots *= smoothstep(0.0, 0.012, R - sqrt(d2));
+        col = max(col, dots);
     }
 
-    // Gentle vignette to float the ball in the void.
-    col *= 1.0 - smoothstep(0.6, 1.2, length(uv)) * 0.5;
     gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
 """
