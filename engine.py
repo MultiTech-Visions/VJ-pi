@@ -1,7 +1,9 @@
 import os
+import queue
 import random
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -82,6 +84,41 @@ def _window_pos_for(display_idx):
     """SDL 'centered on display N' magic position, used for _sdl2 Windows."""
     centered = 0x2FFF0000 | (display_idx & 0xFFFF)
     return (centered, centered)
+
+
+# X keysym names (as the GStreamer 4K player reports them) → SDL key-name
+# strings pygame.key.key_code understands. Single-character keysyms ("a",
+# "1") and "F1".."F12" are handled directly, so only the punctuation /
+# named keys need a mapping here.
+_KEYSYM_TO_SDL = {
+    "minus": "-", "equal": "=", "bracketleft": "[", "bracketright": "]",
+    "semicolon": ";", "backslash": "\\", "grave": "`", "quoteleft": "`",
+    "comma": ",", "period": ".", "slash": "/", "apostrophe": "'",
+    "quoteright": "'", "space": "space", "Return": "return", "Enter": "return",
+    "Tab": "tab", "BackSpace": "backspace", "Escape": "escape",
+    "Left": "left", "Right": "right", "Up": "up", "Down": "down",
+    "Delete": "delete",
+}
+
+
+def _keysym_to_key(keysym):
+    """Translate an X keysym string from the 4K player into a pygame key
+    constant, or None if we don't map it. Lets a forwarded keystroke drive
+    the normal keymap as if it were typed into the main window."""
+    if not keysym:
+        return None
+    name = _KEYSYM_TO_SDL.get(keysym)
+    if name is None:
+        if len(keysym) == 1:
+            name = keysym.lower()
+        elif keysym[0] in "fF" and keysym[1:].isdigit():
+            name = "f" + keysym[1:]
+        else:
+            return None
+    try:
+        return pygame.key.key_code(name)
+    except (ValueError, Exception):  # noqa: BLE001 — key_code raises ValueError
+        return None
 
 
 class Engine:
@@ -205,6 +242,13 @@ class Engine:
         self._cinematic_log = Path(__file__).resolve().parent / "vj_last_cinematic.log"
         self.cinematic_status = "off"
         self.cinematic_source = None
+        # The 4K player's window can hold the keyboard on the projector, so it
+        # relays every key press back to us (lines tagged "@@KEY <keysym>" on
+        # its stdout). A reader thread parks them here; the main loop drains
+        # the queue and re-posts them as normal pygame key events, so the ONE
+        # keymap drives 4K exactly like everything else — no separate scheme.
+        self._cinematic_reader = None
+        self._cinematic_key_queue = queue.Queue()
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
         self._mapping_persist_dirty = False
@@ -560,14 +604,25 @@ class Engine:
             log.write(f"[vj] cinematic launch: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             log.write(f"[vj] clips-dir: {clips_dir}\n")
             self._cinematic_log_handle = log
+            # stdout is a PIPE (not the log directly) so the reader thread can
+            # split off the "@@KEY" relay lines and tee everything else to the
+            # log — keeping the same on-disk log behaviour as before.
             self._cinematic_proc = subprocess.Popen(
                 [py, str(player), str(clips_dir)],
                 stdin=subprocess.PIPE,
-                stdout=log,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
             )
+            while not self._cinematic_key_queue.empty():
+                self._cinematic_key_queue.get_nowait()
+            self._cinematic_reader = threading.Thread(
+                target=self._cinematic_reader_loop,
+                args=(self._cinematic_proc, log),
+                daemon=True,
+            )
+            self._cinematic_reader.start()
         except Exception as exc:  # noqa: BLE001
             self.cinematic_status = f"launch failed: {exc!r}"
             self.cinematic_source = None
@@ -591,6 +646,7 @@ class Engine:
             except subprocess.TimeoutExpired:
                 self._cinematic_proc.terminate()
             self._cinematic_proc = None
+        self._join_cinematic_reader()
         if self._cinematic_log_handle is not None:
             try:
                 self._cinematic_log_handle.close()
@@ -604,6 +660,14 @@ class Engine:
         self.cinematic_source = None
         print("[vj] cinematic: stopped")
 
+    def _join_cinematic_reader(self):
+        """Wait for the stdout reader thread to finish (it ends at player EOF)
+        before the log handle it writes to is closed."""
+        reader = self._cinematic_reader
+        if reader is not None:
+            reader.join(timeout=1.0)
+            self._cinematic_reader = None
+
     def poll_cinematic_mode(self):
         if self.mode != "cinematic" or self._cinematic_proc is None:
             return
@@ -612,6 +676,7 @@ class Engine:
             self.cinematic_status = "playing"
             return
         self._cinematic_proc = None
+        self._join_cinematic_reader()
         if self._cinematic_log_handle is not None:
             try:
                 self._cinematic_log_handle.close()
@@ -633,6 +698,13 @@ class Engine:
         self._send_cinematic({"cmd": "next" if delta >= 0 else "prev"})
         return True
 
+    def _leave_cinematic(self):
+        """Drop out of 4K mode if it's running. Used by the favourite keys,
+        which reach the engine outside the keymap dispatch (so they don't get
+        the dispatch's fall-through that already does this)."""
+        if self.mode == "cinematic":
+            self.stop_cinematic_mode()
+
     def _send_cinematic(self, payload):
         proc = self._cinematic_proc
         if proc is None or proc.poll() is not None or proc.stdin is None:
@@ -643,6 +715,44 @@ class Engine:
             proc.stdin.flush()
         except Exception as exc:  # noqa: BLE001
             print(f"[vj] cinematic: command failed: {exc!r}")
+
+    def _cinematic_reader_loop(self, proc, log_handle):
+        """Read the 4K player's stdout: queue "@@KEY <keysym>" relay lines for
+        the main loop, tee everything else to the log. Ends at EOF (player
+        exit). Runs in a daemon thread; touches only the thread-safe queue and
+        the log handle (guarded), never pygame."""
+        try:
+            for line in proc.stdout:
+                if line.startswith("@@KEY "):
+                    keysym = line[6:].strip()
+                    if keysym:
+                        self._cinematic_key_queue.put(keysym)
+                    continue
+                try:
+                    log_handle.write(line)
+                except (OSError, ValueError):
+                    pass
+        except (OSError, ValueError):
+            pass
+
+    def drain_cinematic_keys(self):
+        """Re-post keystrokes relayed from the 4K window as normal pygame key
+        events, so the single keymap handles them exactly like typed keys.
+        Called from the main loop (only place that may post pygame events)."""
+        while True:
+            try:
+                keysym = self._cinematic_key_queue.get_nowait()
+            except queue.Empty:
+                return
+            key = _keysym_to_key(keysym)
+            if key is None:
+                continue
+            # Down then up = a clean tap (also satisfies the favourite-key
+            # tap/long-press timing, which keys off press duration).
+            pygame.event.post(pygame.event.Event(
+                pygame.KEYDOWN, key=key, mod=0, unicode="", scancode=0))
+            pygame.event.post(pygame.event.Event(
+                pygame.KEYUP, key=key, mod=0, scancode=0))
 
     @staticmethod
     def _has_video_files(path):
@@ -708,6 +818,7 @@ class Engine:
         idx = self.clips.find_by_stem(stem)
         if idx is None:
             return
+        self._leave_cinematic()
         if self._in_mapping():
             g = self.mapping.selected_group()
             g.content_kind = "clip"
@@ -747,6 +858,7 @@ class Engine:
         idx = self.overlays.find_by_stem(stem)
         if idx is None:
             return
+        self._leave_cinematic()
         if self._in_mapping():
             g = self.mapping.selected_group()
             if g.overlay_stem == stem:
@@ -781,6 +893,7 @@ class Engine:
         name = self.generator_favorites[slot]
         if name not in GENERATIVES:
             return
+        self._leave_cinematic()
         self.select_generative(GENERATIVES.index(name))
 
     def save_generator_favorite(self, slot):
@@ -2349,6 +2462,9 @@ class Engine:
                     fav_long(self, k)
                     long_press_fired.add(k)
             self.poll_cinematic_mode()
+            # Re-post any keystrokes the 4K window relayed to us, so the next
+            # event-loop pass dispatches them through the normal keymap.
+            self.drain_cinematic_keys()
 
             dt = now - last_t
             last_t = now
