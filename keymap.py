@@ -95,15 +95,13 @@ def dispatch(engine, key, mod):
         engine.kill_all()
         return
 
-    # Mode toggle works in both modes; no Ctrl required.
-    if key == pygame.K_m and not (mod & pygame.KMOD_CTRL):
-        engine.toggle_mapping_mode()
-        return
-
-    if key == pygame.K_n and not (mod & pygame.KMOD_CTRL):
-        engine.toggle_cinematic_mode()
-        return
-
+    # 4K cinematic uses the SAME keys as the rest of the app — it's not a
+    # separate control scheme. The clip-cycle keys step the 4K playlist (cycle
+    # videos = cycle videos), N toggles the mode off (the same key that turned
+    # it on), and EVERY other key drops out of cinematic and then does its
+    # normal job (so M → mapping, [ ] → generators, a favourite plays a
+    # favourite, etc.). Handled before the M/N toggles below so those don't
+    # pre-empt it.
     if engine.mode == "cinematic":
         if key == CYCLE_CLIPS_PREV:
             engine.cinematic_step(-1)
@@ -111,6 +109,19 @@ def dispatch(engine, key, mod):
         if key == CYCLE_CLIPS_NEXT:
             engine.cinematic_step(1)
             return
+        if key == pygame.K_n and not (mod & pygame.KMOD_CTRL):
+            engine.toggle_cinematic_mode()
+            return
+        # Anything else: leave cinematic, then fall through to normal handling.
+        engine.stop_cinematic_mode()
+
+    # Mode toggle works in both modes; no Ctrl required.
+    if key == pygame.K_m and not (mod & pygame.KMOD_CTRL):
+        engine.toggle_mapping_mode()
+        return
+
+    if key == pygame.K_n and not (mod & pygame.KMOD_CTRL):
+        engine.toggle_cinematic_mode()
         return
 
     # Mapping-mode-only ops.
@@ -247,6 +258,20 @@ def dispatch(engine, key, mod):
 
     # Favourite keys (1-0, A-L, ;) are handled in Engine.run()'s long-press
     # logic — they don't go through dispatch at all.
+
+    # Face point cloud (live mode only): backtick toggles it as the base
+    # layer; , / . step through the baked faces (and turn it on if it was
+    # off). These keys are unused elsewhere in live mode.
+    if engine.mode == "live":
+        if key == pygame.K_BACKQUOTE:
+            engine.toggle_facecloud()
+            return
+        if key == pygame.K_COMMA:
+            engine.cycle_face(-1)
+            return
+        if key == pygame.K_PERIOD:
+            engine.cycle_face(1)
+            return
 
     if key in HIT_KEYS:
         engine.fire_hit(HIT_KEYS[key], frames=5)

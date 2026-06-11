@@ -542,7 +542,7 @@ class ControlWindow:
                       x, y, width); y += 19
             self._row(surface, "SOURCE", getattr(e, "cinematic_source", None) or "—",
                       x, y, width); y += 19
-            self._row(surface, "KEYS", "N/Esc exit · -/= prev/next",
+            self._row(surface, "KEYS", "4K window: Esc/q exit · ←→ prev/next",
                       x, y, width); y += 22
             return
 
@@ -559,6 +559,13 @@ class ControlWindow:
         self._row(surface, "GEN",     gen_name,  x, y, width); y += 19
         if getattr(e, "camera_active", False) or e.camera is not None:
             self._row(surface, "CAM", self._camera_label(e), x, y, width)
+            y += 19
+        if getattr(e, "face_active", False) or len(getattr(e, "faces", [])):
+            face_name = e.faces.name() or "—"
+            n = len(e.faces)
+            label = (f"{face_name}  ({e.faces.idx + 1}/{n})" if n else
+                     "no faces — run Capture Face.sh")
+            self._row(surface, "FACE", label, x, y, width)
             y += 19
         self._row(surface, "FX",      fx_text,   x, y, width); y += 22
 
@@ -581,6 +588,8 @@ class ControlWindow:
             badges.append(("4K: " + e.cinematic_status, (255, 200, 80)))
         if getattr(e, "camera_active", False):
             badges.append(("LIVE CAM", (255, 150, 200)))
+        if getattr(e, "face_active", False):
+            badges.append(("FACE CLOUD", (180, 200, 255)))
         if getattr(e, "auto_mode", False):
             badges.append(("AUTOPILOT", (120, 220, 140)))
         if e.blackout:

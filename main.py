@@ -70,6 +70,10 @@ def parse_args():
     p.add_argument("--camera-no-mirror", action="store_true",
                    help="Don't mirror the webcam left/right. Default mirrors "
                         "it (selfie-natural); toggle live with Shift+\\.")
+    p.add_argument("--faces", action="store_true",
+                   help="Start with a baked face point cloud as the base layer "
+                        "(assets/faces/*.npz, captured via 'Capture Face.sh'). "
+                        "Toggle any time with the ` key; ,/. cycle faces.")
     return p.parse_args()
 
 
@@ -284,11 +288,14 @@ def main():
         print(f"[vj] control HUD: display {args.control_display}, size {args.control_size}")
     print(f"[vj] clips dir:    {cfg.clips_dir}")
     print(f"[vj] {len(engine.clips)} clip(s) loaded")
-    print("[vj] keys: -/= cycle clips · [/] cycle generators · 1-0 clip favs (tap=play, hold=assign) · ASDFGHJKL; generator favs · ZXCVB hits · F1-F7 FX · \\ live cam (Shift+\\ mirror) · ←→↑↓ params · Enter Enter autopilot · F9/F10 mapping res · F11/F12 display · Space blackout · Esc panic · Shift+Esc quit")
+    print("[vj] keys: -/= cycle clips · [/] cycle generators · 1-0 clip favs (tap=play, hold=assign) · ASDFGHJKL; generator favs · ZXCVB hits · F1-F7 FX · \\ live cam (Shift+\\ mirror) · ` face cloud (,/. cycle faces) · ←→↑↓ params/face angle · Enter Enter autopilot · F9/F10 mapping res · F11/F12 display · Space blackout · Esc panic · Shift+Esc quit")
 
     if args.camera:
         print("[vj] --camera: starting with the live webcam as the base layer")
         engine.enable_camera_base()
+    elif args.faces:
+        print("[vj] --faces: starting with a face point cloud as the base layer")
+        engine.enable_face_base()
 
     try:
         engine.run(control=control)

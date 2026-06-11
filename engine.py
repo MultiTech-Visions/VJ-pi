@@ -1,7 +1,9 @@
 import os
+import queue
 import random
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,6 +14,7 @@ import cv2
 
 from clips import ClipPool
 from camera import CameraSource
+from facecloud import FacePool
 from mapping import MappingManager
 from state import load_state, save_state
 from effects import (
@@ -52,6 +55,19 @@ AUTO_FX_MAX_HOLD = {"edges": 3.0}
 # How fast the arrow keys move param_x / param_y (units of 0..1 per second).
 PARAM_RATE = 0.6
 
+# Face-cloud rotation limits (radians). A single front capture has no data
+# for the back of the head, so rotation is clamped well short of profile —
+# enough to "turn toward / away" and tip up/down to catch an angle, never a
+# full 360 into the hollow side. param_x → yaw, param_y → pitch.
+FACE_MAX_YAW = 0.66    # ~38°
+FACE_MAX_PITCH = 0.48  # ~28°
+# Gentle automatic drift added on top of the operator's offset so a face
+# slowly rotates on its own (amplitude radians, speed rad/s).
+FACE_AUTO_YAW_AMP = 0.22
+FACE_AUTO_YAW_SPEED = 0.25
+FACE_AUTO_PITCH_AMP = 0.10
+FACE_AUTO_PITCH_SPEED = 0.17
+
 # How many favorite slots per pool (matches the number / QWERTY rows).
 FAV_SLOTS = 10
 
@@ -68,6 +84,41 @@ def _window_pos_for(display_idx):
     """SDL 'centered on display N' magic position, used for _sdl2 Windows."""
     centered = 0x2FFF0000 | (display_idx & 0xFFFF)
     return (centered, centered)
+
+
+# X keysym names (as the GStreamer 4K player reports them) → SDL key-name
+# strings pygame.key.key_code understands. Single-character keysyms ("a",
+# "1") and "F1".."F12" are handled directly, so only the punctuation /
+# named keys need a mapping here.
+_KEYSYM_TO_SDL = {
+    "minus": "-", "equal": "=", "bracketleft": "[", "bracketright": "]",
+    "semicolon": ";", "backslash": "\\", "grave": "`", "quoteleft": "`",
+    "comma": ",", "period": ".", "slash": "/", "apostrophe": "'",
+    "quoteright": "'", "space": "space", "Return": "return", "Enter": "return",
+    "Tab": "tab", "BackSpace": "backspace", "Escape": "escape",
+    "Left": "left", "Right": "right", "Up": "up", "Down": "down",
+    "Delete": "delete",
+}
+
+
+def _keysym_to_key(keysym):
+    """Translate an X keysym string from the 4K player into a pygame key
+    constant, or None if we don't map it. Lets a forwarded keystroke drive
+    the normal keymap as if it were typed into the main window."""
+    if not keysym:
+        return None
+    name = _KEYSYM_TO_SDL.get(keysym)
+    if name is None:
+        if len(keysym) == 1:
+            name = keysym.lower()
+        elif keysym[0] in "fF" and keysym[1:].isdigit():
+            name = "f" + keysym[1:]
+        else:
+            return None
+    try:
+        return pygame.key.key_code(name)
+    except (ValueError, Exception):  # noqa: BLE001 — key_code raises ValueError
+        return None
 
 
 class Engine:
@@ -125,6 +176,15 @@ class Engine:
         # generator, so the whole FX chain runs on the live feed.
         self.camera = None
         self.camera_active = False
+
+        # Face point-cloud base layer. A library of clouds baked offline by
+        # face_capture.py (assets/faces/*.npz); when face_active, the selected
+        # cloud is the base (rotating in a clamped yaw/pitch range) instead of
+        # a clip / generator / camera, so the whole FX chain runs on it. Pure
+        # numpy/cv2 — no GL, no MediaPipe at runtime.
+        self.faces = FacePool(cfg.faces_dir)
+        self.face_active = False
+
         self.fx_state = {fx: False for fx in FX_TOGGLES}
         self.hit_type = None
         self.hit_frames_left = 0
@@ -182,6 +242,13 @@ class Engine:
         self._cinematic_log = Path(__file__).resolve().parent / "vj_last_cinematic.log"
         self.cinematic_status = "off"
         self.cinematic_source = None
+        # The 4K player's window can hold the keyboard on the projector, so it
+        # relays every key press back to us (lines tagged "@@KEY <keysym>" on
+        # its stdout). A reader thread parks them here; the main loop drains
+        # the queue and re-posts them as normal pygame key events, so the ONE
+        # keymap drives 4K exactly like everything else — no separate scheme.
+        self._cinematic_reader = None
+        self._cinematic_key_queue = queue.Queue()
         # Hide the cursor only in clean live fullscreen — in mapping mode
         # the operator needs to drag corners around in the HUD preview.
         self._mapping_persist_dirty = False
@@ -278,6 +345,7 @@ class Engine:
             self.clips.select(idx)
             self.active_generative = None
             self.camera_active = False
+            self.face_active = False
 
     def toggle_overlay(self, idx):
         if idx >= len(self.overlays):
@@ -305,6 +373,7 @@ class Engine:
         if self.clips.active_idx is not None:
             self.active_generative = None
             self.camera_active = False
+            self.face_active = False
 
     def browse_overlays(self, action, arg=None):
         if self._in_mapping():
@@ -383,6 +452,7 @@ class Engine:
             self.active_generative = name
             self.clips.deselect()
             self.camera_active = False
+            self.face_active = False
 
     def browse_generatives(self, step):
         if not GENERATIVES:
@@ -437,6 +507,7 @@ class Engine:
             self.camera_active = True
             self.clips.deselect()
             self.active_generative = None
+            self.face_active = False
         else:
             print("[vj] camera: could not start — see vj_last_run.log")
 
@@ -450,6 +521,7 @@ class Engine:
             self.camera_active = True
             self.clips.deselect()
             self.active_generative = None
+            self.face_active = False
         else:
             print("[vj] camera: --camera requested but no camera started")
 
@@ -457,6 +529,50 @@ class Engine:
         if self.camera is not None:
             on = self.camera.toggle_mirror()
             print(f"[vj] camera mirror {'on' if on else 'off'}")
+
+    # ── Face point cloud ──────────────────────────────────────────────
+
+    def _activate_face(self):
+        """Make the face cloud the live base layer, clearing the others."""
+        self.face_active = True
+        self.clips.deselect()
+        self.active_generative = None
+        self.camera_active = False
+
+    def toggle_facecloud(self):
+        """Toggle the face point cloud as the base layer (live mode only)."""
+        if self.face_active:
+            self.face_active = False
+            return
+        if len(self.faces) == 0:
+            print("[vj] facecloud: no faces in assets/faces/ — "
+                  "run 'Capture Face.sh' first")
+        self._activate_face()
+
+    def cycle_face(self, step):
+        """Step to the previous/next baked face, turning the layer on if it
+        wasn't already (so `,`/`.` both selects and activates)."""
+        if len(self.faces) == 0:
+            print("[vj] facecloud: no faces in assets/faces/ — "
+                  "run 'Capture Face.sh' first")
+            self._activate_face()
+            return
+        if not self.face_active:
+            self._activate_face()
+        else:
+            self.faces.step(step)
+        print(f"[vj] facecloud: {self.faces.name()}")
+
+    def enable_face_base(self):
+        """Force the face cloud on at boot (used by --faces). Drops mapping
+        so the operator sees it immediately."""
+        if self.mode == "mapping":
+            self.mode = "live"
+            self.mapping.enabled = False
+        if len(self.faces) == 0:
+            print("[vj] --faces: no faces in assets/faces/ — "
+                  "run 'Capture Face.sh' to bake some")
+        self._activate_face()
 
     # ── Cinematic 4K mode ────────────────────────────────────────────
 
@@ -488,14 +604,25 @@ class Engine:
             log.write(f"[vj] cinematic launch: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             log.write(f"[vj] clips-dir: {clips_dir}\n")
             self._cinematic_log_handle = log
+            # stdout is a PIPE (not the log directly) so the reader thread can
+            # split off the "@@KEY" relay lines and tee everything else to the
+            # log — keeping the same on-disk log behaviour as before.
             self._cinematic_proc = subprocess.Popen(
                 [py, str(player), str(clips_dir)],
                 stdin=subprocess.PIPE,
-                stdout=log,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
             )
+            while not self._cinematic_key_queue.empty():
+                self._cinematic_key_queue.get_nowait()
+            self._cinematic_reader = threading.Thread(
+                target=self._cinematic_reader_loop,
+                args=(self._cinematic_proc, log),
+                daemon=True,
+            )
+            self._cinematic_reader.start()
         except Exception as exc:  # noqa: BLE001
             self.cinematic_status = f"launch failed: {exc!r}"
             self.cinematic_source = None
@@ -519,6 +646,7 @@ class Engine:
             except subprocess.TimeoutExpired:
                 self._cinematic_proc.terminate()
             self._cinematic_proc = None
+        self._join_cinematic_reader()
         if self._cinematic_log_handle is not None:
             try:
                 self._cinematic_log_handle.close()
@@ -532,13 +660,23 @@ class Engine:
         self.cinematic_source = None
         print("[vj] cinematic: stopped")
 
+    def _join_cinematic_reader(self):
+        """Wait for the stdout reader thread to finish (it ends at player EOF)
+        before the log handle it writes to is closed."""
+        reader = self._cinematic_reader
+        if reader is not None:
+            reader.join(timeout=1.0)
+            self._cinematic_reader = None
+
     def poll_cinematic_mode(self):
         if self.mode != "cinematic" or self._cinematic_proc is None:
             return
-        if self._cinematic_proc.poll() is None:
+        rc = self._cinematic_proc.poll()
+        if rc is None:
             self.cinematic_status = "playing"
             return
         self._cinematic_proc = None
+        self._join_cinematic_reader()
         if self._cinematic_log_handle is not None:
             try:
                 self._cinematic_log_handle.close()
@@ -548,14 +686,24 @@ class Engine:
         self.mode = self._mode_before_cinematic if self._mode_before_cinematic else "live"
         if self.mode == "cinematic":
             self.mode = "live"
-        self.cinematic_status = "player exited; check vj_last_cinematic.log"
-        print("[vj] cinematic: player exited")
+        # rc 0 = the operator quit the 4K window (Esc/q) — a clean exit, not a
+        # fault. Only flag the log when it actually crashed.
+        self.cinematic_status = ("off" if rc == 0
+                                 else "player exited; check vj_last_cinematic.log")
+        print(f"[vj] cinematic: player exited (rc={rc})")
 
     def cinematic_step(self, delta):
         if self.mode != "cinematic":
             return False
         self._send_cinematic({"cmd": "next" if delta >= 0 else "prev"})
         return True
+
+    def _leave_cinematic(self):
+        """Drop out of 4K mode if it's running. Used by the favourite keys,
+        which reach the engine outside the keymap dispatch (so they don't get
+        the dispatch's fall-through that already does this)."""
+        if self.mode == "cinematic":
+            self.stop_cinematic_mode()
 
     def _send_cinematic(self, payload):
         proc = self._cinematic_proc
@@ -567,6 +715,44 @@ class Engine:
             proc.stdin.flush()
         except Exception as exc:  # noqa: BLE001
             print(f"[vj] cinematic: command failed: {exc!r}")
+
+    def _cinematic_reader_loop(self, proc, log_handle):
+        """Read the 4K player's stdout: queue "@@KEY <keysym>" relay lines for
+        the main loop, tee everything else to the log. Ends at EOF (player
+        exit). Runs in a daemon thread; touches only the thread-safe queue and
+        the log handle (guarded), never pygame."""
+        try:
+            for line in proc.stdout:
+                if line.startswith("@@KEY "):
+                    keysym = line[6:].strip()
+                    if keysym:
+                        self._cinematic_key_queue.put(keysym)
+                    continue
+                try:
+                    log_handle.write(line)
+                except (OSError, ValueError):
+                    pass
+        except (OSError, ValueError):
+            pass
+
+    def drain_cinematic_keys(self):
+        """Re-post keystrokes relayed from the 4K window as normal pygame key
+        events, so the single keymap handles them exactly like typed keys.
+        Called from the main loop (only place that may post pygame events)."""
+        while True:
+            try:
+                keysym = self._cinematic_key_queue.get_nowait()
+            except queue.Empty:
+                return
+            key = _keysym_to_key(keysym)
+            if key is None:
+                continue
+            # Down then up = a clean tap (also satisfies the favourite-key
+            # tap/long-press timing, which keys off press duration).
+            pygame.event.post(pygame.event.Event(
+                pygame.KEYDOWN, key=key, mod=0, unicode="", scancode=0))
+            pygame.event.post(pygame.event.Event(
+                pygame.KEYUP, key=key, mod=0, scancode=0))
 
     @staticmethod
     def _has_video_files(path):
@@ -632,6 +818,7 @@ class Engine:
         idx = self.clips.find_by_stem(stem)
         if idx is None:
             return
+        self._leave_cinematic()
         if self._in_mapping():
             g = self.mapping.selected_group()
             g.content_kind = "clip"
@@ -642,6 +829,7 @@ class Engine:
         self.clips.select(idx)
         self.active_generative = None
         self.camera_active = False
+        self.face_active = False
 
     def save_clip_favorite(self, slot):
         """Long-press handler. With nothing playing, clears the slot."""
@@ -670,6 +858,7 @@ class Engine:
         idx = self.overlays.find_by_stem(stem)
         if idx is None:
             return
+        self._leave_cinematic()
         if self._in_mapping():
             g = self.mapping.selected_group()
             if g.overlay_stem == stem:
@@ -704,6 +893,7 @@ class Engine:
         name = self.generator_favorites[slot]
         if name not in GENERATIVES:
             return
+        self._leave_cinematic()
         self.select_generative(GENERATIVES.index(name))
 
     def save_generator_favorite(self, slot):
@@ -765,12 +955,14 @@ class Engine:
                 self.clips.pick_random()
                 self.active_generative = None
                 self.camera_active = False
+                self.face_active = False
             elif GENERATIVES:
                 self.current_generator_idx = random.randrange(len(GENERATIVES))
                 self.active_generative = GENERATIVES[self.current_generator_idx]
                 self._generator_activation_token += 1
                 self.clips.deselect()
                 self.camera_active = False
+                self.face_active = False
             self._auto_next_clip_at = now + self.auto_clip_interval * random.uniform(0.6, 1.7)
 
         # FX toggling — keep total active count manageable.
@@ -1227,6 +1419,12 @@ class Engine:
             # show black rather than falling back to a clip the operator
             # didn't ask for. Toggle the camera off to return to clips.
             return np.zeros((self.h, self.w, 3), dtype=np.uint8)
+        if self.face_active:
+            self._base_was_generator = False
+            frame = self._render_facecloud(ctx)
+            if frame is not None:
+                return frame
+            return np.zeros((self.h, self.w, 3), dtype=np.uint8)
         clip_frame = self.clips.read()
         if clip_frame is not None:
             self._base_was_generator = False
@@ -1242,6 +1440,24 @@ class Engine:
                 return frame
         self._base_was_generator = False
         return np.zeros((self.h, self.w, 3), dtype=np.uint8)
+
+    def _render_facecloud(self, ctx):
+        """Render the selected face cloud at the reduced gen resolution (it's
+        upscaled in compose_frame like a generative). Yaw/pitch = operator
+        offset (param_x/param_y around centre, clamped) + a slow auto-drift so
+        the head turns on its own without ever spinning into its hollow back."""
+        cloud = self.faces.current()
+        if cloud is None:
+            return None
+        t = ctx.t
+        auto_yaw = FACE_AUTO_YAW_AMP * np.sin(t * FACE_AUTO_YAW_SPEED)
+        auto_pitch = FACE_AUTO_PITCH_AMP * np.sin(t * FACE_AUTO_PITCH_SPEED + 1.0)
+        yaw = (ctx.px - 0.5) * 2.0 * FACE_MAX_YAW + auto_yaw
+        pitch = (ctx.py - 0.5) * 2.0 * FACE_MAX_PITCH + auto_pitch
+        yaw = float(np.clip(yaw, -FACE_MAX_YAW, FACE_MAX_YAW))
+        pitch = float(np.clip(pitch, -FACE_MAX_PITCH, FACE_MAX_PITCH))
+        gw, gh = self._gen_render_size()
+        return cloud.render(gw, gh, yaw, pitch)
 
     def _render_generative(self, name, width, height, t, params):
         token = self._generator_activation_token if name == "donut" else 0
@@ -2246,6 +2462,9 @@ class Engine:
                     fav_long(self, k)
                     long_press_fired.add(k)
             self.poll_cinematic_mode()
+            # Re-post any keystrokes the 4K window relayed to us, so the next
+            # event-loop pass dispatches them through the normal keymap.
+            self.drain_cinematic_keys()
 
             dt = now - last_t
             last_t = now

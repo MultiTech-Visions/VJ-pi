@@ -20,6 +20,17 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst, GLib  # noqa: E402
 
+# GstVideo provides the navigation-event helpers we use to read key presses
+# the glimagesink window receives. Optional: if it's missing, the player still
+# runs (just without in-window keys), driven by stdin from the main app.
+try:
+    gi.require_version("GstVideo", "1.0")
+    from gi.repository import GstVideo  # noqa: E402
+    _HAVE_NAV = True
+except (ValueError, ImportError):
+    GstVideo = None
+    _HAVE_NAV = False
+
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".m4v"}
 
@@ -82,7 +93,43 @@ class CinematicPlayer:
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self._on_bus)
+        # Let the sink's own window drive prev/next/quit by keyboard. The
+        # glimagesink window grabs focus on the projector, so without this the
+        # operator's keys never reach the main VJ app — they land here. Key
+        # presses arrive as upstream NAVIGATION events on the sink pad.
+        if _HAVE_NAV:
+            sink = self.pipeline.get_by_name("sink")
+            pad = sink.get_static_pad("sink") if sink is not None else None
+            if pad is not None:
+                pad.add_probe(Gst.PadProbeType.EVENT_UPSTREAM, self._nav_probe)
         self.pipeline.set_state(Gst.State.PLAYING)
+
+    def _nav_probe(self, _pad, info):
+        event = info.get_event()
+        if event is None or event.type != Gst.EventType.NAVIGATION:
+            return Gst.PadProbeReturn.OK
+        try:
+            if (GstVideo.navigation_event_get_type(event)
+                    == GstVideo.NavigationEventType.KEY_PRESS):
+                ok, key = GstVideo.navigation_event_parse_key_event(event)
+                if ok:
+                    GLib.idle_add(lambda k=key: (self.on_key(k), False)[1])
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cinematic] nav parse failed: {exc!r}", flush=True)
+        return Gst.PadProbeReturn.OK
+
+    def on_key(self, key):
+        """A key press landed on the 4K window (which holds the keyboard on
+        the projector). Relay it to the main VJ app so its ONE keymap decides
+        what it means — cycling, mapping, favourites, exit, all the same keys
+        as everywhere else. Esc/q also quit locally as a guaranteed backstop
+        so the operator can never be trapped, even if the app isn't reading."""
+        if key:
+            # Relay marker the main app parses off our stdout.
+            print(f"@@KEY {key}", flush=True)
+        k = (key or "").lower()
+        if k in ("escape", "q") and self.mainloop is not None:
+            self.mainloop.quit()
 
     def _on_bus(self, _bus, msg):
         if msg.type == Gst.MessageType.ASYNC_DONE:
