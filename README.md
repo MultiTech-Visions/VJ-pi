@@ -388,15 +388,18 @@ This is part of the main app: start **`Start VJ.sh`**, then press `N`.
 The normal VJ canvas goes black and a separate GStreamer/GL video window
 plays the `assets/4k/processed/` playlist with the fastest Pi 5 path:
 HEVC hardware decode → GL upload/convert → `glimagesink`. No FX, no
-mapping, no CPU frame copy.
+mapping, no CPU frame copy. The player keeps **one** window for the whole
+session and swaps the file behind it when you cycle clips, so it never
+flickers or re-grabs the keyboard between videos.
 
 On the Pi/labwc projector setup, run **`Apply Fullscreen Rule.sh`** once
 if the cinematic video window does not jump to the projector fullscreen.
 
 **Controls are the same keys as everywhere else** — cinematic mode is not a
-separate control scheme. The 4K video opens its own window (which takes the
-keyboard on the projector), and that window simply relays your keys back to
-the normal VJ controls:
+separate control scheme. The 4K video opens its own window on the projector
+and holds the keyboard there, so while it's up the player reads the keyboard
+directly (from its input device) and relays every press back to the normal VJ
+controls — it works no matter which window has focus:
 
 | Keys        | Action                                                    |
 |-------------|-----------------------------------------------------------|
@@ -408,9 +411,9 @@ the normal VJ controls:
 | `1`–`0`, `A`–`;` | Leave cinematic and play that favourite              |
 | any other   | Leaves cinematic and does its usual thing                 |
 
-(`q` also quits the 4K window as a hard safety backstop.) So you switch out
-of 4K with the exact same button you'd press to do that thing normally — no
-need to memorise a separate exit.
+(`q`/`Esc` also quit the 4K window directly as a hard safety backstop, so you
+can never get trapped.) So you switch out of 4K with the exact same button
+you'd press to do that thing normally — no need to memorise a separate exit.
 
 Drop raw large files into `assets/4k/` and run **`assets/Process 4K Assets.sh`**
 before a set. It also works if launched from inside the `assets/` folder.

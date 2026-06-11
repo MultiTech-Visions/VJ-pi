@@ -543,7 +543,7 @@ class ControlWindow:
                       x, y, width); y += 19
             self._row(surface, "SOURCE", getattr(e, "cinematic_source", None) or "—",
                       x, y, width); y += 19
-            self._row(surface, "KEYS", "4K window: Esc/q exit · ←→ prev/next",
+            self._row(surface, "KEYS", "Esc/N exit · -/= prev/next · keys live",
                       x, y, width); y += 22
             return
 

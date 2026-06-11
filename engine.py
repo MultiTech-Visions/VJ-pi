@@ -256,11 +256,13 @@ class Engine:
         self._cinematic_log = Path(__file__).resolve().parent / "vj_last_cinematic.log"
         self.cinematic_status = "off"
         self.cinematic_source = None
-        # The 4K player's window can hold the keyboard on the projector, so it
-        # relays every key press back to us (lines tagged "@@KEY <keysym>" on
-        # its stdout). A reader thread parks them here; the main loop drains
-        # the queue and re-posts them as normal pygame key events, so the ONE
-        # keymap drives 4K exactly like everything else — no separate scheme.
+        # The 4K player's glimagesink window holds the keyboard on the
+        # projector, and glimagesink doesn't deliver key events under
+        # labwc/Wayland — so the player reads the operator's keyboard device
+        # directly (evdev) and relays each press as "@@KEY <keysym>" on its
+        # stdout. A reader thread parks them here; the main loop drains the
+        # queue and re-posts them as normal pygame key events, so the ONE
+        # keymap drives 4K exactly like everything else.
         self._cinematic_reader = None
         self._cinematic_key_queue = queue.Queue()
         # Hide the cursor only in clean live fullscreen — in mapping mode
