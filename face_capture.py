@@ -1,21 +1,30 @@
 """Capture face point clouds for the VJ rig's face-cloud base layer.
 
 Run via the `Capture Face.sh` launcher (double-click → Execute). It opens a
-live preview of the USB webcam with the detected face mesh drawn on top;
-press SPACE to bake the current face into `assets/faces/face_NNN.npz`, ESC
-(or close the window) to finish. Capture as many faces as you like in one
+live preview of the USB webcam with the dense face mesh drawn on top; press
+SPACE to bake the current face into `assets/faces/face_NNN.npz`, ESC (or
+close the window) to finish. Capture as many faces as you like in one
 session — they all land in the library the VJ app cycles through.
 
-This is the ONLY place MediaPipe is used, and it runs in its own venv
-(`venv_face/`), so the proven main app never takes on the dependency. The
-bake output is plain numpy arrays (points + colours); the app loads those
-with no extra deps. See `facecloud.py` for the runtime side.
+This is the ONLY place a face-landmark model is used, and it runs in its
+own venv (`venv_face/`), so the proven main app never takes on the
+dependency. The bake output is plain numpy arrays (points + colours); the
+app loads those with no extra deps. See `facecloud.py` for the runtime side.
 
-What "baking" does: MediaPipe Face Mesh returns ~478 3D landmarks from one
-RGB frame. 478 points alone look sparse, so we densify by interpolating
-extra points along the mesh tessellation edges and sampling each point's
-colour from the photo. The result (~8k coloured points) reads as a face
-"scan" that holds up when rotated through a moderate yaw/pitch range.
+How a face is built:
+  * InsightFace detects the face (bounding box). It runs natively here and
+    is only used to find/scale the crop — not for landmarks.
+  * The dense MediaPipe **Face Mesh** model (478 3D landmarks, forehead
+    included) runs on that crop via onnxruntime, giving the same rich mesh
+    the original capture used.
+  * The 478 landmarks are Delaunay-triangulated and each triangle filled
+    with a barycentric point grid → ~8k coloured points sampled from the
+    photo, a face "scan" that holds up rotated through a moderate range.
+
+Why this stack: the Pi runs Debian 13 / Python 3.13 on aarch64, for which
+Google ships no MediaPipe *package* (and it doesn't support 3.13). But the
+Face Mesh *model* runs fine as ONNX through onnxruntime, which installs
+natively — so we keep the good dense mesh without the broken dependency.
 """
 import sys
 import time
@@ -23,18 +32,32 @@ from pathlib import Path
 
 import numpy as np
 import pygame
+from scipy.spatial import Delaunay
 
-# MediaPipe is heavy to import; do it up front so a missing/broken install
-# fails loudly (the launcher surfaces the traceback via zenity).
-import mediapipe as mp
+import onnxruntime as ort
+# InsightFace is heavy to import; do it up front so a missing/broken install
+# fails loudly (the launcher surfaces the traceback via the log + zenity).
+from insightface.app import FaceAnalysis
 
 from camera import CameraSource
 
 
-FACES_DIR = Path(__file__).resolve().parent / "assets" / "faces"
-# Points added along each tessellation edge (interior, excluding endpoints).
-# 3 → ~8k points total, a good density/speed balance for the Pi.
-EDGE_SUBDIV = 3
+HERE = Path(__file__).resolve().parent
+FACES_DIR = HERE / "assets" / "faces"
+MESH_ONNX = HERE / "assets" / "models" / "face_mesh.onnx"
+
+# Face Mesh model I/O: 256×256 RGB in [0,1] → 478 landmarks (x,y,z) in the
+# crop's pixel space, plus a face-presence logit.
+MESH_INPUT = 256
+# Square crop = face box scaled by this (1.5 → ~50% margin), so the mesh has
+# room to place the forehead/jaw landmarks.
+CROP_SCALE = 1.5
+# Barycentric grid order per mesh triangle (the 478 base is already dense, so
+# a small subdivision reaches ~8k points). n → (n+1)(n+2)/2 points/triangle.
+SUBDIV_N = 3
+# Depth gain on the model's z before normalising. 1.0 keeps MediaPipe's
+# native proportions; flip the sign if a baked face ever looks inside-out.
+DEPTH_GAIN = 1.0
 
 
 def _next_face_path():
@@ -47,25 +70,57 @@ def _next_face_path():
         n += 1
 
 
-def _landmarks_to_arrays(landmarks, rgb):
-    """Return (points Nx3 float32 in head space, pixel-coords Nx2) from one
-    set of MediaPipe landmarks. Y is kept DOWN (image convention) so the
-    cloud renders upright; X is aspect-corrected so the face isn't squashed.
-    """
-    h, w = rgb.shape[:2]
-    aspect = w / float(h)
-    xs = np.array([lm.x for lm in landmarks], dtype=np.float32)
-    ys = np.array([lm.y for lm in landmarks], dtype=np.float32)
-    zs = np.array([lm.z for lm in landmarks], dtype=np.float32)
-    # 3D head-space coords. MediaPipe's z is roughly scaled like x (i.e. by
-    # width), smaller = closer to camera; mirror that scaling here.
-    P = np.stack([(xs - 0.5) * aspect, (ys - 0.5), zs * aspect], axis=1)
-    # Pixel coords for colour sampling.
-    px = np.clip(xs * w, 0, w - 1)
-    py = np.clip(ys * h, 0, h - 1)
-    pix = np.stack([px, py], axis=1)
-    return P, pix
+# ── Detection + dense mesh ───────────────────────────────────────────────
 
+def _largest_bbox(faces):
+    def area(f):
+        x0, y0, x1, y1 = f.bbox
+        return (x1 - x0) * (y1 - y0)
+    return max(faces, key=area).bbox
+
+
+def _crop_square(rgb, bbox):
+    """Square crop around the face box (with margin), border-replicated if it
+    runs off the frame. Returns (crop, x0, y0, side) where (x0,y0) is the
+    crop's top-left in full-image coords and side is its pixel size."""
+    import cv2
+    x0, y0, x1, y1 = bbox
+    cx, cy = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+    half = max(x1 - x0, y1 - y0) * 0.5 * CROP_SCALE
+    X0, Y0, side = cx - half, cy - half, 2.0 * half
+    h, w = rgb.shape[:2]
+    ix0, iy0 = int(round(X0)), int(round(Y0))
+    iside = int(round(side))
+    pad = max(0, -ix0, -iy0, ix0 + iside - w, iy0 + iside - h)
+    if pad:
+        rgb = cv2.copyMakeBorder(rgb, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
+    crop = rgb[iy0 + pad:iy0 + pad + iside, ix0 + pad:ix0 + pad + iside]
+    return crop, float(ix0), float(iy0), float(iside)
+
+
+def _mesh_landmarks(session, rgb, bbox):
+    """Run the Face Mesh model on the cropped face; return 478×3 landmarks in
+    full-image coords (x,y pixels, z proportional), or None if no face."""
+    import cv2
+    crop, x0, y0, side = _crop_square(rgb, bbox)
+    if crop.size == 0:
+        return None
+    inp = cv2.resize(crop, (MESH_INPUT, MESH_INPUT)).astype(np.float32) / 255.0
+    name = session.get_inputs()[0].name
+    out = session.run(None, {name: inp[None, ...]})
+    score = float(np.asarray(out[1]).ravel()[0])
+    if score <= 0.0:                      # presence logit; >0 ≈ face present
+        return None
+    lm = np.asarray(out[0], dtype=np.float32).reshape(-1, 3)   # (478,3)
+    # Map crop-space (0..256) back to the full image.
+    s = side / MESH_INPUT
+    lm[:, 0] = x0 + lm[:, 0] * s
+    lm[:, 1] = y0 + lm[:, 1] * s
+    lm[:, 2] = lm[:, 2] * s               # keep z proportional to x/y
+    return lm
+
+
+# ── Baking ───────────────────────────────────────────────────────────────
 
 def _sample_colors(rgb, pix):
     h, w = rgb.shape[:2]
@@ -74,51 +129,69 @@ def _sample_colors(rgb, pix):
     return rgb[yi, xi].astype(np.uint8)
 
 
-def _densify(P, C, edges):
-    """Add interpolated points + colours along each mesh edge so the cloud
-    is dense, not just the ~478 raw vertices."""
-    pts = [P]
-    cols = [C.astype(np.float32)]
-    e = np.array(sorted(edges), dtype=np.int32)
-    # Guard against any edge index outside the vertex count.
-    e = e[(e[:, 0] < len(P)) & (e[:, 1] < len(P))]
-    a, b = P[e[:, 0]], P[e[:, 1]]
-    ca = C[e[:, 0]].astype(np.float32)
-    cb = C[e[:, 1]].astype(np.float32)
-    for k in range(1, EDGE_SUBDIV + 1):
-        t = k / (EDGE_SUBDIV + 1.0)
-        pts.append(a * (1.0 - t) + b * t)
-        cols.append(ca * (1.0 - t) + cb * t)
-    P_all = np.concatenate(pts, axis=0).astype(np.float32)
-    C_all = np.clip(np.concatenate(cols, axis=0), 0, 255).astype(np.uint8)
-    return P_all, C_all
+def _bary_grid(n):
+    rows = [(i, j, n - i - j) for i in range(n + 1) for j in range(n + 1 - i)]
+    return np.array(rows, dtype=np.float32) / float(n)
+
+
+def _densify(P, C, tris):
+    """Fill every mesh triangle with a barycentric grid of points + colours."""
+    if len(tris) == 0:
+        return P, C.astype(np.uint8)
+    B = _bary_grid(SUBDIV_N)
+    pts = np.einsum("mb,tbc->tmc", B, P[tris]).reshape(-1, 3)
+    cols = np.einsum("mb,tbc->tmc", B, C[tris].astype(np.float32)).reshape(-1, 3)
+    return pts.astype(np.float32), np.clip(cols, 0, 255).astype(np.uint8)
 
 
 def _normalize(P):
-    """Centre on the centroid and scale to unit radius so every baked face
-    is the same size regardless of how close the person sat to the camera."""
+    """Centre on the centroid and scale to unit radius so every baked face is
+    the same size regardless of how close the person sat to the camera."""
     P = P - P.mean(axis=0, keepdims=True)
     radius = float(np.linalg.norm(P, axis=1).max()) or 1.0
     return (P / radius).astype(np.float32)
 
 
-def bake(rgb, landmarks, edges):
-    """Turn one frame + landmark set into (points, colors) ready to save."""
-    P, pix = _landmarks_to_arrays(landmarks, rgb)
-    C = _sample_colors(rgb, pix)
-    P, C = _densify(P, C, edges)
-    P = _normalize(P)
-    return P, C
+def bake(rgb, lm):
+    """Turn one frame + 478 landmarks into (points, colors) ready to save."""
+    h, w = rgb.shape[:2]
+    aspect = w / float(h)
+    # Head space: Y kept DOWN so it renders upright; X aspect-corrected; z in
+    # the same per-pixel scale as x/y for natural relief.
+    X = (lm[:, 0] / w - 0.5) * aspect
+    Y = (lm[:, 1] / h - 0.5)
+    Z = DEPTH_GAIN * (lm[:, 2] / h)
+    P = np.stack([X, Y, Z], axis=1).astype(np.float32)
+    C = _sample_colors(rgb, lm[:, :2])
+    tris = Delaunay(lm[:, :2]).simplices.astype(np.int32)
+    P, C = _densify(P, C, tris)
+    return _normalize(P), C
 
+
+# ── pygame loop ──────────────────────────────────────────────────────────
 
 def _surface_from_rgb(rgb):
-    """pygame Surface from an (h, w, 3) RGB uint8 array."""
     h, w = rgb.shape[:2]
     return pygame.image.frombuffer(np.ascontiguousarray(rgb), (w, h), "RGB")
 
 
 def main():
     print("[capture] Face point-cloud capture starting…", flush=True)
+
+    if not MESH_ONNX.exists():
+        print(f"[capture] ERROR: face mesh model missing at {MESH_ONNX}",
+              flush=True)
+        return 3
+    mesh = ort.InferenceSession(str(MESH_ONNX),
+                                providers=["CPUExecutionProvider"])
+
+    print("[capture] loading InsightFace detector "
+          "(first run downloads ~300 MB)…", flush=True)
+    app = FaceAnalysis(name="buffalo_l", allowed_modules=["detection"],
+                       providers=["CPUExecutionProvider"])
+    app.prepare(ctx_id=-1, det_size=(640, 640))
+    print("[capture] models ready.", flush=True)
+
     cam = CameraSource(request_size=(1280, 720), mirror=True)
     if not cam.start():
         print("[capture] ERROR: no working webcam found "
@@ -134,14 +207,6 @@ def main():
                                "ESC = done)")
     font = pygame.font.SysFont("DejaVu Sans", 22)
     big = pygame.font.SysFont("DejaVu Sans", 30, bold=True)
-
-    mp_fm = mp.solutions.face_mesh
-    edges = mp_fm.FACEMESH_TESSELATION
-    face_mesh = mp_fm.FaceMesh(
-        static_image_mode=False, refine_landmarks=True,
-        max_num_faces=1, min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
 
     saved = 0
     flash_until = 0.0
@@ -170,28 +235,24 @@ def main():
             clock.tick(30)
             continue
 
-        results = face_mesh.process(rgb)
-        have_face = bool(results.multi_face_landmarks)
-        landmarks = (results.multi_face_landmarks[0].landmark
-                     if have_face else None)
+        faces = app.get(rgb[:, :, ::-1])         # InsightFace wants BGR
+        lm = None
+        if faces:
+            lm = _mesh_landmarks(mesh, rgb, _largest_bbox(faces))
+        have_face = lm is not None
 
-        # Preview: downscale the camera frame to the window and draw dots.
         preview = cv2.resize(rgb, (win_w, win_h), interpolation=cv2.INTER_AREA)
-        surface = _surface_from_rgb(preview)
-        screen.blit(surface, (0, 0))
+        screen.blit(_surface_from_rgb(preview), (0, 0))
 
         if have_face:
             h0, w0 = rgb.shape[:2]
             sxf, syf = win_w / w0, win_h / h0
-            for lm in landmarks:
-                x = int(lm.x * w0 * sxf)
-                y = int(lm.y * h0 * syf)
-                screen.fill((90, 230, 255), (x, y, 2, 2))
+            for (lx, ly) in lm[:, :2]:
+                screen.fill((90, 230, 255), (int(lx * sxf), int(ly * syf), 1, 1))
 
-        # Capture on SPACE if a face is present.
         if capture_now:
             if have_face:
-                P, C = bake(rgb, landmarks, edges)
+                P, C = bake(rgb, lm)
                 path = _next_face_path()
                 np.savez_compressed(path, points=P, colors=C)
                 saved += 1
@@ -203,7 +264,6 @@ def main():
                 flash_until = time.time() + 2.0
                 print(f"[capture] {flash_msg}", flush=True)
 
-        # HUD text.
         status = ("FACE DETECTED — press SPACE to capture" if have_face
                   else "no face — look at the camera")
         color = (120, 255, 160) if have_face else (255, 180, 90)
@@ -221,7 +281,6 @@ def main():
         pygame.display.flip()
         clock.tick(30)
 
-    face_mesh.close()
     cam.release()
     pygame.quit()
     total = len(list(FACES_DIR.glob("*.npz"))) if FACES_DIR.exists() else 0

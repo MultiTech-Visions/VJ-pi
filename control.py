@@ -14,6 +14,7 @@ KEY_CHEAT = [
     ("1 - 0",        "Clip favourites — tap=play, hold ≥½s=assign current"),
     ("A-L ;",        "Generator favourites — tap=play, hold ≥½s=assign current"),
     ("Z X C V B",    "Hits: strobe / black / inv / zoom / RGB"),
+    ("` · , / .",    "Face cloud: toggle · prev/next  (Shift+` = two facing)"),
     ("F1 - F8",      "Persistent FX toggles (F8 = melt)"),
     ("← → ↑ ↓",      "Tune PARAM X/Y  (auto: ←→ FX rate · ↑↓ clip rate)"),
     ("Enter Enter",  "Engage AUTOPILOT (any key hands control back)"),

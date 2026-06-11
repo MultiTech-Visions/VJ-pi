@@ -95,16 +95,26 @@ image from `assets/images/` as `sampler2D tex`.
   the camera. `list_cameras.py` + `List Cameras.sh` report detected
   devices; `Start VJ (Live Cam).sh` boots straight into it.
 - `facecloud.py` — `FaceCloud` + `FacePool`: the face point-cloud base
-  layer (toggle `` ` ``, cycle `,`/`.`, arrows turn/tip the head). Loads
-  baked `.npz` faces and software-splats them rotating in a clamped
-  yaw/pitch range. **Pure numpy/cv2, no GL, and no MediaPipe at runtime**
-  — faces are baked offline, so the show pipeline gains the feature
-  without the dependency.
-- `face_capture.py` — offline face scanner (MediaPipe Face Mesh → `.npz`
-  point cloud). Run by `Capture Face.sh` in its **own** `venv_face/`
-  (deps in `requirements-face.txt`); deliberately never imported by the
-  main app so MediaPipe can't perturb the proven venv. Faces live in
-  `assets/faces/` (gitignored, like clips).
+  layer (toggle `` ` ``, cycle `,`/`.`, arrows turn/tip the head; Shift+`` ` ``
+  is the two-faces-facing-each-other view — `engine._render_face_duo` draws
+  the current face left + `FacePool.peek(1)` right, each turned inward via
+  `render(cx=…, fit=…, into=…)`). Loads baked `.npz` faces and software-splats
+  them rotating in a clamped yaw/pitch range. **Pure numpy/cv2, no GL, and no
+  landmark model at runtime** — faces are baked offline, so the show pipeline
+  gains the feature without the dependency.
+- `face_capture.py` — offline face scanner → `.npz` point cloud. InsightFace
+  detects the face (bbox only); the dense **MediaPipe Face Mesh** model (478
+  landmarks, `assets/models/face_mesh.onnx`) runs on the crop via
+  onnxruntime; the landmarks are Delaunay-triangulated and each triangle
+  filled with a barycentric point grid (~8k coloured points). Run by
+  `Capture Face.sh` in its **own** `venv_face/` (deps in
+  `requirements-face.txt`); deliberately never imported by the main app so
+  the landmark stack can't perturb the proven venv. **The MediaPipe *package*
+  ships no aarch64/Python-3.13 wheel (Debian 13 broke the original) — but the
+  Face Mesh *model* runs fine as ONNX, so the dense mesh is preserved without
+  the dependency. (An InsightFace-106 + multi-pose-merge attempt was tried and
+  scrapped — too sparse and it ghosted.)** Faces live in `assets/faces/`
+  (gitignored, like clips); the mesh model ships in the repo.
 - `keymap.py` — pygame key → engine action dispatch.
 - `shader_catalog.py` — GLSL generator catalogue (`GPU_GENERATORS`).
 - `gpu_generator_worker.py` — out-of-process GStreamer/GL renderer.
