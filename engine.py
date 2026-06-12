@@ -2710,12 +2710,13 @@ class Engine:
             if control is not None:
                 control.render(frame)
             self._flush_mapping_persist()
-            # Adaptive cap: throttle the compositor only while projectM boxes
-            # are live (they need the GPU more than the scene needs 30fps);
-            # full rate otherwise.
+            # Adaptive cap: throttle the compositor only when MULTIPLE projectM
+            # boxes are fighting over the GPU (round-robin contention). A single
+            # full-screen visualizer has no such contention, so leave it at full
+            # rate — capping it there just needlessly slowed it down.
             cap = self.cfg.fps
             if (self._pm_composite_fps
-                    and self.gpu_generators.pm_active_streams() > 0):
+                    and self.gpu_generators.pm_active_streams() >= 2):
                 cap = min(self.cfg.fps, self._pm_composite_fps)
             self.clock.tick(cap)
         self._flush_mapping_persist()
