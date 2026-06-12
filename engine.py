@@ -1592,6 +1592,20 @@ class Engine:
         return img
 
     def _render_generative(self, name, width, height, t, params):
+        if name.startswith("pm:"):
+            # V3D glReadPixels falls off a cliff above ~896x504: ≤20ms below
+            # it, but 200-460ms at 1024x576 (measured). projectM is warped into
+            # boxes / upscaled anyway, so cap its render resolution below the
+            # cliff. Tunable via VJ_PM_RENDER_MAX_W.
+            try:
+                cap_w = int(os.environ.get("VJ_PM_RENDER_MAX_W", "896"))
+            except ValueError:
+                cap_w = 896
+            if width > cap_w:
+                height = max(2, int(height * cap_w / width))
+                width = cap_w
+                width -= width % 4
+                height -= height % 2
         token = self._generator_activation_token if name == "donut" else 0
         frame = self.gpu_generators.render(name, width, height, token=token,
                                            params=params)
