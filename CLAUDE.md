@@ -166,7 +166,19 @@ image from `assets/images/` as `sampler2D tex`.
   without hanging is the remaining on-hardware unknown.
 - `shader_catalog.py` — GLSL generator catalogue (`GPU_GENERATORS`).
 - `gpu_generator_worker.py` — out-of-process GStreamer/GL renderer.
-- `gpu_generators.py` — client/bridge that talks to the worker.
+- `gpu_generators.py` — client/bridge that talks to the workers. Uses a
+  **1-deep render pipeline**: render() reads the PREVIOUS frame's response
+  (the worker had a whole compositor frame to make it, so it's ready and
+  doesn't block) and returns the cached frame, taking the GL round-trip OFF
+  the compositor's serial Phase-1 I/O. A heavy mapping scene that mixed a
+  generator with other content was bounded by the generator's ~70ms blocking
+  round-trip on the critical path (7fps); pipelining drops the frame to the
+  next-slowest box (~15fps) while the generator just refreshes a frame later.
+  Costs: a generator is ONE frame stale (imperceptible) and shows the worker's
+  previous frame for one frame on a switch (vs a black flash). The bridge is
+  called serially from the main thread (Phase-1 I/O is not thread-safe), so
+  the pipe FIFO needs no locks; `_pause_one` drains pending responses before
+  the pause ack to avoid a pipe desync.
 - `config.py`, `state.py`, `display_helpers.py` — config dataclass,
   `vj_state.json` persistence, display geometry helpers.
 - `assets/clips/` — operator's MP4 library. **Gitignored** (see

@@ -21,7 +21,7 @@ import os
 import subprocess
 import sys
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 
 import numpy as np
@@ -74,6 +74,14 @@ class GpuGeneratorBridge:
         self._cooldown = {}            # name -> time before which not to respawn
         self._paused = set()           # names of workers currently PAUSED
         self._rendered = set()         # names render()'d since the last pause_idle
+        # 1-deep render pipeline: per worker, a FIFO of sent-but-unread requests
+        # and the latest decoded frame per generator name. render() reads the
+        # PREVIOUS frame's response (ready by now) and returns the cached frame
+        # instead of blocking on the worker — taking the GL round-trip off the
+        # compositor's critical path (Phase-1 I/O is serial on the main thread).
+        self._inflight = {}            # key -> deque[(name, w, h)] sent, unread
+        self._last_frame = {}          # (key, name) -> latest np frame
+        self._last_by_key = {}         # key -> last frame (any name) for switch fallback
         self.disabled = (os.environ.get("VJ_NO_GPU_GENERATORS") == "1"
                          or MAX_WORKERS < 1)
         self.failed = False
@@ -81,6 +89,31 @@ class GpuGeneratorBridge:
     def available(self, name):
         return (not self.disabled and not self.failed
                 and (name in GPU_GENERATORS or name in PROJECTM_GENERATORS))
+
+    def _write_request(self, proc, name, width, height, token, params):
+        px, py = params
+        req = json.dumps({
+            "name": name, "width": int(width), "height": int(height),
+            "token": int(token), "param_x": float(px), "param_y": float(py),
+        }, separators=(",", ":"))
+        proc.stdin.write((req + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    def _read_response(self, proc):
+        """Read one worker response. Returns the np frame, or None if the worker
+        reported failure for that request (a header with no payload)."""
+        header = proc.stdout.readline()
+        if not header:
+            raise RuntimeError("worker exited")
+        msg = json.loads(header.decode("utf-8"))
+        if not msg.get("ok"):
+            return None
+        n = int(msg["n"])
+        payload = proc.stdout.read(n)
+        if len(payload) != n:
+            raise RuntimeError("short frame from worker")
+        return np.frombuffer(payload, dtype=np.uint8).reshape(
+            (int(msg["height"]), int(msg["width"]), 3))
 
     def render(self, name, width, height, token=0, params=(0.5, 0.5)):
         if not self.available(name):
@@ -90,33 +123,28 @@ class GpuGeneratorBridge:
         if proc is None:
             return None
         try:
-            px, py = params
-            req = json.dumps({
-                "name": name,
-                "width": int(width),
-                "height": int(height),
-                "token": int(token),
-                "param_x": float(px),
-                "param_y": float(py),
-            }, separators=(",", ":"))
-            proc.stdin.write((req + "\n").encode("utf-8"))
-            proc.stdin.flush()
-            header = proc.stdout.readline()
-            if not header:
-                raise RuntimeError("worker exited")
-            msg = json.loads(header.decode("utf-8"))
-            if not msg.get("ok"):
-                print(f"[vj] GPU generator '{name}' unavailable: "
-                      f"{msg.get('error', 'worker error')}")
-                return None
-            n = int(msg["n"])
-            payload = proc.stdout.read(n)
-            if len(payload) != n:
-                raise RuntimeError("short frame from worker")
-            frame = np.frombuffer(payload, dtype=np.uint8)
+            dq = self._inflight.get(key)
+            if dq is None:
+                dq = self._inflight[key] = deque()
+            # Drain the previous send to this worker (rendered during last
+            # frame's other work, so this doesn't block here), then issue this
+            # frame's request and return the freshest frame we already have.
+            if dq:
+                pname = dq.popleft()[0]
+                frame = self._read_response(proc)
+                if frame is not None:
+                    self._last_frame[(key, pname)] = frame
+                    self._last_by_key[key] = frame
+            self._write_request(proc, name, width, height, token, params)
+            dq.append((name, width, height))
             self._rendered.add(key)      # on-screen this frame
-            self._paused.discard(key)    # a successful render means it's PLAYING
-            return frame.reshape((int(msg["height"]), int(msg["width"]), 3)).copy()
+            self._paused.discard(key)    # being requested means it's PLAYING
+            # Prefer this name's own frame; on a fresh switch fall back to the
+            # worker's previous frame for one frame rather than flashing black.
+            cached = self._last_frame.get((key, name))
+            if cached is None:
+                cached = self._last_by_key.get(key)
+            return None if cached is None else cached.copy()
         except Exception as exc:
             # Retire just this generator's worker (others keep running) and
             # cool it down so we don't respawn-thrash a broken one.
@@ -193,6 +221,15 @@ class GpuGeneratorBridge:
         if proc is None or proc.poll() is not None:
             return
         try:
+            # Drain any pipelined render responses first, or the pause ack
+            # would read a leftover frame instead (pipe desync).
+            dq = self._inflight.get(name)
+            while dq:
+                pname = dq.popleft()[0]
+                frame = self._read_response(proc)
+                if frame is not None:
+                    self._last_frame[(name, pname)] = frame
+                    self._last_by_key[name] = frame
             req = json.dumps({"cmd": "pause"}, separators=(",", ":"))
             proc.stdin.write((req + "\n").encode("utf-8"))
             proc.stdin.flush()
@@ -204,6 +241,10 @@ class GpuGeneratorBridge:
 
     def _kill(self, name):
         self._paused.discard(name)
+        self._inflight.pop(name, None)
+        self._last_by_key.pop(name, None)
+        for k in [k for k in self._last_frame if k[0] == name]:
+            self._last_frame.pop(k, None)
         proc = self.workers.pop(name, None)
         if proc is None:
             return
