@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections import OrderedDict, deque
 from pathlib import Path
@@ -43,6 +44,33 @@ PM_KEY = "projectm"
 
 def _worker_key(name):
     return PM_KEY if name.startswith("pm:") else name
+
+
+def _write_request(proc, name, width, height, token, params):
+    px, py = params
+    req = json.dumps({
+        "name": name, "width": int(width), "height": int(height),
+        "token": int(token), "param_x": float(px), "param_y": float(py),
+    }, separators=(",", ":"))
+    proc.stdin.write((req + "\n").encode("utf-8"))
+    proc.stdin.flush()
+
+
+def _read_response(proc):
+    """Read one worker response. Returns the np frame, or None if the worker
+    reported failure for that request (a header with no payload)."""
+    header = proc.stdout.readline()
+    if not header:
+        raise RuntimeError("worker exited")
+    msg = json.loads(header.decode("utf-8"))
+    if not msg.get("ok"):
+        return None
+    n = int(msg["n"])
+    payload = proc.stdout.read(n)
+    if len(payload) != n:
+        raise RuntimeError("short frame from worker")
+    return np.frombuffer(payload, dtype=np.uint8).reshape(
+        (int(msg["height"]), int(msg["width"]), 3))
 
 # Upper bound on live worker processes. Each holds a GStreamer/GL pipeline
 # (~tens of MB) and runs its shader continuously, so this caps both memory
@@ -68,6 +96,131 @@ MAX_WORKERS = _max_workers()
 RESPAWN_COOLDOWN_S = 3.0
 
 
+class PmStreamWorker:
+    """Drives the single projectM worker from a BACKGROUND THREAD so several
+    pm:* presets can be mixed at once (mapping boxes) without blocking the
+    compositor. The thread owns the pipe exclusively and renders every
+    on-screen preset round-robin into a cache; the main thread only ever
+    touches lock-guarded dicts (request the latest size, grab the latest
+    frame), so it never waits on the GL round-trip.
+
+    A single worker process / one EGL context still holds all the presets (its
+    instance pool keeps them compiled), so the V3D one-context-per-process rule
+    is unchanged. Per-preset rendering is paced to VJ_PM_STREAM_FPS (default 30)
+    so the thread doesn't hog V3D from the compositor when few presets are up."""
+
+    def __init__(self, spawn_fn):
+        self._spawn = spawn_fn
+        self._lock = threading.Lock()
+        self._desired = {}        # name -> (w, h, token, params, last_request_ts)
+        self._frames = {}         # name -> latest np frame
+        self._last_any = None     # newest frame of any preset (switch fallback)
+        self._proc = None
+        self._thread = None
+        self._stop = threading.Event()
+        self._failed_until = 0.0  # cooldown after a worker death
+        try:
+            fps = max(1, int(os.environ.get("VJ_PM_STREAM_FPS", "30")))
+        except ValueError:
+            fps = 30
+        self._min_interval = 1.0 / fps
+        self.EXPIRE_S = 0.5       # drop presets not requested for this long
+
+    def request(self, name, width, height, token, params):
+        now = time.time()
+        with self._lock:
+            if now < self._failed_until:
+                return None
+            self._desired[name] = (int(width), int(height), int(token),
+                                   params, now)
+            frame = self._frames.get(name)
+            if frame is None:
+                frame = self._last_any
+        self._ensure_thread()
+        return None if frame is None else frame.copy()
+
+    def pause(self):
+        # Blackout/freeze: stop rendering so the thread idles (no GPU churn).
+        with self._lock:
+            self._desired.clear()
+
+    def shutdown(self):
+        self._stop.set()
+        t = self._thread
+        if t is not None:
+            t.join(timeout=1.5)
+        self._kill_proc()
+
+    def _ensure_thread(self):
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="pm-stream",
+                                        daemon=True)
+        self._thread.start()
+
+    def _kill_proc(self):
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+            proc.terminate()
+            proc.wait(timeout=0.5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _run(self):
+        try:
+            self._proc = self._spawn()
+        except Exception as exc:
+            print(f"[vj] projectM stream: could not start worker: {exc!r}")
+            with self._lock:
+                self._failed_until = time.time() + RESPAWN_COOLDOWN_S
+            return
+        proc = self._proc
+        last_render = {}
+        while not self._stop.is_set():
+            now = time.time()
+            with self._lock:
+                snapshot = [(n, v) for n, v in self._desired.items()
+                            if now - v[4] < self.EXPIRE_S]
+                if len(snapshot) != len(self._desired):
+                    self._desired = {n: v for n, v in snapshot}
+            if not snapshot:
+                time.sleep(0.01)
+                continue
+            did = False
+            for name, (w, h, token, params, _ts) in snapshot:
+                if self._stop.is_set():
+                    break
+                if now - last_render.get(name, 0.0) < self._min_interval:
+                    continue   # paced: don't exceed VJ_PM_STREAM_FPS per preset
+                try:
+                    _write_request(proc, name, w, h, token, params)
+                    frame = _read_response(proc)
+                except Exception as exc:
+                    print(f"[vj] projectM stream worker died: {exc!r}; "
+                          f"cooling down")
+                    with self._lock:
+                        self._failed_until = time.time() + RESPAWN_COOLDOWN_S
+                        self._frames.clear()
+                    self._kill_proc()
+                    return
+                last_render[name] = time.time()
+                did = True
+                if frame is not None:
+                    with self._lock:
+                        self._frames[name] = frame
+                        self._last_any = frame
+            if not did:
+                time.sleep(0.003)   # everything paced this pass
+
+
 class GpuGeneratorBridge:
     def __init__(self):
         self.workers = OrderedDict()   # name -> Popen ; ordered for LRU
@@ -82,6 +235,9 @@ class GpuGeneratorBridge:
         self._inflight = {}            # key -> deque[(name, w, h)] sent, unread
         self._last_frame = {}          # (key, name) -> latest np frame
         self._last_by_key = {}         # key -> last frame (any name) for switch fallback
+        # All pm:* presets are served by a background-threaded stream worker so
+        # several can be mixed at once without blocking the compositor.
+        self._pm = None                # lazily created PmStreamWorker
         self.disabled = (os.environ.get("VJ_NO_GPU_GENERATORS") == "1"
                          or MAX_WORKERS < 1)
         self.failed = False
@@ -90,35 +246,15 @@ class GpuGeneratorBridge:
         return (not self.disabled and not self.failed
                 and (name in GPU_GENERATORS or name in PROJECTM_GENERATORS))
 
-    def _write_request(self, proc, name, width, height, token, params):
-        px, py = params
-        req = json.dumps({
-            "name": name, "width": int(width), "height": int(height),
-            "token": int(token), "param_x": float(px), "param_y": float(py),
-        }, separators=(",", ":"))
-        proc.stdin.write((req + "\n").encode("utf-8"))
-        proc.stdin.flush()
-
-    def _read_response(self, proc):
-        """Read one worker response. Returns the np frame, or None if the worker
-        reported failure for that request (a header with no payload)."""
-        header = proc.stdout.readline()
-        if not header:
-            raise RuntimeError("worker exited")
-        msg = json.loads(header.decode("utf-8"))
-        if not msg.get("ok"):
-            return None
-        n = int(msg["n"])
-        payload = proc.stdout.read(n)
-        if len(payload) != n:
-            raise RuntimeError("short frame from worker")
-        return np.frombuffer(payload, dtype=np.uint8).reshape(
-            (int(msg["height"]), int(msg["width"]), 3))
-
     def render(self, name, width, height, token=0, params=(0.5, 0.5)):
         if not self.available(name):
             return None
         key = _worker_key(name)
+        if key == PM_KEY:
+            # projectM: hand off to the background stream (non-blocking).
+            if self._pm is None:
+                self._pm = PmStreamWorker(lambda: self._spawn(PM_KEY))
+            return self._pm.request(name, width, height, token, params)
         proc = self._worker_for(key)
         if proc is None:
             return None
@@ -131,11 +267,11 @@ class GpuGeneratorBridge:
             # frame's request and return the freshest frame we already have.
             if dq:
                 pname = dq.popleft()[0]
-                frame = self._read_response(proc)
+                frame = _read_response(proc)
                 if frame is not None:
                     self._last_frame[(key, pname)] = frame
                     self._last_by_key[key] = frame
-            self._write_request(proc, name, width, height, token, params)
+            _write_request(proc, name, width, height, token, params)
             dq.append((name, width, height))
             self._rendered.add(key)      # on-screen this frame
             self._paused.discard(key)    # being requested means it's PLAYING
@@ -162,6 +298,8 @@ class GpuGeneratorBridge:
         for name in list(self.workers.keys()):
             self._pause_one(name)
             self._paused.add(name)
+        if self._pm is not None:
+            self._pm.pause()
 
     def pause_idle(self):
         """Pause every live worker that wasn't render()'d since the last call
@@ -184,6 +322,9 @@ class GpuGeneratorBridge:
             self._kill(name)
         self.workers.clear()
         self._paused.clear()
+        if self._pm is not None:
+            self._pm.shutdown()
+            self._pm = None
 
     # ── internals ──────────────────────────────────────────────────
 
@@ -226,7 +367,7 @@ class GpuGeneratorBridge:
             dq = self._inflight.get(name)
             while dq:
                 pname = dq.popleft()[0]
-                frame = self._read_response(proc)
+                frame = _read_response(proc)
                 if frame is not None:
                     self._last_frame[(name, pname)] = frame
                     self._last_by_key[name] = frame

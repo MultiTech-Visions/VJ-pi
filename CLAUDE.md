@@ -178,7 +178,17 @@ image from `assets/images/` as `sampler2D tex`.
   previous frame for one frame on a switch (vs a black flash). The bridge is
   called serially from the main thread (Phase-1 I/O is not thread-safe), so
   the pipe FIFO needs no locks; `_pause_one` drains pending responses before
-  the pause ack to avoid a pipe desync.
+  the pause ack to avoid a pipe desync. **projectM is the exception**: all
+  `pm:*` go through `PmStreamWorker`, a BACKGROUND THREAD that owns the pm
+  worker's pipe and renders every on-screen preset round-robin into a lock-
+  guarded cache, so several pm boxes can be mixed (up to ~5) without any of
+  them blocking the compositor — the simple batched approach can't, because one
+  rendered frame (~1MB) far exceeds the ~64KB OS pipe buffer, so the worker
+  would stall on writes. The main thread only touches the cache (request latest
+  size / grab latest frame). Per-preset rendering is paced to `VJ_PM_STREAM_FPS`
+  (default 30) so the thread doesn't hog V3D; presets not requested for 0.5s are
+  dropped. Scene stays smooth; each pm box refreshes at the worker's pace (5
+  presets ≈ 13fps each). GLSL generators keep the simple inline pipeline.
 - `config.py`, `state.py`, `display_helpers.py` — config dataclass,
   `vj_state.json` persistence, display geometry helpers.
 - `assets/clips/` — operator's MP4 library. **Gitignored** (see
