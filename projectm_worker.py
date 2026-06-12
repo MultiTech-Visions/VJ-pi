@@ -27,6 +27,7 @@ import os
 import sys
 import threading
 import time
+from collections import OrderedDict
 from ctypes import POINTER, byref, c_bool, c_char_p, c_float, c_int, \
     c_int16, c_int32, c_size_t, c_uint, c_uint32, c_void_p
 from pathlib import Path
@@ -212,6 +213,8 @@ def _find_projectm():
 
 
 class ProjectM:
+    _logged_gl = False   # GL/version banner is logged once across all instances
+
     def __init__(self):
         pm = _find_projectm()
         pm.projectm_create.restype = c_void_p
@@ -274,34 +277,49 @@ class ProjectM:
         self._fail_cb = PRESET_FAIL_CB(_on_fail)  # keep ref alive
         pm.projectm_set_preset_switch_failed_event_callback(
             self.handle, self._fail_cb, None)
-        try:
-            g = ctypes.CDLL("libGLESv2.so.2")
-            g.glGetString.restype = c_char_p
-            ver = g.glGetString(0x1F02)  # GL_VERSION
-            sl = g.glGetString(0x8B8C)   # GL_SHADING_LANGUAGE_VERSION
-            log(f"GL: {ver.decode() if ver else '?'} / "
-                f"{sl.decode() if sl else '?'}")
-        except Exception:
-            pass
-        log(f"projectM up (mesh {mw}x{mh}, "
-            f"{'fbo render' if self.render_fbo else 'bound-framebuffer render'})")
+        pm.projectm_destroy.argtypes = [c_void_p]
+        if not ProjectM._logged_gl:
+            ProjectM._logged_gl = True
+            try:
+                g = ctypes.CDLL("libGLESv2.so.2")
+                g.glGetString.restype = c_char_p
+                ver = g.glGetString(0x1F02)  # GL_VERSION
+                sl = g.glGetString(0x8B8C)   # GL_SHADING_LANGUAGE_VERSION
+                log(f"GL: {ver.decode() if ver else '?'} / "
+                    f"{sl.decode() if sl else '?'}")
+            except Exception:
+                pass
+            log(f"projectM up (mesh {mw}x{mh}, "
+                f"{'fbo render' if self.render_fbo else 'bound-framebuffer'})")
+
+    def destroy(self):
+        if self.handle and self.handle.value:
+            self.pm.projectm_destroy(self.handle)
+            self.handle = c_void_p(0)
 
 
 # ── Audio: USB mic via GStreamer (audio-only, no GL elements) ──────────
 
 class MicCapture(threading.Thread):
-    """Pulls S16LE stereo PCM from the default capture device and feeds
-    projectM. alive() goes False if the pipeline can't start or stalls,
-    flipping the renderer to the synthetic-beat fallback."""
+    """Pulls S16LE stereo PCM from the default capture device and stashes the
+    latest chunk. The renderer feeds it to whichever projectM instance it is
+    about to render (there can be several — one per on-screen preset), so the
+    mic can't be bound to a single instance. alive() goes False if the pipeline
+    can't start or stalls, flipping the renderer to the synthetic-beat fallback."""
 
-    def __init__(self, projectm):
+    def __init__(self):
         super().__init__(daemon=True)
-        self.projectm = projectm
         self.last_sample = 0.0
         self.failed = False
+        self._lock = threading.Lock()
+        self._pcm = None            # (ctypes int16 array, frame_count)
 
     def alive(self):
         return not self.failed and (time.time() - self.last_sample) < 1.5
+
+    def latest(self):
+        with self._lock:
+            return self._pcm
 
     def run(self):
         try:
@@ -339,8 +357,8 @@ class MicCapture(threading.Thread):
                     frames = len(info.data) // 4  # 2 ch × int16
                     if frames:
                         pcm = (c_int16 * (frames * 2)).from_buffer_copy(info.data)
-                        self.projectm.pm.projectm_pcm_add_int16(
-                            self.projectm.handle, pcm, frames, PROJECTM_STEREO)
+                        with self._lock:
+                            self._pcm = (pcm, frames)
                         self.last_sample = time.time()
                 finally:
                     buf.unmap(info)
@@ -352,58 +370,62 @@ class MicCapture(threading.Thread):
 # ── Renderer ───────────────────────────────────────────────────────────
 
 class Renderer:
+    """Holds a small LRU pool of projectM instances — one per active preset —
+    all sharing the single EGL context. A mapping scene with several pm:* boxes
+    renders each box's own instance, so shaders compile ONCE per preset instead
+    of being reloaded+recompiled every box every frame (the old single-instance
+    worker did the latter, dropping a multi-preset mapping scene to ~0.25fps)."""
+
     def __init__(self):
-        # GL + projectM are built lazily on the first render() so the pbuffer
-        # can be sized to the real canvas (ProjectM also needs a current
-        # context to exist before it is created).
+        # GL + instances are built lazily on the first render() so the pbuffer
+        # can be sized to the real canvas.
         self.egl = None
         self.gl = None
-        self.projectm = None
         self.mic = None
         self.fbo = c_uint32(0)
         self.tex = c_uint32(0)
         self.size = None
-        self.current = None
-        self.beat_sens = None
-        self._synth_t = 0.0
         self._ready = False
-        # Coalesce preset loads to at most one per VJ_PM_SWITCH_MS. This is the
-        # field-robustness guard: each preset switch makes projectM compile new
-        # MilkDrop shaders on V3D synchronously, and a rapid burst of those
-        # ("bam bam bam" on the key) saturates the GPU and hangs it (neon-green
-        # HUD, frozen Pi). Coalescing means a fast burst compiles only the
-        # preset you LAND on, ~one load per interval, while frames keep flowing
-        # in between — a single deliberate press is still instant. Default
-        # 400ms ≈ 2.5 switches/s, well under the storm that wedges V3D.
+        self._uses_fbo = False        # master build renders into a caller FBO
+        self.instances = OrderedDict()   # name -> ProjectM (preset loaded), LRU
+        self._synth_t = 0.0
+        self._checked = set()         # presets sanity-logged
+        self._frames_since = {}       # name -> frames rendered since created
+        # Max warm instances. Must exceed the number of DISTINCT pm:* presets
+        # on screen at once, or the pool thrashes (evict→recreate→recompile).
+        # Only on-screen presets actually render each frame, so a generous pool
+        # is cheap (warm shaders in memory) — render cost scales with boxes,
+        # not pool size.
         try:
-            self.switch_interval = max(0.0, int(
+            self.max_instances = max(1, int(
+                os.environ.get("VJ_PM_INSTANCES", "12")))
+        except ValueError:
+            self.max_instances = 12
+        # Throttle NEW-instance creation (= a shader compile) to one per
+        # interval, so a fast [/] browse or a big scene loading all at once
+        # can't storm V3D. On-screen presets that already have a warm instance
+        # are never throttled — they render every frame.
+        try:
+            self.create_interval = max(0.0, int(
                 os.environ.get("VJ_PM_SWITCH_MS", "400")) / 1000.0)
         except ValueError:
-            self.switch_interval = 0.4
-        self._pending = None      # most recent requested preset not yet loaded
-        self._last_switch = 0.0
-        self._checked = set()     # presets we've already sanity-logged
-        self._frames_since_load = 0
+            self.create_interval = 0.4
+        self._last_create = 0.0
 
     def _ensure_ready(self, width, height):
         if self._ready:
-            self.egl.resize(width, height)   # no-op unless the canvas changed
             return
         self.egl = EglContext(width, height)
         self.gl = Gl().g
-        self.projectm = ProjectM()
-        self.mic = MicCapture(self.projectm)
+        self.mic = MicCapture()
         self.mic.start()
         self._ready = True
 
-    def _ensure_size(self, width, height):
+    def _apply_size(self, width, height):
         if self.size == (width, height):
             return
-        pm = self.projectm
-        # Released projectM renders to the default framebuffer (our pbuffer),
-        # so no colour FBO is needed. A master build renders into a caller
-        # FBO via render_fbo — build one to receive its output.
-        if pm.render_fbo is not None:
+        self.egl.resize(width, height)
+        if self._uses_fbo:
             g = self.gl
             if self.tex.value:
                 g.glDeleteFramebuffers(1, byref(self.fbo))
@@ -421,66 +443,87 @@ class Renderer:
             status = g.glCheckFramebufferStatus(GL_FRAMEBUFFER)
             if status != GL_FRAMEBUFFER_COMPLETE:
                 raise RuntimeError(f"FBO incomplete: 0x{status:04x}")
-        pm.pm.projectm_set_window_size(pm.handle, width, height)
+        for pm in self.instances.values():
+            pm.pm.projectm_set_window_size(pm.handle, width, height)
         self.size = (width, height)
 
-    def _feed_synthetic_audio(self):
+    def _make_instance(self, name, width, height):
+        pm = ProjectM()
+        self._uses_fbo = pm.render_fbo is not None
+        pm.pm.projectm_set_window_size(pm.handle, width, height)
+        pm.last_fail = None
+        # smooth=False = hard cut. Each instance loads its preset exactly once.
+        pm.pm.projectm_load_preset_file(
+            pm.handle, PROJECTM_GENERATORS[name].encode(), False)
+        if pm.last_fail is not None:
+            fn, msg = pm.last_fail
+            log(f"preset FAILED: {Path(fn).name} — {msg}")
+        self.instances[name] = pm
+        self.instances.move_to_end(name)
+        self._frames_since[name] = 0
+        while len(self.instances) > self.max_instances:
+            old_name, old_pm = self.instances.popitem(last=False)
+            self._frames_since.pop(old_name, None)
+            self._checked.discard(old_name)
+            try:
+                old_pm.destroy()
+            except Exception:
+                pass
+        return pm
+
+    def _instance_for(self, name, width, height, now):
+        pm = self.instances.get(name)
+        if pm is not None:
+            self.instances.move_to_end(name)
+            return pm
+        # Needs a fresh instance (a compile). Throttle creation so a burst
+        # can't storm V3D; while deferring, render the most-recent existing
+        # instance so the frame isn't black (it fills in within a frame or two).
+        if self.instances and (now - self._last_create) < self.create_interval:
+            return next(reversed(self.instances.values()))
+        self._last_create = now
+        return self._make_instance(name, width, height)
+
+    def _feed_audio(self, pm):
+        if self.mic is not None and self.mic.alive():
+            chunk = self.mic.latest()
+            if chunk is not None:
+                pcm, frames = chunk
+                pm.pm.projectm_pcm_add_int16(pm.handle, pcm, frames,
+                                             PROJECTM_STEREO)
+                return
         # ~120 BPM kick + hat-ish noise so presets pulse without a mic.
         frames = AUDIO_RATE // 30
         t = self._synth_t + np.arange(frames) / AUDIO_RATE
         self._synth_t = float(t[-1]) + 1.0 / AUDIO_RATE
-        beat = (t * 2.0) % 1.0                       # 120 BPM phase
+        beat = (t * 2.0) % 1.0
         kick = np.sin(2 * np.pi * 55 * t) * np.exp(-beat * 9.0)
         hat = np.random.default_rng(int(self._synth_t * 1000)).standard_normal(
             frames) * 0.12 * np.exp(-((t * 4.0) % 1.0) * 14.0)
         mono = np.clip((kick * 0.8 + hat) * 0.7, -1.0, 1.0)
         stereo = np.empty(frames * 2, dtype=np.int16)
         stereo[0::2] = stereo[1::2] = (mono * 32767).astype(np.int16)
-        pcm = stereo.ctypes.data_as(POINTER(c_int16))
-        self.projectm.pm.projectm_pcm_add_int16(
-            self.projectm.handle, pcm, frames, PROJECTM_STEREO)
+        pm.pm.projectm_pcm_add_int16(
+            pm.handle, stereo.ctypes.data_as(POINTER(c_int16)), frames,
+            PROJECTM_STEREO)
 
     def render(self, name, width, height, param_x=0.5):
         if name not in PROJECTM_GENERATORS:
             raise ValueError(f"unknown projectM preset: {name}")
         self._ensure_ready(width, height)
-        self._ensure_size(width, height)
-        pm = self.projectm
         now = time.time()
-        if name != self.current:
-            self._pending = name
-        # Load the pending preset only when the switch interval has elapsed,
-        # coalescing rapid cycling down to one recompile per interval.
-        if (self._pending is not None
-                and (now - self._last_switch) >= self.switch_interval):
-            target = self._pending
-            self._pending = None
-            tpath = PROJECTM_GENERATORS.get(target)
-            if tpath is not None and target != self.current:
-                pm.last_fail = None
-                # smooth=False = hard cut: switch instantly, matching the
-                # other generators so the operator can cycle rapidly. (The
-                # slow crossfade felt out of place.)
-                pm.pm.projectm_load_preset_file(pm.handle, tpath.encode(), False)
-                self.current = target
-                self._last_switch = now
-                self._frames_since_load = 0
-                if pm.last_fail is not None:
-                    fn, msg = pm.last_fail
-                    log(f"preset FAILED: {Path(fn).name} — {msg}")
+        pm = self._instance_for(name, width, height, now)
+        self._apply_size(width, height)
         sens = 0.5 + float(param_x) * 1.5   # param_x knob → 0.5..2.0
-        if self.beat_sens is None or abs(sens - self.beat_sens) > 0.01:
-            pm.pm.projectm_set_beat_sensitivity(pm.handle, sens)
-            self.beat_sens = sens
-        if not self.mic.alive():
-            self._feed_synthetic_audio()
+        pm.pm.projectm_set_beat_sensitivity(pm.handle, sens)
+        self._feed_audio(pm)
         g = self.gl
         # Released projectM (<=v4.1.6) renders to the default framebuffer
         # (FBO 0 = our pbuffer); a master build renders into our own FBO.
-        target = self.fbo.value if pm.render_fbo is not None else 0
+        target = self.fbo.value if self._uses_fbo else 0
         g.glBindFramebuffer(GL_FRAMEBUFFER, target)
         g.glViewport(0, 0, width, height)
-        if pm.render_fbo is not None:
+        if self._uses_fbo:
             pm.render_fbo(pm.handle, target)
         else:
             pm.pm.projectm_opengl_render_frame(pm.handle)
@@ -489,20 +532,16 @@ class Renderer:
         rgba = np.empty((height, width, 4), dtype=np.uint8)
         g.glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
                        rgba.ctypes.data_as(c_void_p))
-        self._frames_since_load += 1
-        # Sanity-log each preset once: did GL error, and did it render
-        # anything non-black? Wait a few frames so the smooth crossfade has
-        # faded the new preset in before judging brightness.
-        if self.current not in self._checked and self._frames_since_load >= 8:
-            self._checked.add(self.current)
-            err = g.glGetError()
-            if pm.last_fail is not None:
-                fn, msg = pm.last_fail
-                log(f"preset FAILED: {Path(fn).name} — {msg}")
-            mean = float(rgba[:, :, :3].mean())
-            tag = "BLACK" if mean < 1.0 else f"ok(mean={mean:.1f})"
-            gltag = "" if err == 0 else f" glGetError=0x{err:04x}"
-            log(f"render {self.current}: {tag}{gltag}")
+        # Sanity-log each preset once it's had a few frames to settle.
+        if name in self.instances and name not in self._checked:
+            self._frames_since[name] = self._frames_since.get(name, 0) + 1
+            if self._frames_since[name] >= 8:
+                self._checked.add(name)
+                err = g.glGetError()
+                mean = float(rgba[:, :, :3].mean())
+                tag = "BLACK" if mean < 1.0 else f"ok(mean={mean:.1f})"
+                gltag = "" if err == 0 else f" glGetError=0x{err:04x}"
+                log(f"render {name}: {tag}{gltag}")
         # GL reads bottom-up; the pipe protocol carries top-down RGB.
         return np.ascontiguousarray(rgba[::-1, :, :3]).tobytes()
 

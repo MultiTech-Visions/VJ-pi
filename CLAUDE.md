@@ -139,9 +139,20 @@ image from `assets/images/` as `sampler2D tex`.
   llvmpipe — cannot freeze V3D). `VJ_PM_SWITCH_MS` (default 350) rate-limits
   preset loads so rapid [/] cycling can't trigger a shader-recompile storm.
   All `pm:*` names
-  share ONE worker (bridge key `projectm`): a single projectM instance
-  crossfades preset switches; per-preset workers would rebuild GL each [/]
-  step. Audio: GStreamer **audio-only** mic capture thread (`VJ_PM_AUDIO_SRC`,
+  share ONE worker process (bridge key `projectm`, one EGL context — V3D
+  rule), but that worker holds an **LRU pool of projectM instances, one per
+  active preset** (`VJ_PM_INSTANCES`, default 12). This is load-bearing for
+  MAPPING: a scene with several pm:* boxes wants several distinct presets at
+  once, and a single instance would reload+recompile shaders every box every
+  frame — which dropped a multi-preset mapping scene to ~0.25fps (`gen` phase
+  ~800ms/frame). With the pool each box renders its own warm instance; shaders
+  compile ONCE per preset. Per-frame cost scales with boxes on screen, not pool
+  size (only requested presets render). New-instance creation (a compile) is
+  throttled to one per `VJ_PM_SWITCH_MS` (default 400) so a fast [/] browse or
+  a scene loading all at once can't storm V3D; the pool MUST be ≥ the distinct
+  presets on screen or it thrashes (evict→recreate→recompile). Multiple
+  instances coexisting in one EGL context was verified on V3D. Audio: GStreamer
+  **audio-only** mic capture thread (`VJ_PM_AUDIO_SRC`,
   default autoaudiosrc) → `projectm_pcm_add_int16`; synthetic ~120BPM
   fallback when no mic. PARAM X = beat sensitivity. Tunables: `VJ_PM_MAX`
   (cycle sample, default 40), `projectm_playlist.txt` (operator curation),
