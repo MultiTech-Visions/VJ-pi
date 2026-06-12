@@ -116,6 +116,27 @@ image from `assets/images/` as `sampler2D tex`.
   scrapped — too sparse and it ghosted.)** Faces live in `assets/faces/`
   (gitignored, like clips); the mesh model ships in the repo.
 - `keymap.py` — pygame key → engine action dispatch.
+- `projectm_presets.py` / `projectm_worker.py` — **MilkDrop generators via
+  libprojectM v4**, a third out-of-process GL worker. `projectm_presets.py`
+  scans `assets/projectm_presets/` (gitignored; installed by
+  `Setup ProjectM.sh` from a Pi-5-FPS-filtered pack) and exposes `pm:<stem>`
+  names that engine.py appends to `GENERATIVES`, so they ride the existing
+  [/] cycle / favourites / autopilot / mapping unchanged. The worker holds
+  ONE surfaceless EGL/GLES3 context (raw ctypes, no GStreamer GL), renders
+  into an FBO via `projectm_opengl_render_frame(_fbo)`, and speaks the same
+  JSON+raw-RGB pipe protocol as `gpu_generator_worker.py`. All `pm:*` names
+  share ONE worker (bridge key `projectm`): a single projectM instance
+  crossfades preset switches; per-preset workers would rebuild GL each [/]
+  step. Audio: GStreamer **audio-only** mic capture thread (`VJ_PM_AUDIO_SRC`,
+  default autoaudiosrc) → `projectm_pcm_add_int16`; synthetic ~120BPM
+  fallback when no mic. PARAM X = beat sensitivity. Tunables: `VJ_PM_MAX`
+  (cycle sample, default 40), `projectm_playlist.txt` (operator curation),
+  `VJ_PM_MESH` (default 48x32). `Setup ProjectM.sh` builds libprojectM
+  v4.2.0 `-DENABLE_GLES=ON` into `vendor/projectm/` (Debian only ships
+  v2/v3) and clones the preset + texture packs; the worker runs on system
+  python3 (needs `python3-numpy`, installed by that setup). ⚠️ Known
+  open risk: Pi 5 Mesa exposes GLES 3.1, projectM nominally asks for 3.2 —
+  community Pi 5 builds work, but first on-Pi run is the proof.
 - `shader_catalog.py` — GLSL generator catalogue (`GPU_GENERATORS`).
 - `gpu_generator_worker.py` — out-of-process GStreamer/GL renderer.
 - `gpu_generators.py` — client/bridge that talks to the worker.
