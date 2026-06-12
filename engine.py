@@ -24,10 +24,14 @@ from effects import (
     invert, posterize, edges, screen_blend,
 )
 from gpu_generators import GpuGeneratorBridge
+from projectm_presets import PROJECTM_GENERATOR_ORDER
 from shader_catalog import GPU_GENERATOR_ORDER
 
 
-GENERATIVES = list(GPU_GENERATOR_ORDER)
+# MilkDrop presets (pm:*) join the cycle after the GLSL generators; they
+# render in the shared projectM worker and have no CPU fallback (the
+# bridge returns None if the worker is unavailable → black base layer).
+GENERATIVES = list(GPU_GENERATOR_ORDER) + list(PROJECTM_GENERATOR_ORDER)
 
 GENERATIVE_FNS = {
     "plasma": plasma,

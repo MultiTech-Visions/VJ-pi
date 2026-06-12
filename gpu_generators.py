@@ -27,10 +27,22 @@ from pathlib import Path
 import numpy as np
 
 from shader_catalog import GPU_GENERATORS
+from projectm_presets import PROJECTM_GENERATORS
 
 
 HERE = Path(__file__).resolve().parent
 WORKER = HERE / "gpu_generator_worker.py"
+PM_WORKER = HERE / "projectm_worker.py"
+
+# Every "pm:*" preset shares ONE projectM worker (keyed PM_KEY): a single
+# projectM instance switches presets in place with a smooth crossfade,
+# whereas per-preset workers would rebuild EGL + projectM on every [/]
+# step. Still exactly one GL context in that one process (V3D rule).
+PM_KEY = "projectm"
+
+
+def _worker_key(name):
+    return PM_KEY if name.startswith("pm:") else name
 
 # Upper bound on live worker processes. Each holds a GStreamer/GL pipeline
 # (~tens of MB) and runs its shader continuously, so this caps both memory
@@ -67,12 +79,14 @@ class GpuGeneratorBridge:
         self.failed = False
 
     def available(self, name):
-        return not self.disabled and not self.failed and name in GPU_GENERATORS
+        return (not self.disabled and not self.failed
+                and (name in GPU_GENERATORS or name in PROJECTM_GENERATORS))
 
     def render(self, name, width, height, token=0, params=(0.5, 0.5)):
         if not self.available(name):
             return None
-        proc = self._worker_for(name)
+        key = _worker_key(name)
+        proc = self._worker_for(key)
         if proc is None:
             return None
         try:
@@ -100,15 +114,15 @@ class GpuGeneratorBridge:
             if len(payload) != n:
                 raise RuntimeError("short frame from worker")
             frame = np.frombuffer(payload, dtype=np.uint8)
-            self._rendered.add(name)     # on-screen this frame
-            self._paused.discard(name)   # a successful render means it's PLAYING
+            self._rendered.add(key)      # on-screen this frame
+            self._paused.discard(key)    # a successful render means it's PLAYING
             return frame.reshape((int(msg["height"]), int(msg["width"]), 3)).copy()
         except Exception as exc:
             # Retire just this generator's worker (others keep running) and
             # cool it down so we don't respawn-thrash a broken one.
             print(f"[vj] GPU worker '{name}' failed: {exc!r}; retiring it")
-            self._kill(name)
-            self._cooldown[name] = time.time() + RESPAWN_COOLDOWN_S
+            self._kill(key)
+            self._cooldown[key] = time.time() + RESPAWN_COOLDOWN_S
             return None
 
     def pause(self):
@@ -156,7 +170,7 @@ class GpuGeneratorBridge:
             return proc
         self.workers.pop(name, None)
         try:
-            proc = self._spawn()
+            proc = self._spawn(name)
         except Exception as exc:
             print(f"[vj] could not start GPU worker: {exc!r}; "
                   f"disabling GPU generators")
@@ -204,7 +218,8 @@ class GpuGeneratorBridge:
             except Exception:
                 pass
 
-    def _spawn(self):
+    def _spawn(self, key):
+        script = PM_WORKER if key == PM_KEY else WORKER
         candidates = ["/usr/bin/python3", sys.executable]
         last_exc = None
         for exe in candidates:
@@ -213,7 +228,7 @@ class GpuGeneratorBridge:
                 env.setdefault("GST_GL_PLATFORM", "egl")
                 env.setdefault("GST_GL_WINDOW", "surfaceless")
                 return subprocess.Popen(
-                    [exe, str(WORKER)],
+                    [exe, str(script)],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=None,

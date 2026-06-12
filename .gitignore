@@ -66,6 +66,14 @@ assets/faces/*
 !assets/faces/README*
 vj_last_capture.log
 
+# projectM (MilkDrop) — built library + downloaded preset/texture packs
+# (installed by "Setup ProjectM.sh"), plus the operator's local playlist.
+vendor/
+assets/projectm_presets/
+assets/projectm_textures/
+projectm_playlist.txt
+vj_last_projectm_setup.log
+
 # Catch-all for run logs + local test media so a stray `git add -A` can't
 # sweep them in (a 68MB test mp4 + spike logs got committed once).
 vj_last_*.log

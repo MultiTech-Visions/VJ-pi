@@ -570,6 +570,36 @@ Notes:
   phone gets a matching address automatically.
 - The full log is written to `vj_last_upload.log`.
 
+## MilkDrop visuals (projectM)
+
+Real Winamp-era **MilkDrop** visualizations, rendered by
+[projectM](https://github.com/projectM-visualizer/projectm) and slotted in
+as ordinary generators — they live in the same `[` / `]` cycle as the GLSL
+generators (right after them), and work with favourite slots, autopilot,
+and mapping groups exactly the same way.
+
+**One-time install:** double-click **`Setup ProjectM.sh`** ("Execute in
+Terminal" — it needs your password once, like `setup.sh`). It builds the
+projectM library and downloads a MilkDrop preset pack that was
+benchmarked on a Pi 5 and filtered to only presets that hold a smooth
+frame rate. The build takes 15–40 minutes; let it sit. After that,
+`Start VJ.sh` as usual.
+
+- **Audio-reactive:** plug a **USB microphone** into the Pi and the
+  visuals beat-react to the room's sound, just like Winamp did. With no
+  mic they fall back to a built-in synthetic beat so they still move.
+- **PARAM X** (`← →`) controls beat sensitivity for these visuals.
+- The cycle takes a 40-preset sample of the pack so it stays browsable.
+  To hand-pick which presets appear (and their order), create a
+  `projectm_playlist.txt` in the app folder with one preset name per
+  line (full filename not needed — any unique part of the name works;
+  `#` lines are comments). The pack lives in `assets/projectm_presets/`.
+- Presets render at the reduced generator resolution and are upscaled to
+  the canvas like every other generator, so the 2K output path is
+  unchanged. If a preset stutters, just cycle past it.
+- Troubleshooting goes to the usual `vj_last_run.log` (look for
+  `[pm-worker]` lines) and `vj_last_projectm_setup.log` for the install.
+
 ## Architecture
 
 ```
