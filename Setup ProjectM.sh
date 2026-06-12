@@ -29,7 +29,7 @@ if [ "${VJ_PM_SETUP_TEED:-0}" = "0" ]; then
 fi
 date '+[VJ] projectM setup start: %Y-%m-%d %H:%M:%S'
 
-PROJECTM_TAG="v4.2.0"
+PROJECTM_TAG="v4.1.6"
 PROJECTM_REPO="https://github.com/projectM-visualizer/projectm.git"
 PRESETS_REPO="https://github.com/mickabrig7/projectM-presets-rpi5.git"
 TEXTURES_REPO="https://github.com/projectM-visualizer/presets-milkdrop-texture-pack.git"

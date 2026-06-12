@@ -132,7 +132,7 @@ image from `assets/images/` as `sampler2D tex`.
   fallback when no mic. PARAM X = beat sensitivity. Tunables: `VJ_PM_MAX`
   (cycle sample, default 40), `projectm_playlist.txt` (operator curation),
   `VJ_PM_MESH` (default 48x32). `Setup ProjectM.sh` builds libprojectM
-  v4.2.0 `-DENABLE_GLES=ON` into `vendor/projectm/` (Debian only ships
+  v4.1.6 `-DENABLE_GLES=ON` into `vendor/projectm/` (Debian only ships
   v2/v3) and clones the preset + texture packs; the worker runs on system
   python3 (needs `python3-numpy`, installed by that setup). ⚠️ Known
   open risk: Pi 5 Mesa exposes GLES 3.1, projectM nominally asks for 3.2 —
