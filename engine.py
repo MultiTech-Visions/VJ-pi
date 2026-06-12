@@ -2681,9 +2681,11 @@ class Engine:
             if now - self._perf_log_at >= 2.0:
                 self._perf_log_at = now
                 p = self._perf_ms
+                pm_fps, pm_n = self.gpu_generators.pm_stream_fps()
+                pm_str = (" | pm %.0ffps×%d" % (pm_fps, pm_n)) if pm_n else ""
                 print("[vj] %.0f fps | clip %.0f gen %.0f fx %.0f warp %.0f "
-                      "disp %.0f ms" % (self.fps_measured, p["clip"], p["gen"],
-                      p["fx"], p["warp"], self._disp_ms), flush=True)
+                      "disp %.0f ms%s" % (self.fps_measured, p["clip"], p["gen"],
+                      p["fx"], p["warp"], self._disp_ms, pm_str), flush=True)
                 if self.mode == "mapping":
                     print("[vj]   warp split: par %.0f (fxΣ %.0f geomΣ %.0f) "
                           "+ composite %.0f ms" % (

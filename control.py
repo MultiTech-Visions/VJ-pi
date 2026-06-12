@@ -220,6 +220,14 @@ class ControlWindow:
         fcol = (110, 230, 130) if fps >= 25.0 else (245, 215, 110) if fps >= 15.0 else (240, 90, 90)
         fps_surf = self.font_h.render("%.0f FPS" % fps, True, fcol)
         surface.blit(fps_surf, (pad, y))
+        # ProjectM boxes refresh at the worker's pace, NOT the compositor fps —
+        # show the real per-box rate so the headline number isn't misleading.
+        pm_fps, pm_n = e.gpu_generators.pm_stream_fps()
+        if pm_n:
+            pcol = (110, 230, 130) if pm_fps >= 13.0 else (245, 215, 110) if pm_fps >= 8.0 else (240, 90, 90)
+            ps = self.font_m.render("pm %.0ffps ×%d" % (pm_fps, pm_n), True, pcol)
+            surface.blit(ps, (pad + fps_surf.get_width() + 12,
+                              y + fps_surf.get_height() - ps.get_height() - 2))
         y += fps_surf.get_height() + 4
 
         # In mapping mode, break the frame time down by phase so we can see

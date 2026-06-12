@@ -125,6 +125,19 @@ class PmStreamWorker:
             fps = 30
         self._min_interval = 1.0 / fps
         self.EXPIRE_S = 0.5       # drop presets not requested for this long
+        self._render_ts = deque(maxlen=48)   # completed-render timestamps
+
+    def stream_fps(self):
+        """(per_box_fps, active_streams) — the HONEST refresh rate of the
+        projectM boxes, which is the worker's render throughput divided across
+        the on-screen presets. The compositor fps is separate and higher."""
+        with self._lock:
+            ts = list(self._render_ts)
+            active = max(1, len(self._desired))
+        if len(ts) < 2 or ts[-1] <= ts[0]:
+            return (0.0, active)
+        throughput = (len(ts) - 1) / (ts[-1] - ts[0])
+        return (throughput / active, active)
 
     def request(self, name, width, height, token, params):
         now = time.time()
@@ -217,6 +230,7 @@ class PmStreamWorker:
                     with self._lock:
                         self._frames[name] = frame
                         self._last_any = frame
+                        self._render_ts.append(last_render[name])
             if not did:
                 time.sleep(0.003)   # everything paced this pass
 
@@ -245,6 +259,10 @@ class GpuGeneratorBridge:
     def available(self, name):
         return (not self.disabled and not self.failed
                 and (name in GPU_GENERATORS or name in PROJECTM_GENERATORS))
+
+    def pm_stream_fps(self):
+        """(per_box_fps, active_streams) for the projectM boxes, or (0, 0)."""
+        return self._pm.stream_fps() if self._pm is not None else (0.0, 0)
 
     def render(self, name, width, height, token=0, params=(0.5, 0.5)):
         if not self.available(name):
