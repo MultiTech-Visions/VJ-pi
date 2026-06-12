@@ -477,6 +477,19 @@ class Engine:
     def browse_generatives(self, step):
         if not GENERATIVES:
             return
+        if self._in_mapping():
+            # Cycle the SELECTED GROUP's generator — base the index on that
+            # group's current generator, not the global one (which never moves
+            # in mapping mode, so basing on it froze the cycle to one preset
+            # ↔ blackout).
+            g = self.mapping.selected_group()
+            cur = g.gen_name if (g and g.content_kind == "generative") else None
+            if cur in GENERATIVES:
+                idx = (GENERATIVES.index(cur) + step) % len(GENERATIVES)
+            else:
+                idx = 0 if step > 0 else len(GENERATIVES) - 1
+            self.select_generative(idx)
+            return
         if self.active_generative in GENERATIVES:
             idx = GENERATIVES.index(self.active_generative)
         else:
