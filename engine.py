@@ -2529,6 +2529,14 @@ class Engine:
                         # favourites / hits / mappings.
                         continue
 
+                    # P — toggle the HUD live preview (a pure HUD perf dial;
+                    # doesn't touch the show, so it doesn't disengage autopilot).
+                    if (is_initial and event.key == pygame.K_p
+                            and not (event.mod & pygame.KMOD_CTRL)):
+                        if control is not None:
+                            control.toggle_preview()
+                        continue
+
                     # Autopilot Enter handling — engage (double-tap when off)
                     # or disengage (single tap when on). Enter itself never
                     # falls through to any further action.

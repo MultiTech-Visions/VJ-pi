@@ -12,6 +12,7 @@ KEY_CHEAT = [
     ("− / =",        "Prev / next CLIP (hold to scrub)"),
     ("[ / ]",        "Prev / next GENERATOR (hold to scan)"),
     ("hold −+= / [+]", "JUMP picker: type a clip / generator # · Enter = go"),
+    ("P",            "Toggle HUD live preview on/off (saves CPU)"),
     ("1 - 0",        "Clip favourites — tap=play, hold ≥½s=assign current"),
     ("A-L ;",        "Generator favourites — tap=play, hold ≥½s=assign current"),
     ("Z X C V B",    "Hits: strobe / black / inv / zoom / RGB"),
@@ -43,6 +44,7 @@ MAPPING_KEY_CHEAT = [
     ("EDIT — toolbar G·",  "tag chip = which group this space belongs to"),
     ("EDIT — −/= [/]", "cycle clip / generator for selected box's group"),
     ("hold −+= / [+]", "JUMP picker: type a #, Enter → selected group"),
+    ("P",            "Toggle HUD live preview on/off (saves CPU)"),
     ("EDIT — Esc",   "cancel drag / deselect"),
     ("Ctrl+N",       "New group"),
     ("Ctrl+Back",    "Delete current group"),
@@ -152,8 +154,7 @@ class ControlWindow:
             return
 
         if self._preview_toggle_rect.collidepoint(pos):
-            self.preview_enabled = not self.preview_enabled
-            update_state(hud_preview=self.preview_enabled)
+            self.toggle_preview()
             return
 
         if (e.mode == "mapping" and e.mapping.edit_mode
@@ -307,6 +308,13 @@ class ControlWindow:
         elif self.software_surface is not None:
             self.software_surface.blit(surface, (0, 0))
             pygame.display.flip()
+
+    def toggle_preview(self):
+        """Flip the live HUD preview (the per-frame thumbnail blit). Off saves
+        a 720p frombuffer+scale+blit every frame. Persists across sessions."""
+        self.preview_enabled = not self.preview_enabled
+        update_state(hud_preview=self.preview_enabled)
+        return self.preview_enabled
 
     def _draw_number_entry(self, surface):
         e = self.engine
