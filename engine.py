@@ -142,6 +142,16 @@ class Engine:
         self.screen = screen
         self.w, self.h = cfg.width, cfg.height
         self.clock = pygame.time.Clock()
+        # When projectM boxes are on screen, the compositor and the projectM
+        # worker fight over the one V3D GPU; a flat-out 30fps compositor starves
+        # the worker, so the pm boxes refresh slowly. Capping the compositor
+        # while pm streams are live gives the worker room — the boxes speed up
+        # and stay in sync, clips still look smooth. 0 disables the cap.
+        try:
+            self._pm_composite_fps = max(0, int(
+                os.environ.get("VJ_PM_COMPOSITE_FPS", "20")))
+        except ValueError:
+            self._pm_composite_fps = 20
         self.start_time = time.time()
         self.fps_measured = 0.0   # smoothed achieved frame rate, shown on the HUD
         # Smoothed per-phase mapping render times (ms) for the HUD breakdown.
@@ -2700,7 +2710,14 @@ class Engine:
             if control is not None:
                 control.render(frame)
             self._flush_mapping_persist()
-            self.clock.tick(self.cfg.fps)
+            # Adaptive cap: throttle the compositor only while projectM boxes
+            # are live (they need the GPU more than the scene needs 30fps);
+            # full rate otherwise.
+            cap = self.cfg.fps
+            if (self._pm_composite_fps
+                    and self.gpu_generators.pm_active_streams() > 0):
+                cap = min(self.cfg.fps, self._pm_composite_fps)
+            self.clock.tick(cap)
         self._flush_mapping_persist()
         self.clips.release_all()
         self.overlays.release_all()
