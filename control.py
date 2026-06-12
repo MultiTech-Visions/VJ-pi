@@ -11,6 +11,7 @@ from state import load_state, update_state
 KEY_CHEAT = [
     ("− / =",        "Prev / next CLIP (hold to scrub)"),
     ("[ / ]",        "Prev / next GENERATOR (hold to scan)"),
+    ("hold −+= / [+]", "JUMP picker: type a clip / generator # · Enter = go"),
     ("1 - 0",        "Clip favourites — tap=play, hold ≥½s=assign current"),
     ("A-L ;",        "Generator favourites — tap=play, hold ≥½s=assign current"),
     ("Z X C V B",    "Hits: strobe / black / inv / zoom / RGB"),
@@ -41,6 +42,7 @@ MAPPING_KEY_CHEAT = [
     ("EDIT — toolbar frame", "mode / zoom / pan / reset selected group's video"),
     ("EDIT — toolbar G·",  "tag chip = which group this space belongs to"),
     ("EDIT — −/= [/]", "cycle clip / generator for selected box's group"),
+    ("hold −+= / [+]", "JUMP picker: type a #, Enter → selected group"),
     ("EDIT — Esc",   "cancel drag / deselect"),
     ("Ctrl+N",       "New group"),
     ("Ctrl+Back",    "Delete current group"),
@@ -289,6 +291,10 @@ class ControlWindow:
             )
             surface.blit(src, (pad, y))
 
+        # Number-jump picker overlay — drawn last so it sits on top.
+        if e.number_entry is not None:
+            self._draw_number_entry(surface)
+
         # Present the composed surface. Either the HUD owns the single GL
         # context (renderer set → texture upload), or — under --gpu-scale —
         # the HUD is the pygame.display software window (blit + flip). One GL
@@ -301,6 +307,42 @@ class ControlWindow:
         elif self.software_surface is not None:
             self.software_surface.blit(surface, (0, 0))
             pygame.display.flip()
+
+    def _draw_number_entry(self, surface):
+        e = self.engine
+        ne = e.number_entry
+        if ne is None:
+            return
+        win_w, win_h = self.size
+        total = e.number_entry_total()
+        is_gen = ne["target"] == "gen"
+        title = "JUMP TO GENERATOR" if is_gen else "JUMP TO CLIP"
+        accent = (150, 220, 255) if is_gen else (255, 210, 130)
+        buf = ne["buffer"] or "—"
+        in_map = e.mode == "mapping"
+        target_hint = ""
+        if in_map:
+            g = e.mapping.selected_group()
+            if g is not None:
+                target_hint = f"  → {g.name}"
+
+        bw, bh = min(440, win_w - 24), 150
+        bx, by = (win_w - bw) // 2, (win_h - bh) // 2
+        box = pygame.Rect(bx, by, bw, bh)
+        shade = pygame.Surface((win_w, win_h), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 150))
+        surface.blit(shade, (0, 0))
+        pygame.draw.rect(surface, (28, 32, 44), box, border_radius=10)
+        pygame.draw.rect(surface, accent, box, 2, border_radius=10)
+
+        ts = self.font_h.render(title + target_hint, True, accent)
+        surface.blit(ts, (bx + 18, by + 14))
+        num = self.font_big if hasattr(self, "font_big") else self.font_h
+        ns = num.render(f"{buf} / {total}", True, (245, 245, 255))
+        surface.blit(ns, (bx + 18, by + 50))
+        hint = self.font_s.render("type a number · Enter = go · Esc = cancel",
+                                  True, (170, 175, 195))
+        surface.blit(hint, (bx + 18, by + bh - 28))
 
     # ── Panel parts ──────────────────────────────────────────────────
 
@@ -478,7 +520,8 @@ class ControlWindow:
         ap_color = (130, 220, 140) if g.autopilot_enabled else (130, 130, 150)
         self._row(surface, "NAME", g.name, x, y, width); y += 19
         self._row(surface, "SPACES", spaces_label, x, y, width); y += 19
-        self._row(surface, "CONTENT", g.content_label(), x, y, width); y += 19
+        self._row(surface, "CONTENT", self._group_content_label(g),
+                  x, y, width); y += 19
         fx_on = [k for k, v in g.fx_state.items() if v]
         self._row(surface, "FX", ", ".join(fx_on) if fx_on else "—",
                   x, y, width); y += 22
@@ -745,6 +788,21 @@ class ControlWindow:
         # of pushing the position out of view. Drop the "pm:" prefix.
         disp = name[3:] if name.startswith("pm:") else name
         return f"[{idx}/{total}] {disp}"
+
+    @staticmethod
+    def _group_content_label(g):
+        # Like Group.content_label(), but shows the generator's [idx/total]
+        # position so the mapping screen tells you which one you're on.
+        if g.content_kind == "generative" and g.gen_name:
+            from engine import GENERATIVES
+            name = g.gen_name
+            disp = name[3:] if name.startswith("pm:") else name
+            try:
+                idx = GENERATIVES.index(name) + 1
+                return f"gen:  [{idx}/{len(GENERATIVES)}] {disp}"
+            except ValueError:
+                return f"gen:  {disp}"
+        return g.content_label()
 
     @staticmethod
     def _camera_label(e):

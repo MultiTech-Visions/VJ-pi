@@ -184,6 +184,10 @@ class Engine:
         self.active_generative = None
         self.current_generator_idx = 0
         self._generator_activation_token = 0
+        # Number-jump picker: None, or {"target": "gen"|"clip", "buffer": str}.
+        # Lets the operator type an index and jump straight there instead of
+        # cycling one-by-one through hundreds of generators / clips.
+        self.number_entry = None
 
         # Live webcam as a base layer. Lazily opened on first use (toggling
         # the camera key) so the device isn't held while it's unused. When
@@ -495,6 +499,56 @@ class Engine:
         else:
             idx = self.current_generator_idx
         self.select_generative((idx + step) % len(GENERATIVES))
+
+    # ── Number-jump picker ───────────────────────────────────────────────
+    def number_entry_total(self):
+        """How many items the active picker can jump to (for the HUD)."""
+        if not self.number_entry:
+            return 0
+        return (len(GENERATIVES) if self.number_entry["target"] == "gen"
+                else len(self.clips))
+
+    def start_number_entry(self, target):
+        if target not in ("gen", "clip"):
+            return
+        self.number_entry = {"target": target, "buffer": ""}
+
+    def number_entry_digit(self, ch):
+        if self.number_entry is None or not ch.isdigit():
+            return
+        # Cap length to the digits in the total; ignore a leading 0.
+        cap = max(1, len(str(max(1, self.number_entry_total()))))
+        buf = self.number_entry["buffer"]
+        if ch == "0" and buf == "":
+            return
+        if len(buf) < cap:
+            self.number_entry["buffer"] = buf + ch
+
+    def number_entry_backspace(self):
+        if self.number_entry is not None:
+            self.number_entry["buffer"] = self.number_entry["buffer"][:-1]
+
+    def cancel_number_entry(self):
+        self.number_entry = None
+
+    def confirm_number_entry(self):
+        """Jump to the typed 1-based index, then close the picker. select_*
+        already route to the selected mapping group when in mapping mode."""
+        ne = self.number_entry
+        if ne is None:
+            return
+        target, buf = ne["target"], ne["buffer"]
+        self.number_entry = None
+        if not buf:
+            return
+        total = (len(GENERATIVES) if target == "gen" else len(self.clips))
+        if total == 0:
+            return
+        idx = max(0, min(total - 1, int(buf) - 1))   # 1-based → clamped 0-based
+        if target == "gen":
+            self.select_generative(idx)
+        else:
+            self.select_clip(idx)
 
     def fire_hit(self, kind, frames=5):
         # Hits stay global — they're a panic-button visual smash.
@@ -2415,7 +2469,9 @@ class Engine:
         return frame
 
     def run(self, control=None):
-        from keymap import dispatch, NAV_KEYS, FAV_KEYS, HIT_KEYS, fav_tap, fav_long
+        from keymap import (dispatch, NAV_KEYS, FAV_KEYS, HIT_KEYS,
+                            fav_tap, fav_long, NAV_PARTNER, CHORD_PAIRS,
+                            DIGIT_KEYS)
         # The operator taps the cycle keys like a fidget clicker — one press,
         # one step — and has no use for hold-to-scrub, so key auto-repeat is
         # DISABLED outright. Every KEYDOWN is then a genuine physical press;
@@ -2439,6 +2495,14 @@ class Engine:
 
         arrow_keys = (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN)
 
+        # Number-jump chord: hold BOTH keys of a cycle pair for CHORD_HOLD_S to
+        # open the picker. chord_since tracks when a pair first went fully held;
+        # chord_consumed latches a fired chord until the keys are released, so
+        # it doesn't immediately re-open while the operator is still holding.
+        chord_since = {}
+        chord_consumed = set()
+        CHORD_HOLD_S = 0.4
+
         last_t = time.time()
         while self.running:
             for event in pygame.event.get():
@@ -2448,6 +2512,22 @@ class Engine:
                 elif event.type == pygame.KEYDOWN:
                     is_initial = event.key not in held_keys
                     held_keys.add(event.key)
+
+                    # Number-jump picker is modal: while open, the keyboard
+                    # types a target index instead of doing its normal job.
+                    if self.number_entry is not None:
+                        k = event.key
+                        if k in DIGIT_KEYS:
+                            self.number_entry_digit(DIGIT_KEYS[k])
+                        elif k in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                            self.confirm_number_entry()
+                        elif k == pygame.K_BACKSPACE:
+                            self.number_entry_backspace()
+                        elif k == pygame.K_ESCAPE:
+                            self.cancel_number_entry()
+                        # Swallow everything else so numbers don't also fire
+                        # favourites / hits / mappings.
+                        continue
 
                     # Autopilot Enter handling — engage (double-tap when off)
                     # or disengage (single tap when on). Enter itself never
@@ -2490,6 +2570,10 @@ class Engine:
                         # Ignore auto-repeats for favourite keys.
                     elif is_initial:
                         if event.key in NAV_KEYS:
+                            if NAV_PARTNER.get(event.key) in held_keys:
+                                # Partner already down — this is a number-jump
+                                # chord forming, not a cycle. Don't step.
+                                continue
                             now_t = time.time()
                             if (now_t - nav_last_fire.get(event.key, 0.0)
                                     < NAV_DEBOUNCE_S):
@@ -2512,6 +2596,9 @@ class Engine:
                     held_keys.clear()
                     fav_pressed_at.clear()
                     long_press_fired.clear()
+                    chord_since.clear()
+                    chord_consumed.clear()
+                    self.cancel_number_entry()
 
                 elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                                     pygame.MOUSEMOTION):
@@ -2541,6 +2628,21 @@ class Engine:
                 if now - t >= LONG_PRESS_S:
                     fav_long(self, k)
                     long_press_fired.add(k)
+
+            # Per-frame number-jump chord detection: both keys of a pair held
+            # past CHORD_HOLD_S opens that picker (once, until released).
+            for target, (ka, kb) in CHORD_PAIRS.items():
+                if ka in held_keys and kb in held_keys:
+                    if target in chord_consumed:
+                        continue
+                    t0 = chord_since.setdefault(target, now)
+                    if self.number_entry is None and now - t0 >= CHORD_HOLD_S:
+                        self.start_number_entry(target)
+                        chord_consumed.add(target)
+                        chord_since.pop(target, None)
+                else:
+                    chord_since.pop(target, None)
+                    chord_consumed.discard(target)
             self.poll_cinematic_mode()
             # Re-post any keystrokes the 4K window relayed to us, so the next
             # event-loop pass dispatches them through the normal keymap.

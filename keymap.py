@@ -15,6 +15,27 @@ CYCLE_GENS_NEXT    = pygame.K_RIGHTBRACKET
 NAV_KEYS = {CYCLE_CLIPS_PREV, CYCLE_CLIPS_NEXT,
             CYCLE_GENS_PREV,  CYCLE_GENS_NEXT}
 
+# The two cycle keys in each NAV pair (so one suppresses the other while a
+# chord is forming). key → its partner in the same pair.
+NAV_PARTNER = {
+    CYCLE_CLIPS_PREV: CYCLE_CLIPS_NEXT, CYCLE_CLIPS_NEXT: CYCLE_CLIPS_PREV,
+    CYCLE_GENS_PREV:  CYCLE_GENS_NEXT,  CYCLE_GENS_NEXT:  CYCLE_GENS_PREV,
+}
+
+# Hold BOTH keys of a pair to open the number-jump picker for that library:
+# both `-`/`=` → clips, both `[`/`]` → generators. target → (keyA, keyB).
+CHORD_PAIRS = {
+    "clip": (CYCLE_CLIPS_PREV, CYCLE_CLIPS_NEXT),
+    "gen":  (CYCLE_GENS_PREV,  CYCLE_GENS_NEXT),
+}
+
+# Number-row + keypad digits → their character, for typing a jump target.
+DIGIT_KEYS = {}
+for _d in range(10):
+    DIGIT_KEYS[getattr(pygame, f"K_{_d}")] = str(_d)
+    DIGIT_KEYS[getattr(pygame, f"K_KP{_d}", getattr(pygame, f"K_KP_{_d}", -1))] = str(_d)
+DIGIT_KEYS.pop(-1, None)
+
 
 # ── Favourite slots ──────────────────────────────────────────────────
 #
