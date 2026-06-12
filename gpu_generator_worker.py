@@ -21,11 +21,12 @@ from shader_catalog import GPU_GENERATORS, IMAGE_GENERATORS
 HERE = Path(__file__).resolve().parent
 IMAGES_DIR = HERE / "assets" / "images"
 
-# Slideshow tuning (env-overridable). The cube swaps one face roughly this
-# often, always choosing the face currently turned away from the camera so
-# the change is hidden behind the rotation.
-CUBE_SWAP_SECONDS = float(os.environ.get("VJ_CUBE_SWAP_S", "4.0"))
+# Slideshow tuning (env-overridable). The cube turns like a carousel; each
+# side face is swapped to the next photo the moment it rotates to the rear
+# (out of sight), so images only ever change on the hidden back.
 CUBE_SPIN_SPEED = float(os.environ.get("VJ_CUBE_SPIN", "0.35"))  # rad/s base
+# Constant forward tilt of the cube. MUST match TILT in CUBE_SHADER.
+CUBE_TILT = -0.30
 
 
 def _list_images():
@@ -37,12 +38,25 @@ def _list_images():
     return sorted(paths)
 
 
+_cell_cache = {}  # (path, cw, ch) -> RGBA cell, so swaps/re-activations are cheap
+
+
 def _load_cell(path, cw, ch):
     """Decode an image and letterbox it (no distortion) into a cw x ch RGBA
-    cell on a black background."""
+    cell on a black background. Decodes at reduced resolution (the JPEGs are
+    12MP phone photos; a cube cell is a few hundred px) and caches the result
+    so a face swap never stalls the render thread."""
+    ck = (str(path), cw, ch)
+    cached = _cell_cache.get(ck)
+    if cached is not None:
+        return cached
     cell = np.zeros((ch, cw, 4), dtype=np.uint8)
     cell[:, :, 3] = 255
-    img = cv2.imread(str(path), cv2.IMREAD_COLOR)  # BGR
+    # REDUCED_COLOR_4 decodes at 1/4 size (1/16 the pixels) — far faster and
+    # still well above a cube face's resolution.
+    img = cv2.imread(str(path), cv2.IMREAD_REDUCED_COLOR_4)  # BGR, 1/4 size
+    if img is None:
+        img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is None:
         return cell
     ih, iw = img.shape[:2]
@@ -57,18 +71,19 @@ def _load_cell(path, cw, ch):
     cell[y0:y0 + nh, x0:x0 + nw, 0] = resized[:, :, 2]  # R
     cell[y0:y0 + nh, x0:x0 + nw, 1] = resized[:, :, 1]  # G
     cell[y0:y0 + nh, x0:x0 + nw, 2] = resized[:, :, 0]  # B
+    _cell_cache[ck] = cell
     return cell
 
 
 def _cube_face_normals(spin):
     """World-space outward normals of the 6 cube faces under the SAME
-    rotation the shader applies (rotY(spin) * rotX(spin*0.6)). Face order
+    rotation the shader applies: rotX(CUBE_TILT) * rotY(spin). Face order
     matches the shader: +X,-X,+Y,-Y,+Z,-Z. Returns a (6,3) array."""
     cy, sy = math.cos(spin), math.sin(spin)
-    cx, sx = math.cos(spin * 0.6), math.sin(spin * 0.6)
+    cx, sx = math.cos(CUBE_TILT), math.sin(CUBE_TILT)
     ry = np.array([[cy, 0.0, -sy], [0.0, 1.0, 0.0], [sy, 0.0, cy]])
     rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
-    r = ry @ rx
+    r = rx @ ry
     local = np.array([
         [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
@@ -80,11 +95,13 @@ def _cube_face_normals(spin):
 class CubeSlideshow:
     """Rolling 3x2 image atlas for the picture-cube generator.
 
-    Holds one photo per cube face, accumulates the tumble angle, and every
-    CUBE_SWAP_SECONDS replaces the photo on whichever face is most hidden
-    (largest world-normal +z, i.e. pointing away from the -z camera). The
-    cycle walks the entire images/ folder, reshuffling on each full pass, so
-    it is a set-and-forget slideshow.
+    Holds one photo per cube face and accumulates the carousel angle. The
+    moment a face rotates to the rear (becomes the most hidden — largest
+    world-normal +z, pointing away from the -z camera) it is swapped to the
+    next photo, while it is out of sight. So a visible face never changes
+    under your eyes; new pictures appear only as fresh faces swing around.
+    The cycle walks the entire images/ folder, reshuffling on each full pass,
+    for a set-and-forget slideshow.
     """
 
     def __init__(self, width, height):
@@ -98,7 +115,7 @@ class CubeSlideshow:
         self.atlas[:, :, 3] = 255
         self.spin = 0.0
         self.last_t = time.monotonic()
-        self.last_swap = self.last_t
+        self.rear_face = -1   # which face is currently at the rear
         self.cycle = []
         self.cycle_idx = 0
         self.face_paths = [None] * 6
@@ -130,28 +147,30 @@ class CubeSlideshow:
     def reset(self):
         """Fresh shuffle + repaint all six faces (called on (re)activation)."""
         self.spin = 0.0
-        now = time.monotonic()
-        self.last_t = now
-        self.last_swap = now
+        self.last_t = time.monotonic()
         self.cycle = []
         self.cycle_idx = 0
         if _list_images():
             for face in range(6):
                 self._draw_face(face, self._next_path())
+        # Remember the starting rear face so we don't swap it immediately.
+        self.rear_face = int(np.argmax(_cube_face_normals(self.spin)[:, 2]))
 
     def step(self, param_x):
-        """Advance the tumble angle and, when due, swap the hidden face.
-        Returns the current spin angle for the cube_spin uniform."""
+        """Advance the carousel angle. The instant a new face reaches the rear
+        (out of sight), swap it to the next photo. Returns the spin angle for
+        the cube_spin uniform."""
         now = time.monotonic()
         dt = min(0.2, max(0.0, now - self.last_t))
         self.last_t = now
         speed = CUBE_SPIN_SPEED * (0.4 + 1.2 * max(0.0, min(1.0, param_x)))
         self.spin += dt * speed
-        if now - self.last_swap >= CUBE_SWAP_SECONDS and _list_images():
-            self.last_swap = now
-            # Refresh the most back-facing cell (largest world +z normal).
-            depths = _cube_face_normals(self.spin)[:, 2]
-            self._draw_face(int(np.argmax(depths)), self._next_path())
+        # Rear-most face = largest world +z normal (pointing away from camera).
+        rear = int(np.argmax(_cube_face_normals(self.spin)[:, 2]))
+        if rear != self.rear_face:
+            self.rear_face = rear
+            if _list_images():
+                self._draw_face(rear, self._next_path())
         return self.spin
 
     def buffer_bytes(self):

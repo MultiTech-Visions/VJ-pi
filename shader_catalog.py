@@ -232,17 +232,21 @@ void main() {
     vec3 ro = vec3(0.0, 0.0, -zoom);
     vec3 rd = normalize(vec3(uv, 1.4));
 
-    // The cube tumbles on two axes. Keep this IN SYNC with the worker's
-    // back-face picker (gpu_generator_worker._cube_face_depths).
-    mat3 R = rotY(cube_spin) * rotX(cube_spin * 0.6);
+    // Carousel motion: the cube spins around a (fixed-tilt) vertical axis so
+    // its four side faces swing into main view one at a time, like a slowly
+    // turning display stand. The constant forward tilt shows a sliver of the
+    // top face so it reads as a solid cube. Keep TILT and the rotation order
+    // IN SYNC with the worker's rear-face picker (_cube_face_normals).
+    const float TILT = -0.30;
+    mat3 R = rotX(TILT) * rotY(cube_spin);
     // Inverse of a rotation is its transpose, but transpose() is GLSL ES 3.00
     // only; compose the inverse rotations directly instead.
-    mat3 Rinv = rotX(-cube_spin * 0.6) * rotY(-cube_spin);
+    mat3 Rinv = rotY(-cube_spin) * rotX(-TILT);
     vec3 halfb = vec3(1.0);
 
     float t = 0.0;
     bool hit = false;
-    for (int i = 0; i < 96; i++) {
+    for (int i = 0; i < 64; i++) {
         vec3 p = ro + rd * t;
         float d = sdBox(Rinv * p, halfb);   // evaluate in cube-local space
         if (d < 0.001) { hit = true; break; }
