@@ -564,6 +564,14 @@ def _send(obj, payload=None):
 
 def main():
     renderer = None
+    # Diagnostics: split the time the bridge sees (round-trip) into the work
+    # actually done INSIDE render() vs the gap spent suspended/waiting for the
+    # next request. If render_ms is small but the bridge sees ~650ms, the cost
+    # is scheduling starvation, not rendering.
+    n_acc = 0
+    render_acc = 0.0
+    gap_acc = 0.0
+    last_done = None
     for line in sys.stdin.buffer:
         try:
             req = json.loads(line.decode("utf-8"))
@@ -577,9 +585,22 @@ def main():
             width = int(req["width"])
             height = int(req["height"])
             param_x = float(req.get("param_x", 0.5))
+            t_in = time.time()
+            if last_done is not None:
+                gap_acc += t_in - last_done   # time since we sent the last frame
             data = renderer.render(name, width, height, param_x)
+            t_out = time.time()
+            render_acc += t_out - t_in
             _send({"ok": True, "width": width, "height": height,
                    "n": len(data)}, data)
+            last_done = time.time()
+            n_acc += 1
+            if n_acc >= 30:
+                log(f"timing: render {render_acc / n_acc * 1000:.0f}ms/frame, "
+                    f"gap {gap_acc / max(1, n_acc - 1) * 1000:.0f}ms, "
+                    f"size {width}x{height}, instances {len(renderer.instances)}")
+                n_acc = 0
+                render_acc = gap_acc = 0.0
         except Exception as exc:
             log(f"{exc!r}")
             _send({"ok": False, "error": repr(exc)})
