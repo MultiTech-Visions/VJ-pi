@@ -122,9 +122,23 @@ image from `assets/images/` as `sampler2D tex`.
   `Setup ProjectM.sh` from a Pi-5-FPS-filtered pack) and exposes `pm:<stem>`
   names that engine.py appends to `GENERATIVES`, so they ride the existing
   [/] cycle / favourites / autopilot / mapping unchanged. The worker holds
-  ONE surfaceless EGL/GLES3 context (raw ctypes, no GStreamer GL), renders
-  into an FBO via `projectm_opengl_render_frame(_fbo)`, and speaks the same
-  JSON+raw-RGB pipe protocol as `gpu_generator_worker.py`. All `pm:*` names
+  ONE EGL/GLES3 context (raw ctypes, no GStreamer GL) backed by a **PBUFFER
+  surface**, and speaks the same JSON+raw-RGB pipe protocol as
+  `gpu_generator_worker.py`. ⚠️ The pbuffer is load-bearing, not incidental:
+  released libprojectM (≤v4.1.6) renders its final pass to the **default
+  framebuffer (FBO 0)**. The worker originally used a *surfaceless* context,
+  which has no FBO 0 — so every render threw `GL_INVALID_FRAMEBUFFER_OPERATION`
+  (0x0506) and came back **black**, and the broken pipeline state wedged V3D
+  after a few presets (neon-green freeze). A pbuffer gives a real FBO 0 to
+  render into; readback is from FBO 0. (The `projectm_opengl_render_frame_fbo`
+  caller-FBO API exists only on projectM **master** — the anticipated v4.2.0
+  never shipped; if a master build is ever used, the worker auto-detects
+  `render_fbo` and targets its own FBO instead. Don't revert to surfaceless.)
+  `Diagnose ProjectM.sh` / `projectm_diag.py` render presets offscreen to
+  check black-vs-not without the live display (set `VJ_PM_SOFTWARE=1` to force
+  llvmpipe — cannot freeze V3D). `VJ_PM_SWITCH_MS` (default 350) rate-limits
+  preset loads so rapid [/] cycling can't trigger a shader-recompile storm.
+  All `pm:*` names
   share ONE worker (bridge key `projectm`): a single projectM instance
   crossfades preset switches; per-preset workers would rebuild GL each [/]
   step. Audio: GStreamer **audio-only** mic capture thread (`VJ_PM_AUDIO_SRC`,
@@ -134,9 +148,11 @@ image from `assets/images/` as `sampler2D tex`.
   `VJ_PM_MESH` (default 48x32). `Setup ProjectM.sh` builds libprojectM
   v4.1.6 `-DENABLE_GLES=ON` into `vendor/projectm/` (Debian only ships
   v2/v3) and clones the preset + texture packs; the worker runs on system
-  python3 (needs `python3-numpy`, installed by that setup). ⚠️ Known
-  open risk: Pi 5 Mesa exposes GLES 3.1, projectM nominally asks for 3.2 —
-  community Pi 5 builds work, but first on-Pi run is the proof.
+  python3 (needs `python3-numpy`, installed by that setup). Pi 5 Mesa exposes
+  GLES **3.1** (not 3.2); projectM's core renderer runs on it fine — the
+  GLES-version gap was a red herring, the real bug was the surfaceless context
+  (see pbuffer note above). Whether V3D sustains MilkDrop on the *live* GPU
+  without hanging is the remaining on-hardware unknown.
 - `shader_catalog.py` — GLSL generator catalogue (`GPU_GENERATORS`).
 - `gpu_generator_worker.py` — out-of-process GStreamer/GL renderer.
 - `gpu_generators.py` — client/bridge that talks to the worker.
