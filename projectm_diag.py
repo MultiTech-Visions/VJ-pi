@@ -9,7 +9,9 @@ error. This tells us if MilkDrop renders at all on this Pi's GLES 3.1 / V3D,
 and exactly which presets break — without risking the live display.
 
 Run it through "Diagnose ProjectM.sh". Tunables:
-  VJ_PM_DIAG_N     how many presets to sample (default 12, 0 = all)
+  VJ_PM_DIAG_N     how many presets to sample (default 6, 0 = all)
+  VJ_PM_SOFTWARE   1 = force the llvmpipe software renderer (cannot touch
+                   V3D, so it can never freeze the display — but slow)
   VJ_PM_DIAG_SIZE  render size WxH (default 640x360 — lighter on the GPU)
 """
 import os
@@ -19,6 +21,11 @@ import time
 # Load presets immediately (no rate-limit) and stay on the synthetic beat
 # unless a mic exists — deterministic for a one-shot diagnostic.
 os.environ.setdefault("VJ_PM_SWITCH_MS", "0")
+# Optional belt-and-braces: force software GL so the probe physically
+# cannot lock up the V3D GPU / freeze the display.
+if os.environ.get("VJ_PM_SOFTWARE") == "1":
+    os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    os.environ.setdefault("GALLIUM_DRIVER", "llvmpipe")
 
 import numpy as np  # noqa: E402
 
@@ -41,9 +48,9 @@ def main():
         return 2
 
     try:
-        n = int(os.environ.get("VJ_PM_DIAG_N", "12"))
+        n = int(os.environ.get("VJ_PM_DIAG_N", "6"))
     except ValueError:
-        n = 12
+        n = 6
     size = os.environ.get("VJ_PM_DIAG_SIZE", "640x360")
     try:
         w, h = (int(v) for v in size.lower().split("x"))
@@ -54,18 +61,21 @@ def main():
     print(f"[diag] testing {len(names)} preset(s) at {w}x{h}, "
           f"{W.AUDIO_RATE}Hz synthetic/mic audio\n")
 
-    renderer = W.Renderer()      # builds the surfaceless GLES context
-    pm = renderer.projectm
+    renderer = W.Renderer()      # GL + projectM build lazily on first render
+    pm = None
 
     ok = black = failed = errors = 0
     for i, name in enumerate(names, 1):
-        pm.last_fail = None
+        if pm is not None:
+            pm.last_fail = None
         last = None
         try:
             # ~15 frames so the smooth crossfade fades the preset fully in
             # before we judge brightness; paced to stay gentle on the GPU.
             for _ in range(15):
                 last = renderer.render(name, w, h)
+                if pm is None:
+                    pm = renderer.projectm   # available after the first render
                 time.sleep(0.02)
         except Exception as exc:
             print(f"[{i:2}/{len(names)}] {name:38} EXC {exc!r}")

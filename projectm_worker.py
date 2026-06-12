@@ -60,49 +60,98 @@ EGL_RENDERABLE_TYPE = 0x3040
 EGL_OPENGL_ES3_BIT = 0x0040
 EGL_CONTEXT_CLIENT_VERSION = 0x3098
 EGL_OPENGL_ES_API = 0x30A0
+EGL_PBUFFER_BIT = 0x0001
+EGL_WIDTH = 0x3057
+EGL_HEIGHT = 0x3056
+EGL_RED_SIZE = 0x3024
+EGL_GREEN_SIZE = 0x3023
+EGL_BLUE_SIZE = 0x3022
 
 
-def make_egl_context():
-    egl = ctypes.CDLL("libEGL.so.1", mode=ctypes.RTLD_GLOBAL)
-    egl.eglGetPlatformDisplay.restype = c_void_p
-    egl.eglGetPlatformDisplay.argtypes = [c_uint, c_void_p, c_void_p]
-    egl.eglGetDisplay.restype = c_void_p
-    egl.eglGetDisplay.argtypes = [c_void_p]
-    egl.eglInitialize.argtypes = [c_void_p, POINTER(c_int), POINTER(c_int)]
-    egl.eglBindAPI.argtypes = [c_uint]
-    egl.eglChooseConfig.argtypes = [c_void_p, POINTER(c_int), POINTER(c_void_p),
-                                    c_int, POINTER(c_int)]
-    egl.eglCreateContext.restype = c_void_p
-    egl.eglCreateContext.argtypes = [c_void_p, c_void_p, c_void_p, POINTER(c_int)]
-    egl.eglMakeCurrent.argtypes = [c_void_p, c_void_p, c_void_p, c_void_p]
-    egl.eglGetError.restype = c_int
+class EglContext:
+    """Offscreen GLES3 context backed by a PBUFFER surface.
 
-    dpy = egl.eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, None, None)
-    if not dpy:
-        dpy = egl.eglGetDisplay(None)  # EGL_DEFAULT_DISPLAY
-    if not dpy:
-        raise RuntimeError("eglGetPlatformDisplay/eglGetDisplay failed")
-    major, minor = c_int(), c_int()
-    if not egl.eglInitialize(dpy, byref(major), byref(minor)):
-        raise RuntimeError(f"eglInitialize failed (0x{egl.eglGetError():04x})")
-    egl.eglBindAPI(EGL_OPENGL_ES_API)
-    # EGL_SURFACE_TYPE 0: we render only to an FBO, never to an EGL
-    # surface, so don't let the default WINDOW_BIT filter configs out.
-    cfg_attribs = (c_int * 5)(EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
-                              EGL_SURFACE_TYPE, 0, EGL_NONE)
-    cfg = c_void_p()
-    n = c_int()
-    if not egl.eglChooseConfig(dpy, cfg_attribs, byref(cfg), 1, byref(n)) or n.value < 1:
-        raise RuntimeError("eglChooseConfig found no GLES3 config")
-    ctx_attribs = (c_int * 3)(EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE)
-    ctx = egl.eglCreateContext(dpy, cfg, None, ctx_attribs)
-    if not ctx:
-        raise RuntimeError(f"eglCreateContext failed (0x{egl.eglGetError():04x})")
-    if not egl.eglMakeCurrent(dpy, None, None, ctx):
-        raise RuntimeError(
-            f"eglMakeCurrent (surfaceless) failed (0x{egl.eglGetError():04x})")
-    log(f"EGL {major.value}.{minor.value} surfaceless GLES context up")
-    return egl  # keep a ref so the lib (and context) stays alive
+    A pbuffer gives us a complete *default* framebuffer (FBO 0). This is
+    essential: released libprojectM (<=v4.1.6 — there is no FBO-target API
+    until master) renders its final pass to framebuffer 0. With a SURFACELESS
+    context there is no FBO 0, so every render raised GL_INVALID_FRAMEBUFFER_
+    OPERATION (0x0506) and produced a black frame — and the broken pipeline
+    state appeared to wedge V3D after a few presets. Rendering into a real
+    pbuffer fixes both. (When built from master, the worker instead targets
+    its own FBO via projectm_opengl_render_frame_fbo; the pbuffer is then a
+    harmless spare default framebuffer.)
+    """
+
+    def __init__(self, width, height):
+        egl = ctypes.CDLL("libEGL.so.1", mode=ctypes.RTLD_GLOBAL)
+        egl.eglGetPlatformDisplay.restype = c_void_p
+        egl.eglGetPlatformDisplay.argtypes = [c_uint, c_void_p, c_void_p]
+        egl.eglGetDisplay.restype = c_void_p
+        egl.eglGetDisplay.argtypes = [c_void_p]
+        egl.eglInitialize.argtypes = [c_void_p, POINTER(c_int), POINTER(c_int)]
+        egl.eglBindAPI.argtypes = [c_uint]
+        egl.eglChooseConfig.argtypes = [c_void_p, POINTER(c_int),
+                                        POINTER(c_void_p), c_int, POINTER(c_int)]
+        egl.eglCreatePbufferSurface.restype = c_void_p
+        egl.eglCreatePbufferSurface.argtypes = [c_void_p, c_void_p, POINTER(c_int)]
+        egl.eglDestroySurface.argtypes = [c_void_p, c_void_p]
+        egl.eglCreateContext.restype = c_void_p
+        egl.eglCreateContext.argtypes = [c_void_p, c_void_p, c_void_p,
+                                         POINTER(c_int)]
+        egl.eglMakeCurrent.argtypes = [c_void_p, c_void_p, c_void_p, c_void_p]
+        egl.eglGetError.restype = c_int
+        self.egl = egl
+
+        dpy = egl.eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, None, None)
+        if not dpy:
+            dpy = egl.eglGetDisplay(None)  # EGL_DEFAULT_DISPLAY
+        if not dpy:
+            raise RuntimeError("eglGetPlatformDisplay/eglGetDisplay failed")
+        major, minor = c_int(), c_int()
+        if not egl.eglInitialize(dpy, byref(major), byref(minor)):
+            raise RuntimeError(f"eglInitialize failed (0x{egl.eglGetError():04x})")
+        egl.eglBindAPI(EGL_OPENGL_ES_API)
+        cfg_attribs = (c_int * 11)(EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+                                   EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+                                   EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8,
+                                   EGL_BLUE_SIZE, 8, EGL_NONE)
+        cfg = c_void_p()
+        n = c_int()
+        if not egl.eglChooseConfig(dpy, cfg_attribs, byref(cfg), 1,
+                                   byref(n)) or n.value < 1:
+            raise RuntimeError("eglChooseConfig found no pbuffer GLES3 config")
+        ctx = egl.eglCreateContext(dpy, cfg, None,
+                                   (c_int * 3)(EGL_CONTEXT_CLIENT_VERSION, 3,
+                                               EGL_NONE))
+        if not ctx:
+            raise RuntimeError(
+                f"eglCreateContext failed (0x{egl.eglGetError():04x})")
+        self.dpy, self.cfg, self.ctx = dpy, cfg, ctx
+        self.surf = None
+        self.size = (0, 0)
+        self.resize(width, height)
+        log(f"EGL {major.value}.{minor.value} pbuffer {width}x{height} "
+            f"GLES context up")
+
+    def resize(self, width, height):
+        """(Re)create the pbuffer surface at width×height and make current.
+        Cheap — touches only the surface, not the context or projectM."""
+        if self.size == (width, height) and self.surf is not None:
+            return
+        egl = self.egl
+        new = egl.eglCreatePbufferSurface(
+            self.dpy, self.cfg,
+            (c_int * 5)(EGL_WIDTH, int(width), EGL_HEIGHT, int(height), EGL_NONE))
+        if not new:
+            raise RuntimeError(
+                f"eglCreatePbufferSurface failed (0x{egl.eglGetError():04x})")
+        if not egl.eglMakeCurrent(self.dpy, new, new, self.ctx):
+            raise RuntimeError(
+                f"eglMakeCurrent (pbuffer) failed (0x{egl.eglGetError():04x})")
+        if self.surf is not None:
+            egl.eglDestroySurface(self.dpy, self.surf)
+        self.surf = new
+        self.size = (width, height)
 
 
 # ── Minimal GLES bindings (FBO + readback only) ────────────────────────
@@ -304,17 +353,20 @@ class MicCapture(threading.Thread):
 
 class Renderer:
     def __init__(self):
-        self._egl = make_egl_context()
-        self.gl = Gl().g
-        self.projectm = ProjectM()
-        self.mic = MicCapture(self.projectm)
-        self.mic.start()
+        # GL + projectM are built lazily on the first render() so the pbuffer
+        # can be sized to the real canvas (ProjectM also needs a current
+        # context to exist before it is created).
+        self.egl = None
+        self.gl = None
+        self.projectm = None
+        self.mic = None
         self.fbo = c_uint32(0)
         self.tex = c_uint32(0)
         self.size = None
         self.current = None
         self.beat_sens = None
         self._synth_t = 0.0
+        self._ready = False
         # Rate-limit actual preset loads. Rapid [/] cycling otherwise
         # triggers a MilkDrop shader-recompile storm that hangs V3D
         # (symptom: neon-green HUD + frozen Pi). We coalesce to the most
@@ -329,27 +381,42 @@ class Renderer:
         self._checked = set()     # presets we've already sanity-logged
         self._frames_since_load = 0
 
-    def _ensure_fbo(self, width, height):
+    def _ensure_ready(self, width, height):
+        if self._ready:
+            self.egl.resize(width, height)   # no-op unless the canvas changed
+            return
+        self.egl = EglContext(width, height)
+        self.gl = Gl().g
+        self.projectm = ProjectM()
+        self.mic = MicCapture(self.projectm)
+        self.mic.start()
+        self._ready = True
+
+    def _ensure_size(self, width, height):
         if self.size == (width, height):
             return
-        g = self.gl
-        if self.tex.value:
-            g.glDeleteFramebuffers(1, byref(self.fbo))
-            g.glDeleteTextures(1, byref(self.tex))
-        g.glGenTextures(1, byref(self.tex))
-        g.glBindTexture(GL_TEXTURE_2D, self.tex.value)
-        g.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
-                       GL_RGBA, GL_UNSIGNED_BYTE, None)
-        g.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        g.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        g.glGenFramebuffers(1, byref(self.fbo))
-        g.glBindFramebuffer(GL_FRAMEBUFFER, self.fbo.value)
-        g.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                 GL_TEXTURE_2D, self.tex.value, 0)
-        status = g.glCheckFramebufferStatus(GL_FRAMEBUFFER)
-        if status != GL_FRAMEBUFFER_COMPLETE:
-            raise RuntimeError(f"FBO incomplete: 0x{status:04x}")
         pm = self.projectm
+        # Released projectM renders to the default framebuffer (our pbuffer),
+        # so no colour FBO is needed. A master build renders into a caller
+        # FBO via render_fbo — build one to receive its output.
+        if pm.render_fbo is not None:
+            g = self.gl
+            if self.tex.value:
+                g.glDeleteFramebuffers(1, byref(self.fbo))
+                g.glDeleteTextures(1, byref(self.tex))
+            g.glGenTextures(1, byref(self.tex))
+            g.glBindTexture(GL_TEXTURE_2D, self.tex.value)
+            g.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+                           GL_RGBA, GL_UNSIGNED_BYTE, None)
+            g.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            g.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            g.glGenFramebuffers(1, byref(self.fbo))
+            g.glBindFramebuffer(GL_FRAMEBUFFER, self.fbo.value)
+            g.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                     GL_TEXTURE_2D, self.tex.value, 0)
+            status = g.glCheckFramebufferStatus(GL_FRAMEBUFFER)
+            if status != GL_FRAMEBUFFER_COMPLETE:
+                raise RuntimeError(f"FBO incomplete: 0x{status:04x}")
         pm.pm.projectm_set_window_size(pm.handle, width, height)
         self.size = (width, height)
 
@@ -372,7 +439,8 @@ class Renderer:
     def render(self, name, width, height, param_x=0.5):
         if name not in PROJECTM_GENERATORS:
             raise ValueError(f"unknown projectM preset: {name}")
-        self._ensure_fbo(width, height)
+        self._ensure_ready(width, height)
+        self._ensure_size(width, height)
         pm = self.projectm
         now = time.time()
         if name != self.current:
@@ -402,13 +470,16 @@ class Renderer:
         if not self.mic.alive():
             self._feed_synthetic_audio()
         g = self.gl
-        g.glBindFramebuffer(GL_FRAMEBUFFER, self.fbo.value)
+        # Released projectM (<=v4.1.6) renders to the default framebuffer
+        # (FBO 0 = our pbuffer); a master build renders into our own FBO.
+        target = self.fbo.value if pm.render_fbo is not None else 0
+        g.glBindFramebuffer(GL_FRAMEBUFFER, target)
         g.glViewport(0, 0, width, height)
         if pm.render_fbo is not None:
-            pm.render_fbo(pm.handle, self.fbo.value)
+            pm.render_fbo(pm.handle, target)
         else:
             pm.pm.projectm_opengl_render_frame(pm.handle)
-        g.glBindFramebuffer(GL_FRAMEBUFFER, self.fbo.value)
+        g.glBindFramebuffer(GL_FRAMEBUFFER, target)
         g.glPixelStorei(GL_PACK_ALIGNMENT, 1)
         rgba = np.empty((height, width, 4), dtype=np.uint8)
         g.glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
