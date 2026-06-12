@@ -367,15 +367,17 @@ class Renderer:
         self.beat_sens = None
         self._synth_t = 0.0
         self._ready = False
-        # Rate-limit actual preset loads. Rapid [/] cycling otherwise
-        # triggers a MilkDrop shader-recompile storm that hangs V3D
-        # (symptom: neon-green HUD + frozen Pi). We coalesce to the most
-        # recent request and load at most once per interval.
+        # Optional safety valve: coalesce preset loads to at most one per
+        # VJ_PM_SWITCH_MS. Default 0 (off) so cycling switches instantly and
+        # shows every preset — the original neon-green freeze was the
+        # surfaceless-framebuffer bug (now fixed via the pbuffer), not the
+        # recompile rate. If a recompile storm ever wedges V3D again, set
+        # VJ_PM_SWITCH_MS=350 to throttle.
         try:
             self.switch_interval = max(0.0, int(
-                os.environ.get("VJ_PM_SWITCH_MS", "350")) / 1000.0)
+                os.environ.get("VJ_PM_SWITCH_MS", "0")) / 1000.0)
         except ValueError:
-            self.switch_interval = 0.35
+            self.switch_interval = 0.0
         self._pending = None      # most recent requested preset not yet loaded
         self._last_switch = 0.0
         self._checked = set()     # presets we've already sanity-logged
@@ -454,9 +456,10 @@ class Renderer:
             tpath = PROJECTM_GENERATORS.get(target)
             if tpath is not None and target != self.current:
                 pm.last_fail = None
-                # smooth=True crossfades from the running preset; on a failed
-                # load projectM keeps the prior preset rather than blacking out.
-                pm.pm.projectm_load_preset_file(pm.handle, tpath.encode(), True)
+                # smooth=False = hard cut: switch instantly, matching the
+                # other generators so the operator can cycle rapidly. (The
+                # slow crossfade felt out of place.)
+                pm.pm.projectm_load_preset_file(pm.handle, tpath.encode(), False)
                 self.current = target
                 self._last_switch = now
                 self._frames_since_load = 0

@@ -548,7 +548,7 @@ class ControlWindow:
             return
 
         clip_text = self._library_label(e.clips)
-        gen_name = e.active_generative or "—"
+        gen_text = self._generator_label(e)
         fx_on = [k for k, v in e.fx_state.items() if v]
         fx_text = ", ".join(fx_on) if fx_on else "—"
 
@@ -557,7 +557,7 @@ class ControlWindow:
         y += 22
 
         self._row(surface, "CLIP",    clip_text, x, y, width); y += 19
-        self._row(surface, "GEN",     gen_name,  x, y, width); y += 19
+        self._row(surface, "GEN",     gen_text,  x, y, width); y += 19
         if getattr(e, "camera_active", False) or e.camera is not None:
             self._row(surface, "CAM", self._camera_label(e), x, y, width)
             y += 19
@@ -729,6 +729,22 @@ class ControlWindow:
         if idx is None:
             return f"—  [0/{total}]"
         return f"{pool.name(idx)}  [{idx + 1}/{total}]"
+
+    @staticmethod
+    def _generator_label(e):
+        name = e.active_generative
+        if not name:
+            return "—"
+        from engine import GENERATIVES
+        total = len(GENERATIVES)
+        try:
+            idx = GENERATIVES.index(name) + 1
+        except ValueError:
+            idx = e.current_generator_idx + 1
+        # Counter FIRST so a long preset name gets truncated by _row instead
+        # of pushing the position out of view. Drop the "pm:" prefix.
+        disp = name[3:] if name.startswith("pm:") else name
+        return f"[{idx}/{total}] {disp}"
 
     @staticmethod
     def _camera_label(e):
