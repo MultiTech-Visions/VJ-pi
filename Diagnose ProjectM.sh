@@ -16,6 +16,21 @@ LOG="$(pwd)/vj_last_projectm_diag.log"
 
 if [ "${VJ_PM_DIAG_TEED:-0}" = "0" ]; then
     export VJ_PM_DIAG_TEED=1
+    # Let the operator pick a renderer up front. Software can NEVER freeze
+    # the display (it never touches V3D) but is slow; GPU is the real test.
+    if command -v zenity >/dev/null 2>&1; then
+        CHOICE=$(zenity --list --radiolist --width=560 --height=260 \
+          --title="ProjectM diagnostic" \
+          --text="Both render OFFSCREEN (no projector/HUD). Pick one:" \
+          --column="" --column="Renderer" --column="Notes" \
+          TRUE  "Software (safe)" "Cannot freeze the display. Slower. Proves the presets render." \
+          FALSE "GPU / V3D (real test)" "Tests the actual show path. Small chance of a brief freeze." \
+          --hide-column=2 2>/dev/null)
+        case "$CHOICE" in
+            Software*) export VJ_PM_SOFTWARE=1 ;;
+            "")        exit 0 ;;   # cancelled
+        esac
+    fi
     bash "$0" "$@" 2>&1 | tee "$LOG"
     EXIT=${PIPESTATUS[0]}
     if command -v zenity >/dev/null 2>&1; then
