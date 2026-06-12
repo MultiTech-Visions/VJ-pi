@@ -135,14 +135,20 @@ class EglContext:
             f"GLES context up")
 
     def resize(self, width, height):
-        """(Re)create the pbuffer surface at width×height and make current.
-        Cheap — touches only the surface, not the context or projectM."""
-        if self.size == (width, height) and self.surf is not None:
+        """Ensure the pbuffer is at least width×height; the renderer draws into
+        a bottom-left sub-region and reads that back. GROW-ONLY: we never shrink
+        or recreate the surface for a smaller request. Recreating the EGL
+        surface on every F9/F10 dimension tweak churns V3D surfaces, which is a
+        suspected trigger of a full-screen rainbow GPU fault — so only allocate
+        when we genuinely need a bigger one."""
+        nw = max(int(width), self.size[0])
+        nh = max(int(height), self.size[1])
+        if self.surf is not None and (nw, nh) == self.size:
             return
         egl = self.egl
         new = egl.eglCreatePbufferSurface(
             self.dpy, self.cfg,
-            (c_int * 5)(EGL_WIDTH, int(width), EGL_HEIGHT, int(height), EGL_NONE))
+            (c_int * 5)(EGL_WIDTH, nw, EGL_HEIGHT, nh, EGL_NONE))
         if not new:
             raise RuntimeError(
                 f"eglCreatePbufferSurface failed (0x{egl.eglGetError():04x})")
@@ -152,7 +158,7 @@ class EglContext:
         if self.surf is not None:
             egl.eglDestroySurface(self.dpy, self.surf)
         self.surf = new
-        self.size = (width, height)
+        self.size = (nw, nh)
 
 
 # ── Minimal GLES bindings (FBO + readback only) ────────────────────────
