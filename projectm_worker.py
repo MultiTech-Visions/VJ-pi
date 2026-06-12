@@ -45,6 +45,12 @@ def log(msg):
     print(f"[pm-worker] {msg}", file=sys.stderr, flush=True)
 
 
+# projectM fires this when a preset can't be loaded/compiled (the real
+# signal — load_preset_file itself returns void). Signature from
+# callbacks.h: void(const char* filename, const char* message, void* ud).
+PRESET_FAIL_CB = ctypes.CFUNCTYPE(None, c_char_p, c_char_p, c_void_p)
+
+
 # ── EGL: headless GLES context ─────────────────────────────────────────
 
 EGL_PLATFORM_SURFACELESS_MESA = 0x31DD
@@ -132,6 +138,8 @@ class Gl:
         g.glPixelStorei.argtypes = [c_uint, c_int]
         g.glReadPixels.argtypes = [c_int, c_int, c_int, c_int, c_uint, c_uint, c_void_p]
         g.glFinish.argtypes = []
+        g.glGetError.restype = c_uint
+        g.glGetError.argtypes = []
         self.g = g
 
 
@@ -160,8 +168,15 @@ class ProjectM:
         pm.projectm_create.restype = c_void_p
         pm.projectm_create.argtypes = []
         pm.projectm_destroy.argtypes = [c_void_p]
-        pm.projectm_load_preset_file.restype = c_bool
+        # NOTE: projectm_load_preset_file returns VOID in libprojectM v4
+        # (see core.h). It was bound as c_bool and its "result" tested —
+        # that read a garbage register, so the old "preset failed to load"
+        # log was meaningless. Real failures arrive via the switch-failed
+        # callback registered below.
+        pm.projectm_load_preset_file.restype = None
         pm.projectm_load_preset_file.argtypes = [c_void_p, c_char_p, c_bool]
+        pm.projectm_set_preset_switch_failed_event_callback.argtypes = [
+            c_void_p, c_void_p, c_void_p]
         pm.projectm_set_window_size.argtypes = [c_void_p, c_size_t, c_size_t]
         pm.projectm_set_mesh_size.argtypes = [c_void_p, c_size_t, c_size_t]
         pm.projectm_set_fps.argtypes = [c_void_p, c_int32]
@@ -198,6 +213,27 @@ class ProjectM:
         if paths:
             arr = (c_char_p * len(paths))(*[str(p).encode() for p in paths])
             pm.projectm_set_texture_search_paths(self.handle, arr, len(paths))
+        # Capture real load/compile failures. The callback fires from the
+        # render thread during load; we stash the last failure so render()
+        # can report which preset actually broke (and why).
+        self.last_fail = None  # (filename, message) of the most recent failure
+
+        def _on_fail(filename, message, _ud):
+            self.last_fail = (
+                filename.decode("utf-8", "replace") if filename else "",
+                message.decode("utf-8", "replace") if message else "")
+        self._fail_cb = PRESET_FAIL_CB(_on_fail)  # keep ref alive
+        pm.projectm_set_preset_switch_failed_event_callback(
+            self.handle, self._fail_cb, None)
+        try:
+            g = ctypes.CDLL("libGLESv2.so.2")
+            g.glGetString.restype = c_char_p
+            ver = g.glGetString(0x1F02)  # GL_VERSION
+            sl = g.glGetString(0x8B8C)   # GL_SHADING_LANGUAGE_VERSION
+            log(f"GL: {ver.decode() if ver else '?'} / "
+                f"{sl.decode() if sl else '?'}")
+        except Exception:
+            pass
         log(f"projectM up (mesh {mw}x{mh}, "
             f"{'fbo render' if self.render_fbo else 'bound-framebuffer render'})")
 
@@ -279,6 +315,19 @@ class Renderer:
         self.current = None
         self.beat_sens = None
         self._synth_t = 0.0
+        # Rate-limit actual preset loads. Rapid [/] cycling otherwise
+        # triggers a MilkDrop shader-recompile storm that hangs V3D
+        # (symptom: neon-green HUD + frozen Pi). We coalesce to the most
+        # recent request and load at most once per interval.
+        try:
+            self.switch_interval = max(0.0, int(
+                os.environ.get("VJ_PM_SWITCH_MS", "350")) / 1000.0)
+        except ValueError:
+            self.switch_interval = 0.35
+        self._pending = None      # most recent requested preset not yet loaded
+        self._last_switch = 0.0
+        self._checked = set()     # presets we've already sanity-logged
+        self._frames_since_load = 0
 
     def _ensure_fbo(self, width, height):
         if self.size == (width, height):
@@ -321,18 +370,31 @@ class Renderer:
             self.projectm.handle, pcm, frames, PROJECTM_STEREO)
 
     def render(self, name, width, height, param_x=0.5):
-        path = PROJECTM_GENERATORS.get(name)
-        if path is None:
+        if name not in PROJECTM_GENERATORS:
             raise ValueError(f"unknown projectM preset: {name}")
         self._ensure_fbo(width, height)
         pm = self.projectm
-        if self.current != name:
-            # smooth=True crossfades from the running preset; on a failed
-            # load keep whatever is playing (projectM's idle preset at worst)
-            # rather than blacking out mid-set.
-            if not pm.pm.projectm_load_preset_file(pm.handle, path.encode(), True):
-                log(f"preset failed to load: {path}")
-            self.current = name
+        now = time.time()
+        if name != self.current:
+            self._pending = name
+        # Load the pending preset only when the switch interval has elapsed,
+        # coalescing rapid cycling down to one recompile per interval.
+        if (self._pending is not None
+                and (now - self._last_switch) >= self.switch_interval):
+            target = self._pending
+            self._pending = None
+            tpath = PROJECTM_GENERATORS.get(target)
+            if tpath is not None and target != self.current:
+                pm.last_fail = None
+                # smooth=True crossfades from the running preset; on a failed
+                # load projectM keeps the prior preset rather than blacking out.
+                pm.pm.projectm_load_preset_file(pm.handle, tpath.encode(), True)
+                self.current = target
+                self._last_switch = now
+                self._frames_since_load = 0
+                if pm.last_fail is not None:
+                    fn, msg = pm.last_fail
+                    log(f"preset FAILED: {Path(fn).name} — {msg}")
         sens = 0.5 + float(param_x) * 1.5   # param_x knob → 0.5..2.0
         if self.beat_sens is None or abs(sens - self.beat_sens) > 0.01:
             pm.pm.projectm_set_beat_sensitivity(pm.handle, sens)
@@ -351,6 +413,20 @@ class Renderer:
         rgba = np.empty((height, width, 4), dtype=np.uint8)
         g.glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
                        rgba.ctypes.data_as(c_void_p))
+        self._frames_since_load += 1
+        # Sanity-log each preset once: did GL error, and did it render
+        # anything non-black? Wait a few frames so the smooth crossfade has
+        # faded the new preset in before judging brightness.
+        if self.current not in self._checked and self._frames_since_load >= 8:
+            self._checked.add(self.current)
+            err = g.glGetError()
+            if pm.last_fail is not None:
+                fn, msg = pm.last_fail
+                log(f"preset FAILED: {Path(fn).name} — {msg}")
+            mean = float(rgba[:, :, :3].mean())
+            tag = "BLACK" if mean < 1.0 else f"ok(mean={mean:.1f})"
+            gltag = "" if err == 0 else f" glGetError=0x{err:04x}"
+            log(f"render {self.current}: {tag}{gltag}")
         # GL reads bottom-up; the pipe protocol carries top-down RGB.
         return np.ascontiguousarray(rgba[::-1, :, :3]).tobytes()
 
