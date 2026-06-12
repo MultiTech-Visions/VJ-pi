@@ -65,8 +65,8 @@ def main():
     if not files:
         rep("[curate] no presets found — run 'Setup ProjectM.sh' first.")
         return 2
-    pool_n = _intenv("VJ_PM_CURATE_POOL", 1000)
-    keep = _intenv("VJ_PM_CURATE_KEEP", 70)
+    pool_n = _intenv("VJ_PM_CURATE_POOL", 1500)
+    keep = _intenv("VJ_PM_CURATE_KEEP", 120)
     size = os.environ.get("VJ_PM_CURATE_SIZE", "480x270")
     try:
         w, h = (int(v) for v in size.lower().split("x"))

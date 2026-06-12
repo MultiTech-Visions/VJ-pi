@@ -367,17 +367,19 @@ class Renderer:
         self.beat_sens = None
         self._synth_t = 0.0
         self._ready = False
-        # Optional safety valve: coalesce preset loads to at most one per
-        # VJ_PM_SWITCH_MS. Default 0 (off) so cycling switches instantly and
-        # shows every preset — the original neon-green freeze was the
-        # surfaceless-framebuffer bug (now fixed via the pbuffer), not the
-        # recompile rate. If a recompile storm ever wedges V3D again, set
-        # VJ_PM_SWITCH_MS=350 to throttle.
+        # Coalesce preset loads to at most one per VJ_PM_SWITCH_MS. This is the
+        # field-robustness guard: each preset switch makes projectM compile new
+        # MilkDrop shaders on V3D synchronously, and a rapid burst of those
+        # ("bam bam bam" on the key) saturates the GPU and hangs it (neon-green
+        # HUD, frozen Pi). Coalescing means a fast burst compiles only the
+        # preset you LAND on, ~one load per interval, while frames keep flowing
+        # in between — a single deliberate press is still instant. Default
+        # 400ms ≈ 2.5 switches/s, well under the storm that wedges V3D.
         try:
             self.switch_interval = max(0.0, int(
-                os.environ.get("VJ_PM_SWITCH_MS", "0")) / 1000.0)
+                os.environ.get("VJ_PM_SWITCH_MS", "400")) / 1000.0)
         except ValueError:
-            self.switch_interval = 0.0
+            self.switch_interval = 0.4
         self._pending = None      # most recent requested preset not yet loaded
         self._last_switch = 0.0
         self._checked = set()     # presets we've already sanity-logged

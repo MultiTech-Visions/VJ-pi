@@ -33,6 +33,16 @@ if command -v zenity >/dev/null 2>&1; then
         GPU*)      : ;;
         *)         exit 0 ;;   # cancelled
     esac
+
+    KEEP=$(zenity --scale --title="Curate ProjectM presets" \
+      --text="How many presets to keep in the cycle?" \
+      --min-value=40 --max-value=400 --value=120 --step=10 2>/dev/null)
+    [ -n "$KEEP" ] && export VJ_PM_CURATE_KEEP="$KEEP"
+
+    POOL=$(zenity --scale --title="Curate ProjectM presets" \
+      --text="How many of the ~8000 presets to scan? (more = better variety, slower)" \
+      --min-value=500 --max-value=8000 --value=1500 --step=500 2>/dev/null)
+    [ -n "$POOL" ] && export VJ_PM_CURATE_POOL="$POOL"
 fi
 
 date '+[VJ] projectM curation start: %Y-%m-%d %H:%M:%S' > "$LOG"
