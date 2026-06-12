@@ -189,7 +189,106 @@ void main() {
 }
 """
 
-DONUT_SHADER = "#version 100\n#ifdef GL_ES\nprecision highp float;\n#endif\nvarying vec2 v_texcoord;\nuniform float time;\nuniform sampler2D tex;\n\nconst float PI = 3.14159265359;\n\nfloat sdTorus(vec3 p, vec2 t) {\n    vec2 q = vec2(length(p.xz) - t.x, p.y);\n    return length(q) - t.y;\n}\n\nvec3 rotY(vec3 p, float a) {\n    float c = cos(a), s = sin(a);\n    return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);\n}\nvec3 rotX(vec3 p, float a) {\n    float c = cos(a), s = sin(a);\n    return vec3(p.x, c * p.y - s * p.z, s * p.y + c * p.z);\n}\n\nfloat map(vec3 p) {\n    p = rotY(p, time * 0.5);\n    p = rotX(p, time * 0.3);\n    return sdTorus(p, vec2(1.0, 0.4));\n}\n\n// Map a 3D point on the torus surface to a (u, v) coordinate\n// suitable for sampling the input texture. Inverts the rotation\n// we applied in `map` so the texture sticks to the torus rather\n// than spinning past it.\nvec2 torusUV(vec3 p_world) {\n    vec3 p = rotX(p_world, -time * 0.3);\n    p = rotY(p, -time * 0.5);\n    float u = atan(p.z, p.x);            // -PI..PI around major\n    vec2 q = vec2(length(p.xz), p.y);\n    vec2 dq = q - vec2(1.0, 0.0);        // R = 1.0\n    float v = atan(dq.y, dq.x);          // -PI..PI around minor\n    return vec2((u + PI) / (2.0 * PI),\n                (v + PI) / (2.0 * PI));\n}\n\nvoid main() {\n    vec2 uv_scr = v_texcoord - 0.5;\n    uv_scr.x *= 1280.0 / 720.0;\n    vec3 ro = vec3(0.0, 0.0, -3.0);\n    vec3 rd = normalize(vec3(uv_scr, 1.0));\n    float t = 0.0;\n    bool hit = false;\n    for (int i = 0; i < 64; i++) {\n        vec3 pos = ro + rd * t;\n        float d = map(pos);\n        if (d < 0.001) { hit = true; break; }\n        t += d;\n        if (t > 10.0) break;\n    }\n    if (!hit) {\n        gl_FragColor = vec4(0.0, 0.0, 0.05, 1.0);\n        return;\n    }\n    vec3 hit_pos = ro + rd * t;\n    vec2 tex_uv = torusUV(hit_pos);\n    // Slow scroll around the major circumference — the image\n    // wraps around the donut like a label on a tin can.\n    tex_uv.x = fract(tex_uv.x + time * 0.05);\n    vec3 col = texture2D(tex, tex_uv).rgb;\n    // Simple depth darken so the back of the donut isn't full\n    // bright — gives it a hint of 3D form.\n    float depth = t / 10.0;\n    col *= 1.0 - depth * 0.4;\n    gl_FragColor = vec4(col, 1.0);\n}\n"
+# A picture cube: a slowly tumbling box with a different photo on each of
+# its six faces. The six photos arrive packed into a single 3x2 texture
+# atlas (`tex`) that the worker rebuilds over time, swapping in a fresh
+# image on whichever face is currently turned away from the camera — so
+# the cube quietly slideshows through the whole images/ folder.
+#
+# Geometry is a raymarched box. The cube's rotation is driven by the
+# `cube_spin` uniform (an angle accumulated by the worker) rather than the
+# built-in `time`, so the worker can compute the exact same orientation
+# and know which face is hidden. `param_y` is an operator zoom knob.
+CUBE_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+uniform float cube_spin;   // accumulated tumble angle (radians), from worker
+uniform float param_x;     // (spin speed is applied worker-side)
+uniform float param_y;     // 0..1 zoom: 0 = far, 1 = close
+uniform sampler2D tex;
+
+mat3 rotY(float a) {
+    float c = cos(a), s = sin(a);
+    return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c);
+}
+mat3 rotX(float a) {
+    float c = cos(a), s = sin(a);
+    return mat3(1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c);
+}
+
+// Signed distance to an axis-aligned box of half-extents b.
+float sdBox(vec3 p, vec3 b) {
+    vec3 d = abs(p) - b;
+    return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);
+}
+
+void main() {
+    vec2 uv = v_texcoord - 0.5;
+    uv.x *= 1280.0 / 720.0;
+    float zoom = mix(4.2, 2.6, clamp(param_y, 0.0, 1.0));
+    vec3 ro = vec3(0.0, 0.0, -zoom);
+    vec3 rd = normalize(vec3(uv, 1.4));
+
+    // The cube tumbles on two axes. Keep this IN SYNC with the worker's
+    // back-face picker (gpu_generator_worker._cube_face_depths).
+    mat3 R = rotY(cube_spin) * rotX(cube_spin * 0.6);
+    // Inverse of a rotation is its transpose, but transpose() is GLSL ES 3.00
+    // only; compose the inverse rotations directly instead.
+    mat3 Rinv = rotX(-cube_spin * 0.6) * rotY(-cube_spin);
+    vec3 halfb = vec3(1.0);
+
+    float t = 0.0;
+    bool hit = false;
+    for (int i = 0; i < 96; i++) {
+        vec3 p = ro + rd * t;
+        float d = sdBox(Rinv * p, halfb);   // evaluate in cube-local space
+        if (d < 0.001) { hit = true; break; }
+        t += d;
+        if (t > 12.0) break;
+    }
+    if (!hit) {
+        gl_FragColor = vec4(0.02, 0.02, 0.06, 1.0);
+        return;
+    }
+
+    vec3 pl = Rinv * (ro + rd * t);    // hit point in cube-local space
+    vec3 a = abs(pl);
+
+    // Pick the dominant axis -> face index 0..5 (+X,-X,+Y,-Y,+Z,-Z) and a
+    // per-face uv in -1..1. Face winding chosen so each photo reads upright
+    // and un-mirrored. Also build the local face normal for shading.
+    vec2 fuv;
+    float face;
+    vec3 nl;
+    if (a.x >= a.y && a.x >= a.z) {
+        if (pl.x > 0.0) { fuv = vec2(-pl.z, pl.y); face = 0.0; nl = vec3(1.0, 0.0, 0.0); }
+        else            { fuv = vec2( pl.z, pl.y); face = 1.0; nl = vec3(-1.0, 0.0, 0.0); }
+    } else if (a.y >= a.x && a.y >= a.z) {
+        if (pl.y > 0.0) { fuv = vec2(pl.x, -pl.z); face = 2.0; nl = vec3(0.0, 1.0, 0.0); }
+        else            { fuv = vec2(pl.x,  pl.z); face = 3.0; nl = vec3(0.0, -1.0, 0.0); }
+    } else {
+        if (pl.z > 0.0) { fuv = vec2( pl.x, pl.y); face = 4.0; nl = vec3(0.0, 0.0, 1.0); }
+        else            { fuv = vec2(-pl.x, pl.y); face = 5.0; nl = vec3(0.0, 0.0, -1.0); }
+    }
+    fuv = fuv * 0.5 + 0.5;             // -1..1 -> 0..1 within the face
+
+    // Sample the matching cell of the 3-wide, 2-tall atlas. Row 0 is the
+    // top row of the atlas image; texture v grows downward here, so flip v.
+    float col = mod(face, 3.0);
+    float row = floor(face / 3.0);
+    vec2 atlasUV = (vec2(col, row) + vec2(fuv.x, 1.0 - fuv.y)) / vec2(3.0, 2.0);
+    vec3 rgb = texture2D(tex, atlasUV).rgb;
+
+    // Gentle face shading so the cube reads as 3D without washing the photo.
+    vec3 nw = R * nl;
+    float diff = clamp(-dot(nw, rd), 0.0, 1.0);
+    float shade = 0.6 + 0.4 * diff;
+    gl_FragColor = vec4(rgb * shade, 1.0);
+}
+"""
 
 EYEBALL_SHADER = """#version 100
 #ifdef GL_ES
@@ -1293,7 +1392,13 @@ GPU_GENERATORS = {
     'phyllotaxis': PHYLLOTAXIS_SHADER,
     'sunplasma': SUNPLASMA_SHADER,
     'dotsphere': DOTSPHERE_SHADER,
-    'donut': DONUT_SHADER,
+    'cube': CUBE_SHADER,
 }
 
 GPU_GENERATOR_ORDER = list(GPU_GENERATORS.keys())
+
+# Generators that need an image bound as `sampler2D tex` (vs the default
+# black videotestsrc). The worker drives these through its image/atlas
+# path and the engine hands them an activation token so re-selecting one
+# reshuffles the slideshow.
+IMAGE_GENERATORS = {'cube'}

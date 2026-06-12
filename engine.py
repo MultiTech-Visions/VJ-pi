@@ -25,7 +25,7 @@ from effects import (
 )
 from gpu_generators import GpuGeneratorBridge
 from projectm_presets import PROJECTM_GENERATOR_ORDER
-from shader_catalog import GPU_GENERATOR_ORDER
+from shader_catalog import GPU_GENERATOR_ORDER, IMAGE_GENERATORS
 
 
 # MilkDrop presets (pm:*) join the cycle after the GLSL generators; they
@@ -1616,7 +1616,7 @@ class Engine:
                 width = cap_w
                 width -= width % 4
                 height -= height % 2
-        token = self._generator_activation_token if name == "donut" else 0
+        token = self._generator_activation_token if name in IMAGE_GENERATORS else 0
         frame = self.gpu_generators.render(name, width, height, token=token,
                                            params=params)
         if frame is not None:
