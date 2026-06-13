@@ -12,10 +12,24 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402
 
-import cv2  # noqa: E402
-import numpy as np  # noqa: E402
-
 from shader_catalog import GPU_GENERATORS, IMAGE_GENERATORS
+
+# cv2/numpy are needed ONLY by the image/atlas (cube) path, and `import cv2`
+# costs ~1.3s on the Pi. This worker module is run by every generator's
+# process, so importing them at module top added that delay to every
+# generator's first frame. Import them lazily instead — non-image generators
+# never pay the cost.
+cv2 = None
+np = None
+
+
+def _ensure_imaging():
+    global cv2, np
+    if cv2 is None:
+        import cv2 as _cv2
+        import numpy as _np
+        cv2 = _cv2
+        np = _np
 
 
 HERE = Path(__file__).resolve().parent
@@ -216,6 +230,7 @@ class Renderer:
         if is_image:
             if not _list_images():
                 raise RuntimeError(f"{name} needs an image in assets/images/")
+            _ensure_imaging()   # cv2/numpy, loaded only when the cube is used
             # Feed a worker-composed RGBA atlas frame-by-frame via appsrc, so
             # the slideshow can swap face images live without rebuilding the
             # GL pipeline. The shader maps cube faces to atlas cells.
