@@ -125,6 +125,16 @@ class PmStreamWorker:
             fps = 30
         self._min_interval = 1.0 / fps
         self.EXPIRE_S = 0.5       # drop presets not requested for this long
+        # After this long with no preset on screen, fully shut the worker
+        # process down (releasing its EGL context, memory, and the always-on
+        # audio mic-capture thread) so a plain clip gets all the cycles. It
+        # respawns on the next pm:* request. Generous enough that brief clip
+        # interludes between presets don't thrash respawns.
+        try:
+            self.IDLE_SHUTDOWN_S = max(1.0, float(
+                os.environ.get("VJ_PM_IDLE_S", "6.0")))
+        except ValueError:
+            self.IDLE_SHUTDOWN_S = 6.0
         self._render_ts = deque(maxlen=48)   # completed-render timestamps
 
     def active_streams(self):
@@ -137,8 +147,10 @@ class PmStreamWorker:
         the on-screen presets. The compositor fps is separate and higher."""
         with self._lock:
             ts = list(self._render_ts)
-            active = max(1, len(self._desired))
-        if len(ts) < 2 or ts[-1] <= ts[0]:
+            active = len(self._desired)
+        # No presets on screen -> report honest zero so the HUD stops showing
+        # a phantom "pm 0fps×1" while nothing is actually rendering.
+        if active == 0 or len(ts) < 2 or ts[-1] <= ts[0]:
             return (0.0, active)
         throughput = (len(ts) - 1) / (ts[-1] - ts[0])
         return (throughput / active, active)
@@ -201,6 +213,7 @@ class PmStreamWorker:
             return
         proc = self._proc
         last_render = {}
+        last_active = time.time()
         while not self._stop.is_set():
             now = time.time()
             with self._lock:
@@ -209,8 +222,22 @@ class PmStreamWorker:
                 if len(snapshot) != len(self._desired):
                     self._desired = {n: v for n, v in snapshot}
             if not snapshot:
+                # Nothing on screen. After a grace period, fully release the
+                # worker (EGL context, memory, audio thread) so clips get the
+                # GPU; the thread exits and request() respawns it on demand.
+                if now - last_active >= self.IDLE_SHUTDOWN_S:
+                    print("[vj] projectM idle %.0fs — releasing worker to free "
+                          "resources (respawns on next pm preset)"
+                          % self.IDLE_SHUTDOWN_S)
+                    with self._lock:
+                        self._frames.clear()
+                        self._last_any = None
+                        self._render_ts.clear()
+                    self._kill_proc()
+                    return
                 time.sleep(0.01)
                 continue
+            last_active = now
             did = False
             for name, (w, h, token, params, _ts) in snapshot:
                 if self._stop.is_set():

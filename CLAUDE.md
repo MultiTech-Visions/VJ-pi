@@ -189,6 +189,11 @@ image from `assets/images/` as `sampler2D tex`.
   (default 30) so the thread doesn't hog V3D; presets not requested for 0.5s are
   dropped. Scene stays smooth; each pm box refreshes at the worker's pace (5
   presets ≈ 13fps each). GLSL generators keep the simple inline pipeline.
+  When NO pm:* preset has been on screen for `VJ_PM_IDLE_S` (default 6s) the
+  stream thread fully releases the worker process — EGL context, memory, and
+  the always-on audio mic-capture thread — so a plain clip reclaims the GPU; it
+  respawns on the next pm:* request. (GLSL workers don't need this: `pause_idle`
+  parks them in PAUSED with no GPU churn while staying warm for fast switching.)
 - `config.py`, `state.py`, `display_helpers.py` — config dataclass,
   `vj_state.json` persistence, display geometry helpers.
 - `assets/clips/` — operator's MP4 library. **Gitignored** (see
