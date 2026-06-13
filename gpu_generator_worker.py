@@ -24,7 +24,7 @@ IMAGES_DIR = HERE / "assets" / "images"
 # Slideshow tuning (env-overridable). The cube turns like a carousel; each
 # side face is swapped to the next photo the moment it rotates to the rear
 # (out of sight), so images only ever change on the hidden back.
-CUBE_SPIN_SPEED = float(os.environ.get("VJ_CUBE_SPIN", "0.35"))  # rad/s base
+CUBE_SPIN_SPEED = float(os.environ.get("VJ_CUBE_SPIN", "0.25"))  # rad/s base
 # Constant forward tilt of the cube. MUST match TILT in CUBE_SHADER.
 CUBE_TILT = -0.30
 
@@ -163,7 +163,9 @@ class CubeSlideshow:
         now = time.monotonic()
         dt = min(0.2, max(0.0, now - self.last_t))
         self.last_t = now
-        speed = CUBE_SPIN_SPEED * (0.4 + 1.2 * max(0.0, min(1.0, param_x)))
+        # param_x = 0 -> ~0.04 rad/s (a revolution every ~2.5 min), the slow
+        # floor; param_x = 1 -> ~0.29 rad/s (~22s). Default 0.5 -> ~40s.
+        speed = CUBE_SPIN_SPEED * (0.15 + max(0.0, min(1.0, param_x)))
         self.spin += dt * speed
         # Rear-most face = largest world +z normal (pointing away from camera).
         rear = int(np.argmax(_cube_face_normals(self.spin)[:, 2]))

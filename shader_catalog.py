@@ -279,11 +279,11 @@ void main() {
     }
     fuv = fuv * 0.5 + 0.5;             // -1..1 -> 0..1 within the face
 
-    // Sample the matching cell of the 3-wide, 2-tall atlas. Row 0 is the
-    // top row of the atlas image; texture v grows downward here, so flip v.
+    // Sample the matching cell of the 3-wide, 2-tall atlas. The GL texture's
+    // v origin matches the atlas image's top row, so v is used as-is.
     float col = mod(face, 3.0);
     float row = floor(face / 3.0);
-    vec2 atlasUV = (vec2(col, row) + vec2(fuv.x, 1.0 - fuv.y)) / vec2(3.0, 2.0);
+    vec2 atlasUV = (vec2(col, row) + vec2(fuv.x, fuv.y)) / vec2(3.0, 2.0);
     vec3 rgb = texture2D(tex, atlasUV).rgb;
 
     // Gentle face shading so the cube reads as 3D without washing the photo.
