@@ -18,6 +18,7 @@ its generator returns).
 """
 import json
 import os
+import select
 import subprocess
 import sys
 import threading
@@ -54,6 +55,17 @@ def _write_request(proc, name, width, height, token, params):
     }, separators=(",", ":"))
     proc.stdin.write((req + "\n").encode("utf-8"))
     proc.stdin.flush()
+
+
+def _readable(stream):
+    """True if `stream` has bytes ready to read right now (non-blocking poll).
+    Lets the bridge skip a blocking read on a worker that hasn't finished the
+    current frame yet — the difference between a generator that's one frame
+    late and a multi-second compositor freeze waiting on a cold worker."""
+    try:
+        return bool(select.select([stream], [], [], 0)[0])
+    except (OSError, ValueError):
+        return False
 
 
 def _read_response(proc):
@@ -315,17 +327,29 @@ class GpuGeneratorBridge:
             dq = self._inflight.get(key)
             if dq is None:
                 dq = self._inflight[key] = deque()
-            # Drain the previous send to this worker (rendered during last
-            # frame's other work, so this doesn't block here), then issue this
-            # frame's request and return the freshest frame we already have.
-            if dq:
+            # 1-deep pipeline. In steady state last frame's request finished
+            # while the compositor did its other work, so draining it is free.
+            # But a COLD worker (still importing GStreamer / compiling its
+            # shader on a fresh switch) or a slow frame hasn't responded yet —
+            # and reading then would BLOCK the whole compositor for the
+            # worker's entire startup (the generator-switch freeze). So only
+            # drain when the pipe actually has a response waiting; otherwise
+            # leave the request in flight and return the cached frame. The wall
+            # keeps running and the new generator just fades in a frame or two
+            # late instead of freezing everything.
+            if dq and _readable(proc.stdout):
                 pname = dq.popleft()[0]
                 frame = _read_response(proc)
                 if frame is not None:
                     self._last_frame[(key, pname)] = frame
                     self._last_by_key[key] = frame
-            _write_request(proc, name, width, height, token, params)
-            dq.append((name, width, height))
+            # Issue a new request only when nothing is still in flight, so the
+            # pipeline stays exactly 1-deep even on the frames we skipped the
+            # drain (otherwise requests would pile up and the next read would
+            # pair a frame with the wrong generator name).
+            if not dq:
+                _write_request(proc, name, width, height, token, params)
+                dq.append((name, width, height))
             self._rendered.add(key)      # on-screen this frame
             self._paused.discard(key)    # being requested means it's PLAYING
             # Prefer this name's own frame; on a fresh switch fall back to the

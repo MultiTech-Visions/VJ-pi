@@ -393,6 +393,7 @@ class Renderer:
         self.size = None
         self._ready = False
         self._uses_fbo = False        # master build renders into a caller FBO
+        self._readback = None         # reused glReadPixels buffer (sized lazily)
         self.instances = OrderedDict()   # name -> ProjectM (preset loaded), LRU
         self._synth_t = 0.0
         self._checked = set()         # presets sanity-logged
@@ -535,7 +536,14 @@ class Renderer:
             pm.pm.projectm_opengl_render_frame(pm.handle)
         g.glBindFramebuffer(GL_FRAMEBUFFER, target)
         g.glPixelStorei(GL_PACK_ALIGNMENT, 1)
-        rgba = np.empty((height, width, 4), dtype=np.uint8)
+        # Reuse one readback buffer across frames. projectM renders
+        # continuously, so a fresh np.empty((h, w, 4)) every frame was a
+        # full-frame allocation per box per frame; re-size only when the
+        # canvas changes.
+        if (self._readback is None
+                or self._readback.shape[:2] != (height, width)):
+            self._readback = np.empty((height, width, 4), dtype=np.uint8)
+        rgba = self._readback
         g.glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
                        rgba.ctypes.data_as(c_void_p))
         # Sanity-log each preset once it's had a few frames to settle.
@@ -548,8 +556,10 @@ class Renderer:
                 tag = "BLACK" if mean < 1.0 else f"ok(mean={mean:.1f})"
                 gltag = "" if err == 0 else f" glGetError=0x{err:04x}"
                 log(f"render {name}: {tag}{gltag}")
-        # GL reads bottom-up; the pipe protocol carries top-down RGB.
-        return np.ascontiguousarray(rgba[::-1, :, :3]).tobytes()
+        # GL reads bottom-up; the pipe carries top-down RGB. tobytes() on the
+        # flipped, alpha-stripped view copies once, in logical (C) order — no
+        # separate ascontiguousarray buffer needed.
+        return rgba[::-1, :, :3].tobytes()
 
 
 # ── stdin/stdout protocol loop (mirrors gpu_generator_worker.py) ───────
