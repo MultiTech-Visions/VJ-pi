@@ -239,6 +239,12 @@ def dispatch(engine, key, mod):
         engine.toggle_freeze()
         return
 
+    # P → toggle control of the physical "mushroom" LED prop. ON tracks the
+    # show's average colour onto it; OFF hands it back to its built-in effect.
+    if key == pygame.K_p:
+        engine.toggle_mushroom()
+        return
+
     # Output-display picker (works regardless of which window has focus,
     # since these fire wherever keyboard focus happens to land — important
     # for fullscreen mode where the control HUD is hard to click into).

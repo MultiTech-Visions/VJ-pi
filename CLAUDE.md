@@ -339,6 +339,32 @@ the worker on the Pi is the real test — on failure, grab the
 - Frustration tolerance is low. Be honest about uncertainty. Own
   mistakes plainly without grovelling. Move forward.
 
+## Mushroom LED prop (BLE output)
+
+A physical "mushroom" prop is lit by a **Magic Lantern** BLE LED controller
+(`BE:28:55:00:10:24`, name `MELK-OA21`). The rig can drive it so the prop
+mirrors the show. **Press `P`** in the show to toggle control:
+
+- **ON** — `engine._update_mushroom()` samples the composited frame's average
+  colour (~10Hz) and pushes it to the controller. Blackout → black → light off.
+- **OFF** — the prop is released to its built-in effect (AutoPlay, `0x00`).
+
+Code: `mushroom.py` is a self-contained `MushroomLight` — its own background
+thread + asyncio loop owns the BLE link, auto-reconnects, and **never raises
+into the render thread**. `engine.py` holds `self.mushroom` + `mushroom_mode`
+(persisted in `vj_state.json`); `keymap.py` binds `P`; `control.py` shows a
+`MUSHROOM` HUD badge. The light stays off the radio until first armed (BLE
+allows one central at a time, so this keeps the phone app usable otherwise).
+
+**Setup:** the venv needs `bleak` — the operator double-clicks
+**`Enable Mushroom Light.sh`** once (installs into the venv, zenity-confirms).
+If `bleak` is absent the whole feature no-ops; the show is unaffected. Range:
+keep the Pi within ~1m of the controller or its advert isn't heard. Standalone
+BLE tooling lives on the Desktop (`led_tester.py`/`.sh`, `led_dance.py`).
+
+Future: mirror hits (strobe `z` → strobe the light), breathing/idle ambient,
+beat-sync once auto/beat mode lands.
+
 ## Not yet built (genuine future work, not a rebuild)
 
 - **Auto/beat mode:** aubio beat detection on a USB mic; scenes swap on

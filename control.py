@@ -652,6 +652,11 @@ class ControlWindow:
             badges.append(("FACE CLOUD", (180, 200, 255)))
         if getattr(e, "auto_mode", False):
             badges.append(("AUTOPILOT", (120, 220, 140)))
+        if getattr(e, "mushroom_mode", False):
+            mush = getattr(e, "mushroom", None)
+            linked = mush is not None and mush.connected()
+            badges.append(("MUSHROOM" if linked else "MUSHROOM · link…",
+                           (210, 130, 255) if linked else (150, 110, 160)))
         if e.blackout:
             badges.append(("BLACKOUT", (255, 80, 80)))
         if e.freeze:

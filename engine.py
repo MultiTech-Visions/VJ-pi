@@ -16,7 +16,12 @@ from clips import ClipPool
 from camera import CameraSource
 from facecloud import FacePool
 from mapping import MappingManager
+from mushroom import MushroomLight
 from state import load_state, save_state
+
+# BLE LED prop ("mushroom") — the Magic Lantern controller this rig can drive
+# so the physical prop mirrors the show. See mushroom.py. Found 2026-06-15.
+MUSHROOM_ADDRESS = "BE:28:55:00:10:24"
 from effects import (
     EffectContext, plasma, tunnel, starfield, warp, waves, cells,
     lissajous, moire, metaballs,
@@ -260,6 +265,15 @@ class Engine:
                 list(GENERATIVES[:FAV_SLOTS]) + [None] * FAV_SLOTS
             )[:FAV_SLOTS]
         self.gpu_generators = GpuGeneratorBridge()
+
+        # BLE "mushroom" LED prop. When mushroom_mode is on, the render loop
+        # samples the show's average colour and pushes it to the controller a
+        # few times a second; when off, the controller runs its built-in
+        # effect. The light object stays off the radio until first armed.
+        self.mushroom = MushroomLight(MUSHROOM_ADDRESS)
+        self.mushroom_mode = bool(persisted.get("mushroom_mode", False))
+        self._mushroom_color = None       # EMA-smoothed average RGB (float)
+        self._mushroom_last = 0.0         # last sample/push time (monotonic)
 
         # Projection-mapping mode. When enabled, the render pipeline draws
         # each group's content into its spaces' quads on a black canvas;
@@ -1112,6 +1126,46 @@ class Engine:
             # Nothing is shown — stop the GPU generator worker from churning
             # V3D in the background. The next non-blackout frame resumes it.
             self.gpu_generators.pause()
+
+    def toggle_mushroom(self):
+        """Toggle whether the show drives the physical mushroom LED prop.
+
+        ON  → the render loop tracks the average on-screen colour onto it.
+        OFF → release control; the controller runs its own built-in effect.
+        """
+        self.mushroom_mode = not self.mushroom_mode
+        if self.mushroom_mode:
+            self._mushroom_color = None   # reset smoothing; next frame pushes
+        else:
+            self.mushroom.set_idle()      # hand the prop back to its effect
+        st = load_state()
+        st["mushroom_mode"] = self.mushroom_mode
+        save_state(st)
+        print(f"[vj] mushroom control {'ON' if self.mushroom_mode else 'OFF (idle effect)'}",
+              flush=True)
+
+    def _update_mushroom(self, frame, now):
+        """Sample the frame's average colour and push it to the LED (throttled).
+
+        Cheap: strided subsample + mean, then light temporal smoothing so the
+        prop glides instead of flickering. `frame` is RGB uint8 (H,W,3), which
+        is exactly the controller's colour order. A black frame (blackout) maps
+        to (0,0,0), which the light treats as off."""
+        if now - self._mushroom_last < 0.1:    # ~10 Hz sample cap
+            return
+        self._mushroom_last = now
+        try:
+            sample = frame[::8, ::8].reshape(-1, 3).astype(np.float32)
+            avg = sample.mean(axis=0)
+        except Exception:
+            return
+        if self._mushroom_color is None:
+            self._mushroom_color = avg
+        else:
+            a = 0.4
+            self._mushroom_color = self._mushroom_color * (1.0 - a) + avg * a
+        r, g, b = (int(max(0, min(255, c))) for c in self._mushroom_color)
+        self.mushroom.set_color(r, g, b)
 
     def toggle_freeze(self):
         self.freeze = not self.freeze
@@ -2707,6 +2761,8 @@ class Engine:
             self.update_held_hits(HIT_KEYS)
             frame = self.compose_frame()
             self.blit_to_output(frame)
+            if self.mushroom_mode and self.mushroom.available():
+                self._update_mushroom(frame, now)
             if control is not None:
                 control.render(frame)
             self._flush_mapping_persist()
@@ -2724,6 +2780,7 @@ class Engine:
         self.overlays.release_all()
         if self.camera is not None:
             self.camera.release()
+        self.mushroom.shutdown()
         self.gpu_generators.shutdown()
         if self._map_pool is not None:
             self._map_pool.shutdown(wait=False)
