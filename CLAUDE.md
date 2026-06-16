@@ -351,7 +351,9 @@ mirrors the show. **Press `P`** in the show to toggle control:
 
 Code: `mushroom.py` is a self-contained `MushroomLight` — its own background
 thread + asyncio loop owns the BLE link, auto-reconnects, and **never raises
-into the render thread**. `engine.py` holds `self.mushroom` + `mushroom_mode`
+into the render thread**. Self-heals a wedged BLE adapter: after 3 failed
+connects it runs `bluetoothctl power off/on` (the Pi's adapter goes deaf to
+advertisements under connect/disconnect churn — verified fix). `engine.py` holds `self.mushroom` + `mushroom_mode`
 (persisted in `vj_state.json`); `keymap.py` binds `P`; `control.py` shows a
 `MUSHROOM` HUD badge. The light stays off the radio until first armed (BLE
 allows one central at a time, so this keeps the phone app usable otherwise).

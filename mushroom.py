@@ -151,9 +151,32 @@ class MushroomLight:
         except Exception:
             pass
 
+    async def _reset_adapter(self):
+        """Power-cycle the BLE adapter to recover a wedged stack.
+
+        The Pi's adapter can stop hearing advertisements after a lot of
+        connect/disconnect churn — scans find fewer and fewer devices and the
+        light goes missing even though it's powered and in range. A
+        'bluetoothctl power off/on' clears it (verified). Best-effort: if it
+        lacks permission we just keep retrying the plain connect — no harm."""
+        self._log("[mushroom] bluetooth reset (recovering adapter)")
+        for args in (["power", "off"], ["power", "on"]):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "bluetoothctl", *args,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
+            except Exception as exc:
+                self._log(f"[mushroom] adapter reset unavailable ({exc!r})")
+                return
+            await asyncio.sleep(2.0)
+
     async def _worker(self):
         client = None
         backoff = 1.0
+        fail_count = 0
         last_send = 0.0
         sent_color = None
         sent_idle = False
@@ -191,9 +214,15 @@ class MushroomLight:
                 await self._safe_disconnect(client)
                 client = await self._try_connect()
                 if client is None:
+                    fail_count += 1
+                    self._log("[mushroom] searching for light…")
+                    # Self-heal a wedged adapter after a few misses, then retry.
+                    if fail_count % 3 == 0:
+                        await self._reset_adapter()
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 1.6, 8.0)
                     continue
+                fail_count = 0
                 backoff = 1.0
                 with self._lock:
                     self._connected = True
