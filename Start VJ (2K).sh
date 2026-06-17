@@ -1,29 +1,26 @@
 #!/bin/bash
-# pi-paint VJ — 1080p-CANVAS TEST launcher (diagnostic, not for shows).
+# pi-paint VJ — 2K canvas launcher (most detail).
 # Double-click in the file manager and choose "Execute".
 #
 # Same as Start VJ.sh (software clip decode, NO --hevc) but with the render
-# canvas forced to 1920x1080 instead of the usual 1280x720. Sits between your
-# 720p route and the 2K canvas test.
+# canvas at 2048x1152 instead of the default 1280x720 — the sharpest of the
+# software-decode launchers, ~2.56x the compositor cost of 720p. Use it when
+# you want maximum detail and have the framerate headroom; drop to
+# Start VJ (1080).sh or Start VJ.sh when you need performance (e.g. mapping).
 #
-# Heads-up on what to expect: 1920x1080 is ~2.25x the pixels of 720p, and
-# ~88% of the 2048x1152 (2K) canvas. So this will feel close to the 2K canvas
-# test you already ran — NOT like 720p. The win is sharpness (standard 1080p),
-# not speed. Watch the FPS readout on the Control HUD to compare.
-#
-# If your projector is native 1080p, this is the sweet spot: the GPU presents
-# the canvas 1:1 with no upscale softness and no wasted pixels.
+# Clips come from assets/clips/ (software-decoded) and are resized to the 2K
+# canvas per frame, so there's a little extra resize cost on top of the pixels.
 
 OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
 CONTROL_SIZE="680x720"
 
-# The ONE difference from Start VJ.sh: force the 1080p canvas.
-RENDER_WIDTH=1920
-RENDER_HEIGHT=1080
+# The ONE difference from Start VJ.sh: the 2K canvas.
+RENDER_WIDTH=2048
+RENDER_HEIGHT=1152
 
 cd "$(dirname "$0")"
-LOG="$(pwd)/vj_last_run_1080test.log"
+LOG="$(pwd)/vj_last_run_2k.log"
 
 show_error() {
   local title="$1"
@@ -41,7 +38,7 @@ show_error() {
 }
 
 : >"$LOG"
-date '+[VJ] 1080 canvas test launch start: %Y-%m-%d %H:%M:%S' >>"$LOG"
+date '+[VJ] 2K canvas launch start: %Y-%m-%d %H:%M:%S' >>"$LOG"
 git -C "$(pwd)" log --oneline -1 2>/dev/null >>"$LOG"
 
 if [ ! -d "venv" ]; then
@@ -50,8 +47,8 @@ if [ ! -d "venv" ]; then
   exit 1
 fi
 
-# Only pass --output-display when no saved choice exists; the HUD picker's
-# persistent selection always wins.
+# Only pass --output-display when no saved choice exists; that way the
+# HUD picker's persistent selection always wins.
 ARGS=( --fullscreen --gpu-scale --control --control-display "$CONTROL_DISPLAY" --control-size "$CONTROL_SIZE" )
 if [ -n "$RENDER_WIDTH" ] && [ -n "$RENDER_HEIGHT" ]; then
   ARGS+=( --width "$RENDER_WIDTH" --height "$RENDER_HEIGHT" )
@@ -61,7 +58,7 @@ if [ ! -f vj_state.json ]; then
 fi
 
 # ── projectM (MilkDrop) safety profile ───────────────────────────────
-# Identical to Start VJ.sh so PM behaviour is the same in the test.
+# Identical to Start VJ.sh so PM behaviour is the same.
 export VJ_PM_IN_MAPPING="${VJ_PM_IN_MAPPING:-1}"
 export VJ_PM_RENDER_MAX_W="${VJ_PM_RENDER_MAX_W:-480}"
 export VJ_PM_MESH="${VJ_PM_MESH:-24x16}"
@@ -76,7 +73,7 @@ export VJ_PM_SAFETY_COOLDOWN_S="${VJ_PM_SAFETY_COOLDOWN_S:-8}"
 EXIT=$?
 if [ "$EXIT" -ne 0 ]; then
   TAIL=$(tail -40 "$LOG" 2>/dev/null)
-  show_error "VJ-pi 1080 canvas test crashed (exit $EXIT)" \
+  show_error "VJ-pi 2K canvas crashed (exit $EXIT)" \
     "main.py exited with status $EXIT.\n\nFull log: $LOG\n\nLast lines:\n\n$TAIL"
 fi
 exit "$EXIT"

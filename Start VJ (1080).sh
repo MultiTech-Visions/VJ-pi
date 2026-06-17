@@ -1,34 +1,25 @@
 #!/bin/bash
-# pi-paint VJ — 2K-CANVAS TEST launcher (diagnostic, not for shows).
+# pi-paint VJ — 1080p canvas launcher.
 # Double-click in the file manager and choose "Execute".
 #
-# Purpose: this is your normal route (software clip decode, NO --hevc) but
-# with the render canvas forced to 2048x1152 instead of the usual 1280x720.
-# It isolates ONE variable — canvas resolution — so we can tell whether the
-# 2K HEVC route felt slow because of the 2K canvas (2.56x the pixels through
-# the CPU compositor) or because of the HEVC decode plumbing.
+# Same as Start VJ.sh (software clip decode, NO --hevc) but with the render
+# canvas at 1920x1080 instead of the default 1280x720. The balanced choice:
+# noticeably sharper than 720p, ~2.25x the compositor cost. Sits between
+# Start VJ.sh (720p, most headroom) and Start VJ (2K).sh (most detail).
 #
-# HOW TO READ THE RESULT: launch this, then watch the FPS readout on the
-# Control HUD (and try a heavy moment — mapping / FX).
-#   • If FPS tanks to roughly what the 2K HEVC route gave  -> the CANVAS
-#     RESOLUTION is the cause. The HEVC plumbing was mostly innocent.
-#   • If FPS stays close to your normal 1280x720 route      -> resolution
-#     wasn't it; the HEVC decode plumbing was the real drag.
-#
-# Everything else is identical to Start VJ.sh. Clips still come from
-# assets/clips/ (software-decoded) and are resized to the 2K canvas per
-# frame, so expect a little extra resize cost on top of the pixel count.
+# If you set the projector to native 1080p, this is the sweet spot: the GPU
+# presents the canvas 1:1 with no upscale softness and no wasted pixels.
 
 OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
 CONTROL_SIZE="680x720"
 
-# The ONE difference from Start VJ.sh: force the 2K canvas.
-RENDER_WIDTH=2048
-RENDER_HEIGHT=1152
+# The ONE difference from Start VJ.sh: the 1080p canvas.
+RENDER_WIDTH=1920
+RENDER_HEIGHT=1080
 
 cd "$(dirname "$0")"
-LOG="$(pwd)/vj_last_run_2ktest.log"
+LOG="$(pwd)/vj_last_run_1080.log"
 
 show_error() {
   local title="$1"
@@ -46,7 +37,7 @@ show_error() {
 }
 
 : >"$LOG"
-date '+[VJ] 2K canvas test launch start: %Y-%m-%d %H:%M:%S' >>"$LOG"
+date '+[VJ] 1080 canvas launch start: %Y-%m-%d %H:%M:%S' >>"$LOG"
 git -C "$(pwd)" log --oneline -1 2>/dev/null >>"$LOG"
 
 if [ ! -d "venv" ]; then
@@ -55,8 +46,8 @@ if [ ! -d "venv" ]; then
   exit 1
 fi
 
-# Only pass --output-display when no saved choice exists; that way the
-# HUD picker's persistent selection always wins.
+# Only pass --output-display when no saved choice exists; the HUD picker's
+# persistent selection always wins.
 ARGS=( --fullscreen --gpu-scale --control --control-display "$CONTROL_DISPLAY" --control-size "$CONTROL_SIZE" )
 if [ -n "$RENDER_WIDTH" ] && [ -n "$RENDER_HEIGHT" ]; then
   ARGS+=( --width "$RENDER_WIDTH" --height "$RENDER_HEIGHT" )
@@ -81,7 +72,7 @@ export VJ_PM_SAFETY_COOLDOWN_S="${VJ_PM_SAFETY_COOLDOWN_S:-8}"
 EXIT=$?
 if [ "$EXIT" -ne 0 ]; then
   TAIL=$(tail -40 "$LOG" 2>/dev/null)
-  show_error "VJ-pi 2K canvas test crashed (exit $EXIT)" \
+  show_error "VJ-pi 1080 canvas crashed (exit $EXIT)" \
     "main.py exited with status $EXIT.\n\nFull log: $LOG\n\nLast lines:\n\n$TAIL"
 fi
 exit "$EXIT"
