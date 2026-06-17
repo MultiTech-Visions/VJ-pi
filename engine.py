@@ -2484,11 +2484,11 @@ class Engine:
             cv2.circle(canvas, (x, y), 6, (120, 255, 160), -1, cv2.LINE_AA)
         for a, b in zip(px, px[1:]):
             cv2.line(canvas, a, b, (120, 255, 160), 2, cv2.LINE_AA)
-        # Cyan ring on the last dropped point — the arrows fine-place it.
-        # cv2 is BGR, so (255, 230, 90) is the same light blue the HUD uses.
+        # Blue ring on the last dropped point — the arrows fine-place it.
+        # The canvas is RGB, so this matches the HUD's (90, 230, 255) ring.
         if dropped:
             lx, ly = px[len(dropped) - 1]
-            cv2.circle(canvas, (lx, ly), 10, (255, 230, 90), 2, cv2.LINE_AA)
+            cv2.circle(canvas, (lx, ly), 10, (90, 230, 255), 2, cv2.LINE_AA)
         if len(pts) >= 4:
             corners = pts[:4]
             cv2.polylines(
@@ -2527,10 +2527,11 @@ class Engine:
                         cv2.circle(canvas, (int(cx), int(cy)), 5, (255, 240, 120), -1)
                         # The keyboard-active corner (the one the arrows
                         # nudge) gets a light-blue ring so it's clear which
-                        # point is being dialled in. cv2 is BGR.
+                        # point is being dialled in. The canvas is RGB (same
+                        # tuple the HUD uses), so this is blue, not gold.
                         if ci == m.selected_corner:
                             cv2.circle(canvas, (int(cx), int(cy)), 9,
-                                       (255, 230, 90), 2, cv2.LINE_AA)
+                                       (90, 230, 255), 2, cv2.LINE_AA)
 
         # Hover toolbars — selected always; hovered too if different.
         for cand in {m.selected_space, m.hovered_space} - {None}:
