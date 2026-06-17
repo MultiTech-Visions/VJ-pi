@@ -1460,26 +1460,33 @@ class Engine:
                 max(0.0, min(1.0, pos[1] / max(1, sh))))
         self._mapping_handle_click(norm)
 
-    def _mapping_handle_click(self, norm):
+    def _mapping_handle_click(self, norm, allow_toolbar=True):
         """Shared edit-mode click priority for both projector and HUD
         clicks: floating toolbar (move/resize/button) > shift-bind > corner
-        > body > empty area → create."""
+        > body > empty area → create.
+
+        `allow_toolbar` is False for HUD-preview clicks: the floating toolbar
+        is only DRAWN on the projector (the HUD preview is far too small to
+        operate it), so its hit region must not become an invisible trap
+        there — preview clicks always go to box create/select/move."""
         m = self.mapping
         shift_held = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
 
         # 1. Floating editor toolbar — drag to move, drag the corner to
         # resize, or click a button (acts on the selected space). Checked
-        # first so it stays operable even when parked over a box.
-        ft = m.hit_test_floating_toolbar(norm, self.w, self.h)
-        if ft is not None:
-            kind, val = ft
-            if kind == "move":
-                m.start_toolbar_move(norm)
-            elif kind == "resize":
-                m.start_toolbar_resize(norm)
-            elif kind == "button":
-                self._mapping_floating_action(val)
-            return
+        # first so it stays operable even when parked over a box. Projector
+        # only.
+        if allow_toolbar:
+            ft = m.hit_test_floating_toolbar(norm, self.w, self.h)
+            if ft is not None:
+                kind, val = ft
+                if kind == "move":
+                    m.start_toolbar_move(norm)
+                elif kind == "resize":
+                    m.start_toolbar_resize(norm)
+                elif kind == "button":
+                    self._mapping_floating_action(val)
+                return
 
         # 2. Four-point create in progress. Once started, every canvas click
         # adds the next corner until the quad is complete.

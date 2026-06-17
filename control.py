@@ -163,8 +163,11 @@ class ControlWindow:
                 and self._preview_rect.collidepoint(pos)):
             # Delegate to the engine's shared click handler so the HUD
             # preview and the projector share one source of truth for
-            # edit-mode gestures (and any future ones).
-            e._mapping_handle_click(self._preview_to_norm(pos))
+            # edit-mode gestures (and any future ones). allow_toolbar=False:
+            # the floating toolbar isn't drawn on the tiny preview, so its
+            # hit region must not intercept preview clicks.
+            e._mapping_handle_click(self._preview_to_norm(pos),
+                                    allow_toolbar=False)
             return
 
         for idx, rect in self._display_btn_rects:
@@ -528,107 +531,11 @@ class ControlWindow:
             pygame.draw.rect(surface, (200, 255, 200),
                              pygame.Rect(x0, y0, x1 - x0, y1 - y0), 1)
         self._draw_create_points_preview(surface)
-
-        # Single floating editor toolbar — same normalized geometry the
-        # projector uses, so the HUD mirrors exactly where it's parked. Only
-        # in edit mode; a live set shouldn't see the editor chrome.
-        if m.edit_mode:
-            self._draw_floating_toolbar_preview(surface)
-
-    def _draw_floating_toolbar_preview(self, surface):
-        e = self.engine
-        m = e.mapping
-        rect = self._preview_rect
-        geo = m.floating_toolbar_geometry(e.w, e.h)
-
-        def to_rect(r):
-            rx, ry, rw, rh = r
-            return pygame.Rect(int(rect.x + rx * rect.w),
-                               int(rect.y + ry * rect.h),
-                               max(1, int(rw * rect.w)),
-                               max(1, int(rh * rect.h)))
-
-        panel = to_rect(geo["rect"])
-        pygame.draw.rect(surface, (18, 20, 28), panel, border_radius=3)
-        pygame.draw.rect(surface, (200, 210, 230), panel, 1, border_radius=3)
-
-        grip = to_rect(geo["grip"])
-        pygame.draw.rect(surface, (44, 48, 64), grip, border_radius=2)
-        sel = m.selected_space
-        if sel is not None:
-            txt = f"EDIT G{sel[0] + 1}" + ("  BIND…" if m.bind_armed else "")
-        else:
-            txt = "EDIT — select a box"
-        lbl = self.font_s.render(txt, True, (210, 220, 245))
-        surface.blit(lbl, (grip.x + 4, grip.y + (grip.h - lbl.get_height()) // 2))
-
-        group = m.selected_group()
-        gi = sel[0] if sel is not None else 0
-        for kind, r in geo["buttons"]:
-            self._draw_toolbar_button(surface, to_rect(r), kind, group, gi)
-
-        resize = to_rect(geo["resize"])
-        pygame.draw.rect(surface, (90, 230, 255), resize, border_radius=2)
-
-    def _draw_toolbar_button(self, surface, btn_rect, kind, group, gi):
-        armed = (kind == "bind" and self.engine.mapping.bind_armed)
-        bg = (44, 70, 50) if armed else (28, 30, 40)
-        pygame.draw.rect(surface, bg, btn_rect, border_radius=3)
-        pygame.draw.rect(surface, (200, 210, 230), btn_rect, 1, border_radius=3)
-        cx, cy = btn_rect.center
-        r = max(2, min(btn_rect.w, btn_rect.h) // 4)
-        if kind == "delete":
-            pygame.draw.line(surface, (255, 90, 90),
-                             (cx - r, cy - r), (cx + r, cy + r), 2)
-            pygame.draw.line(surface, (255, 90, 90),
-                             (cx + r, cy - r), (cx - r, cy + r), 2)
-        elif kind == "bind":
-            pygame.draw.line(surface, (140, 230, 140),
-                             (cx - r, cy), (cx + r, cy), 2)
-            pygame.draw.line(surface, (140, 230, 140),
-                             (cx, cy - r), (cx, cy + r), 2)
-        elif kind == "unbind":
-            pygame.draw.line(surface, (255, 180, 80),
-                             (cx - r, cy + r), (cx + r, cy - r), 2)
-            pygame.draw.rect(surface, (28, 30, 40),
-                             pygame.Rect(cx - 1, cy - 1, 3, 3))
-        elif kind in {
-                "fit_mode", "zoom_out", "zoom_in",
-                "pan_left", "pan_right", "pan_up", "pan_down",
-                "reset_frame",
-        }:
-            fit = group.fit_mode if group is not None else "fit"
-            labels = {
-                "fit_mode": fit.upper()[:5],
-                "zoom_out": "-",
-                "zoom_in": "+",
-                "pan_left": "<",
-                "pan_right": ">",
-                "pan_up": "^",
-                "pan_down": "v",
-                "reset_frame": "0",
-            }
-            label = self.font_s.render(labels[kind], True, (160, 220, 255))
-            surface.blit(label,
-                         (cx - label.get_width() // 2,
-                          cy - label.get_height() // 2))
-        elif kind in ("raise", "lower"):
-            # Layer order: a triangle pointing at a bar (bring to top /
-            # send to bottom). Distinct from pan ^/v so they don't read alike.
-            col = (180, 200, 255)
-            up = kind == "raise"
-            bar_y = cy - r - 2 if up else cy + r + 2
-            pygame.draw.line(surface, col, (cx - r, bar_y), (cx + r, bar_y), 2)
-            if up:
-                pts = [(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)]
-            else:
-                pts = [(cx, cy + r), (cx - r, cy - r), (cx + r, cy - r)]
-            pygame.draw.polygon(surface, col, pts)
-        elif kind == "group":
-            label = self.font_s.render(f"G{gi + 1}", True, (220, 230, 250))
-            surface.blit(label,
-                         (cx - label.get_width() // 2,
-                          cy - label.get_height() // 2))
+        # NOTE: the editor toolbar is deliberately NOT drawn on the HUD
+        # preview. The preview is only a few percent of an already-small
+        # tablet screen, so a toolbar here is unusably tiny. The floating
+        # toolbar lives on the projector output (where it's drag/resizable)
+        # — that's the one and only place to operate it.
 
     def _draw_mapping_status(self, surface, x, y, width):
         e = self.engine

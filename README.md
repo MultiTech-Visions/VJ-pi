@@ -210,7 +210,9 @@ natural way to do projection mapping.
 The **floating toolbar** replaces the old per-space strip (which kept
 landing below the box, off the flat part of the surface). There is now
 **one** toolbar for the whole editor. It appears the moment you enter EDIT
-and **acts on whichever space is currently selected**.
+and **acts on whichever space is currently selected**. It is drawn **only
+on the projector output** (the HUD preview is far too small on a tablet to
+operate it) — point at it through the projection like everything else.
 
 - **Move it** — drag the dark **grip bar** along its top to any flat,
   visible patch of the projection surface.
