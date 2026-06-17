@@ -13,14 +13,17 @@ Run it through "Diagnose ProjectM.sh". Tunables:
   VJ_PM_SOFTWARE   1 = force the llvmpipe software renderer (cannot touch
                    V3D, so it can never freeze the display — but slow)
   VJ_PM_DIAG_SIZE  render size WxH (default 640x360 — lighter on the GPU)
+  VJ_PM_AUDIO      1 = also test real mic capture; default 0 for diagnostics
 """
 import os
 import sys
 import time
 
-# Load presets immediately (no rate-limit) and stay on the synthetic beat
-# unless a mic exists — deterministic for a one-shot diagnostic.
+# Load presets immediately (no rate-limit) and use the synthetic beat by
+# default — deterministic for a one-shot diagnostic and avoids audio cleanup
+# hangs in headless/offscreen runs.
 os.environ.setdefault("VJ_PM_SWITCH_MS", "0")
+os.environ.setdefault("VJ_PM_AUDIO", "0")
 # Optional belt-and-braces: force software GL so the probe physically
 # cannot lock up the V3D GPU / freeze the display.
 if os.environ.get("VJ_PM_SOFTWARE") == "1":
@@ -58,14 +61,16 @@ def main():
         w, h = 640, 360
 
     names = _sample(PROJECTM_GENERATOR_ORDER, n)
+    audio_label = ("mic/synthetic audio"
+                   if os.environ.get("VJ_PM_AUDIO") != "0"
+                   else "synthetic audio")
     print(f"[diag] testing {len(names)} preset(s) at {w}x{h}, "
-          f"{W.AUDIO_RATE}Hz synthetic/mic audio\n")
+          f"{W.AUDIO_RATE}Hz {audio_label}\n")
 
     renderer = W.Renderer()      # GL + projectM build lazily on first render
-    pm = None
-
     ok = black = failed = errors = 0
     for i, name in enumerate(names, 1):
+        pm = renderer.instances.get(name)
         if pm is not None:
             pm.last_fail = None
         last = None
@@ -74,20 +79,19 @@ def main():
             # before we judge brightness; paced to stay gentle on the GPU.
             for _ in range(15):
                 last = renderer.render(name, w, h)
-                if pm is None:
-                    pm = renderer.projectm   # available after the first render
                 time.sleep(0.02)
         except Exception as exc:
             print(f"[{i:2}/{len(names)}] {name:38} EXC {exc!r}")
             errors += 1
             continue
 
+        pm = renderer.instances.get(name)
         glerr = renderer.gl.glGetError()
         arr = np.frombuffer(last, dtype=np.uint8)
         mean = float(arr.mean()) if arr.size else 0.0
         peak = int(arr.max()) if arr.size else 0
 
-        if pm.last_fail is not None:
+        if pm is not None and pm.last_fail is not None:
             fn, msg = pm.last_fail
             print(f"[{i:2}/{len(names)}] {name:38} FAILED — {msg}")
             failed += 1

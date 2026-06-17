@@ -36,10 +36,10 @@ HERE = Path(__file__).resolve().parent
 WORKER = HERE / "gpu_generator_worker.py"
 PM_WORKER = HERE / "projectm_worker.py"
 
-# Every "pm:*" preset shares ONE projectM worker (keyed PM_KEY): a single
-# projectM instance switches presets in place with a smooth crossfade,
-# whereas per-preset workers would rebuild EGL + projectM on every [/]
-# step. Still exactly one GL context in that one process (V3D rule).
+# Every "pm:*" preset shares ONE projectM worker (keyed PM_KEY). That worker
+# owns one EGL context and keeps an LRU pool of warm projectM instances, one
+# per active preset, so mapping can show several presets without reloading
+# shaders every frame.
 PM_KEY = "projectm"
 
 
@@ -118,8 +118,9 @@ class PmStreamWorker:
 
     A single worker process / one EGL context still holds all the presets (its
     instance pool keeps them compiled), so the V3D one-context-per-process rule
-    is unchanged. Per-preset rendering is paced to VJ_PM_STREAM_FPS (default 30)
-    so the thread doesn't hog V3D from the compositor when few presets are up."""
+    is unchanged. Rendering is paced to one shared VJ_PM_STREAM_FPS budget
+    (default 30 total frames/sec across all visible pm boxes) so adding mapping
+    boxes divides the budget instead of multiplying GPU pressure."""
 
     def __init__(self, spawn_fn):
         self._spawn = spawn_fn
@@ -135,6 +136,7 @@ class PmStreamWorker:
             fps = max(1, int(os.environ.get("VJ_PM_STREAM_FPS", "30")))
         except ValueError:
             fps = 30
+        self._target_fps = fps
         self._min_interval = 1.0 / fps
         self.EXPIRE_S = 0.5       # drop presets not requested for this long
         # After this long with no preset on screen, fully shut the worker
@@ -185,6 +187,37 @@ class PmStreamWorker:
         with self._lock:
             self._desired.clear()
 
+    def cooldown(self, seconds=8.0, reason=""):
+        """Drop projectM load for a short window.
+
+        Used by the compositor safety breaker when SDL present starts blocking
+        for hundreds of ms. Killing the worker releases the EGL context and
+        stops the readback loop; future pm requests return None until the
+        cooldown expires, then the worker respawns lazily.
+        """
+        try:
+            seconds = max(0.5, float(seconds))
+        except (TypeError, ValueError):
+            seconds = 8.0
+        until = time.time() + seconds
+        with self._lock:
+            self._failed_until = max(self._failed_until, until)
+            self._desired.clear()
+            self._frames.clear()
+            self._last_any = None
+            self._render_ts.clear()
+        suffix = f" ({reason})" if reason else ""
+        print(f"[vj] projectM stream cooling down {seconds:.0f}s{suffix}",
+              flush=True)
+        self._stop.set()
+        self._kill_proc()
+        t = self._thread
+        if t is not None:
+            t.join(timeout=0.5)
+            if not t.is_alive():
+                self._thread = None
+                self._stop.clear()
+
     def shutdown(self):
         self._stop.set()
         t = self._thread
@@ -223,9 +256,12 @@ class PmStreamWorker:
             with self._lock:
                 self._failed_until = time.time() + RESPAWN_COOLDOWN_S
             return
+        print(f"[vj] projectM stream: budget {self._target_fps}fps total",
+              flush=True)
         proc = self._proc
         last_render = {}
         last_active = time.time()
+        last_global_render = 0.0
         while not self._stop.is_set():
             now = time.time()
             with self._lock:
@@ -250,32 +286,38 @@ class PmStreamWorker:
                 time.sleep(0.01)
                 continue
             last_active = now
-            did = False
-            for name, (w, h, token, params, _ts) in snapshot:
-                if self._stop.is_set():
-                    break
-                if now - last_render.get(name, 0.0) < self._min_interval:
-                    continue   # paced: don't exceed VJ_PM_STREAM_FPS per preset
-                try:
-                    _write_request(proc, name, w, h, token, params)
-                    frame = _read_response(proc)
-                except Exception as exc:
-                    print(f"[vj] projectM stream worker died: {exc!r}; "
-                          f"cooling down")
-                    with self._lock:
-                        self._failed_until = time.time() + RESPAWN_COOLDOWN_S
-                        self._frames.clear()
-                    self._kill_proc()
-                    return
-                last_render[name] = time.time()
-                did = True
-                if frame is not None:
-                    with self._lock:
-                        self._frames[name] = frame
-                        self._last_any = frame
-                        self._render_ts.append(last_render[name])
-            if not did:
-                time.sleep(0.003)   # everything paced this pass
+            wait = self._min_interval - (now - last_global_render)
+            if wait > 0:
+                time.sleep(min(0.01, wait))
+                continue
+            # Fairness: render the visible preset that has waited longest.
+            # New presets have a zero timestamp, so they fill in promptly,
+            # then steady state becomes round-robin.
+            name, (w, h, token, params, _ts) = min(
+                snapshot, key=lambda item: last_render.get(item[0], 0.0))
+            try:
+                _write_request(proc, name, w, h, token, params)
+                frame = _read_response(proc)
+            except Exception as exc:
+                print(f"[vj] projectM stream worker died: {exc!r}; "
+                      f"cooling down")
+                with self._lock:
+                    self._failed_until = max(
+                        self._failed_until, time.time() + RESPAWN_COOLDOWN_S)
+                    self._desired.clear()
+                    self._frames.clear()
+                    self._last_any = None
+                    self._render_ts.clear()
+                self._kill_proc()
+                return
+            done = time.time()
+            last_render[name] = done
+            last_global_render = done
+            if frame is not None:
+                with self._lock:
+                    self._frames[name] = frame
+                    self._last_any = frame
+                    self._render_ts.append(done)
 
 
 class GpuGeneratorBridge:
@@ -310,6 +352,11 @@ class GpuGeneratorBridge:
     def pm_active_streams(self):
         """Cheap count of on-screen projectM presets (0 if none / no worker)."""
         return self._pm.active_streams() if self._pm is not None else 0
+
+    def relieve_pm(self, seconds=8.0, reason=""):
+        """Temporarily stop projectM rendering to let the display recover."""
+        if self._pm is not None:
+            self._pm.cooldown(seconds, reason)
 
     def render(self, name, width, height, token=0, params=(0.5, 0.5)):
         if not self.available(name):

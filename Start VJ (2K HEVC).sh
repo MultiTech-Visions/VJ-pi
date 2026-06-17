@@ -20,6 +20,20 @@ CONTROL_SIZE="680x720"
 RENDER_WIDTH=2048
 RENDER_HEIGHT=1152
 
+# Production projectM profile for the 2K HEVC show path. projectM shares the
+# Pi 5 GPU with HEVC decode, SDL output scaling, and mapping, so the double-
+# click launcher uses conservative defaults that prioritize long-run stability.
+# These can still be overridden by the environment for one-off bench testing.
+export VJ_PM_RENDER_MAX_W="${VJ_PM_RENDER_MAX_W:-640}"
+export VJ_PM_MESH="${VJ_PM_MESH:-32x24}"
+export VJ_PM_STREAM_FPS="${VJ_PM_STREAM_FPS:-24}"
+export VJ_PM_COMPOSITE_FPS="${VJ_PM_COMPOSITE_FPS:-24}"
+export VJ_PM_IN_MAPPING="${VJ_PM_IN_MAPPING:-0}"
+export VJ_PM_SWITCH_MS="${VJ_PM_SWITCH_MS:-550}"
+export VJ_PM_PRESENT_STALL_MS="${VJ_PM_PRESENT_STALL_MS:-220}"
+export VJ_PM_PRESENT_STALLS="${VJ_PM_PRESENT_STALLS:-2}"
+export VJ_PM_SAFETY_COOLDOWN_S="${VJ_PM_SAFETY_COOLDOWN_S:-8}"
+
 cd "$(dirname "$0")"
 LOG="$(pwd)/vj_last_run.log"
 

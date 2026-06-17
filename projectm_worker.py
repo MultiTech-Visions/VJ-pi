@@ -14,8 +14,9 @@ piped to the main process like any other generator.
 Audio: a GStreamer audio-only capture thread (no GL elements) feeds mic
 PCM to projectM so presets beat-react. If no mic is available the worker
 falls back to a synthetic ~120 BPM signal so visuals still move.
-Override the capture source with VJ_PM_AUDIO_SRC (a gst-launch source
-description, default "autoaudiosrc").
+Set VJ_PM_AUDIO=0 to skip mic capture and use the synthetic beat. Override
+the capture source with VJ_PM_AUDIO_SRC (a gst-launch source description,
+default "autoaudiosrc").
 
 Needs libprojectM v4 (built by "Setup ProjectM.sh" into vendor/projectm/).
 Errors land on stderr, which Start VJ.sh tees into vj_last_run.log.
@@ -328,6 +329,8 @@ class MicCapture(threading.Thread):
             return self._pcm
 
     def run(self):
+        pipeline = None
+        Gst = None
         try:
             import gi
             gi.require_version("Gst", "1.0")
@@ -371,6 +374,12 @@ class MicCapture(threading.Thread):
         except Exception as exc:
             log(f"mic capture unavailable ({exc!r}); using synthetic beat")
             self.failed = True
+        finally:
+            if pipeline is not None and Gst is not None:
+                try:
+                    pipeline.set_state(Gst.State.NULL)
+                except Exception:
+                    pass
 
 
 # ── Renderer ───────────────────────────────────────────────────────────
@@ -424,8 +433,11 @@ class Renderer:
             return
         self.egl = EglContext(width, height)
         self.gl = Gl().g
-        self.mic = MicCapture()
-        self.mic.start()
+        if os.environ.get("VJ_PM_AUDIO", "1") == "0":
+            log("mic capture disabled; using synthetic beat")
+        else:
+            self.mic = MicCapture()
+            self.mic.start()
         self._ready = True
 
     def _apply_size(self, width, height):

@@ -154,7 +154,9 @@ image from `assets/images/` as `sampler2D tex`.
   instances coexisting in one EGL context was verified on V3D. Audio: GStreamer
   **audio-only** mic capture thread (`VJ_PM_AUDIO_SRC`,
   default autoaudiosrc) → `projectm_pcm_add_int16`; synthetic ~120BPM
-  fallback when no mic. PARAM X = beat sensitivity. Tunables: `VJ_PM_MAX`
+  fallback when no mic, or force synthetic with `VJ_PM_AUDIO=0` (diagnostics
+  default to this so they don't hang on audio-device cleanup). PARAM X = beat
+  sensitivity. Tunables: `VJ_PM_MAX`
   (cycle sample, default 40), `projectm_playlist.txt` (operator curation),
   `VJ_PM_MESH` (default 48x32). `Setup ProjectM.sh` builds libprojectM
   v4.1.6 `-DENABLE_GLES=ON` into `vendor/projectm/` (Debian only ships
@@ -185,10 +187,22 @@ image from `assets/images/` as `sampler2D tex`.
   them blocking the compositor — the simple batched approach can't, because one
   rendered frame (~1MB) far exceeds the ~64KB OS pipe buffer, so the worker
   would stall on writes. The main thread only touches the cache (request latest
-  size / grab latest frame). Per-preset rendering is paced to `VJ_PM_STREAM_FPS`
-  (default 30) so the thread doesn't hog V3D; presets not requested for 0.5s are
-  dropped. Scene stays smooth; each pm box refreshes at the worker's pace (5
-  presets ≈ 13fps each). GLSL generators keep the simple inline pipeline.
+  size / grab latest frame). projectM rendering is paced to one SHARED
+  `VJ_PM_STREAM_FPS` budget (default 30 total frames/sec across all visible pm
+  boxes), so mapping scenes divide the budget instead of multiplying GPU
+  readback pressure. The 2K HEVC launcher is now explicitly VIDEO-MAPPING
+  first: it sets `VJ_PM_IN_MAPPING=0`, so saved mapping groups that point at
+  `pm:*` presets are recovered to their stored clip fallback and runtime
+  mapping refuses to spawn projectM. This is intentional after on-hardware logs
+  showed every PM worker start causing 960-2026ms SDL present stalls and a
+  respawn/cooldown loop. The same launcher still keeps a conservative PM
+  profile (`VJ_PM_RENDER_MAX_W=640`, `VJ_PM_MESH=32x24`,
+  `VJ_PM_STREAM_FPS=24`) for non-mapping PM use. Presets not requested for 0.5s
+  are dropped. If SDL present blocks for hundreds of ms while pm is active,
+  `Engine._watch_pm_present` kills/cools the PM worker briefly
+  (`VJ_PM_SAFETY_COOLDOWN_S`) so the compositor can recover instead of driving
+  the Pi into a hard graphics wedge. GLSL generators keep the simple inline
+  pipeline.
   When NO pm:* preset has been on screen for `VJ_PM_IDLE_S` (default 6s) the
   stream thread fully releases the worker process — EGL context, memory, and
   the always-on audio mic-capture thread — so a plain clip reclaims the GPU; it
