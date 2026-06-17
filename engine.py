@@ -2531,6 +2531,14 @@ class Engine:
         editor without looking at the HUD."""
         w, h = self.w, self.h
         m = self.mapping
+        # Full-screen white border so the operator can see exactly where the
+        # projector's throw edges land while aligning spaces. Inset by half
+        # the line width so the whole stroke stays on-canvas (a rectangle at
+        # x=0 would clip its outer half off the edge).
+        bw = max(2, int(round(min(w, h) * 0.006)))
+        cv2.rectangle(canvas, (bw // 2, bw // 2),
+                      (w - 1 - bw // 2, h - 1 - bw // 2),
+                      (255, 255, 255), bw)
         for gi, group in enumerate(m.groups):
             for si, space in enumerate(group.spaces):
                 pts = space.corners_px(w, h).astype(np.int32).reshape(-1, 1, 2)
