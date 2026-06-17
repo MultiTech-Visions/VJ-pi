@@ -42,8 +42,19 @@ def _conv_chains(w, h):
     #   videoconvert : pure CPU; slow, and may not detile SAND on every build.
     #   gl   : glupload!glcolorconvert!gldownload; fast ONLY with no other GL
     #          context in play (e.g. standalone) — blacks out inside the app.
+    #
+    # COLORIMETRY: pispconvert drops the colour-space label off its NV12
+    # output, so the downstream videoconvert re-GUESSES it from resolution —
+    # and at 2048-wide GStreamer can pick BT2020/BT601 instead of BT709. The
+    # wrong inverse matrix + range throws a BLUE cast into shadows ("blacks go
+    # blue"). Our clips are all bt709 / limited (tv) range, so we pin that on
+    # the NV12 caps; videoconvert then applies the correct matrix and the
+    # limited->full expansion (blacks land on 0). Override via env if a future
+    # library uses a different space; empty string restores the guess.
+    cim = os.environ.get("VJ_HEVC_COLORIMETRY", "bt709").strip()
+    cim = f",colorimetry={cim}" if cim else ""
     return {
-        "pisp": f"pispconvert ! video/x-raw,format=NV12,width={w},height={h} ! videoconvert",
+        "pisp": f"pispconvert ! video/x-raw,format=NV12,width={w},height={h}{cim} ! videoconvert",
         "videoconvert": "videoconvert",
         "gl": "glupload ! glcolorconvert ! gldownload ! videoconvert",
     }
