@@ -2989,23 +2989,65 @@ class Engine:
 
                 elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                                     pygame.MOUSEMOTION):
-                    # SDL2 puts the source window on each event. If it's
-                    # the HUD's window, let the control panel handle it
-                    # (preview drags, display picker buttons). Otherwise
-                    # it's a click on the projector itself — in mapping/
-                    # edit mode that's how the operator paints spaces
-                    # directly onto the projection surface.
+                    # SDL2 puts the source window on each event. We route a
+                    # mouse event to the projector handler ONLY when it
+                    # actually belongs to the projector window — otherwise
+                    # the HUD gets it (preview, display picker). The two
+                    # layouts mirror each other, so key off whichever window
+                    # is the identifiable _sdl2 one:
+                    #   • --gpu-scale: the OUTPUT is the _sdl2 window (has an
+                    #     id); the HUD is the plain pygame.display software
+                    #     window, whose events carry no usable window id. So a
+                    #     None/other id means "not the projector" → HUD.
+                    #   • CPU layout: the HUD is the _sdl2 window (has an id);
+                    #     the output is the software window. A non-HUD id
+                    #     means "the projector".
+                    # (Previously this only matched on the HUD id, so in
+                    # gpu-scale mode — where the HUD has no id — every HUD
+                    # mouse-move leaked to the projector and dragged the
+                    # crosshair around.)
                     win = getattr(event, "window", None)
-                    hud_id = (control._window_id if control is not None
-                              else None)
                     ev_win_id = (getattr(win, "id", None)
                                  if win is not None else None)
-                    is_hud_event = (hud_id is not None
-                                    and ev_win_id == hud_id)
-                    if is_hud_event and control is not None:
-                        control.handle_event(event)
+                    hud_id = (control._window_id if control is not None
+                              else None)
+                    output_id = None
+                    if self._gpu_out is not None:
+                        try:
+                            output_id = self._gpu_out["win"].id
+                        except Exception:
+                            output_id = None
+                    if output_id is not None:
+                        is_output_event = (ev_win_id == output_id)
+                    elif hud_id is not None:
+                        is_output_event = (ev_win_id != hud_id)
                     else:
+                        is_output_event = True
+                    if is_output_event:
                         self._handle_output_mouse_event(event)
+                    else:
+                        if control is not None:
+                            control.handle_event(event)
+                        # The pointer is over the HUD, not the projector —
+                        # hide the projector crosshair so it doesn't track
+                        # the operator's mouse on the second screen.
+                        if self.mode == "mapping" and self.mapping.edit_mode:
+                            self.mapping.update_hover(None)
+
+                elif event.type == getattr(pygame, "WINDOWLEAVE", -1):
+                    # Pointer left a window entirely (e.g. off the projector to
+                    # the desktop). If it left the projector output, drop the
+                    # crosshair — it should only show while hovering the
+                    # projection surface.
+                    win = getattr(event, "window", None)
+                    ev_win_id = (getattr(win, "id", None)
+                                 if win is not None else None)
+                    hud_id = (control._window_id if control is not None
+                              else None)
+                    left_hud = (hud_id is not None and ev_win_id == hud_id)
+                    if (not left_hud and self.mode == "mapping"
+                            and self.mapping.edit_mode):
+                        self.mapping.update_hover(None)
 
             # Per-frame long-press detection
             now = time.time()
