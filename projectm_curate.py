@@ -30,7 +30,7 @@ if os.environ.get("VJ_PM_SOFTWARE") == "1":
 import numpy as np
 
 import projectm_worker as W
-from projectm_presets import PRESET_DIR, PM_PREFIX
+from projectm_presets import PRESET_DIR, PM_PREFIX, removed_names
 
 
 def out(msg):       # progress channel (zenity reads stdout)
@@ -65,6 +65,15 @@ def main():
     if not files:
         rep("[curate] no presets found — run 'Setup ProjectM.sh' first.")
         return 2
+    # Honour the operator's HUD-banished presets: never score or re-list a
+    # preset they killed with Delete in the show. This is what makes the kill
+    # permanent across re-curates.
+    banished = removed_names()
+    if banished:
+        before = len(files)
+        files = [f for f in files if f.name.lower() not in banished]
+        rep(f"[curate] skipping {before - len(files)} operator-removed presets "
+            f"(projectm_removed.txt)")
     pool_n = _intenv("VJ_PM_CURATE_POOL", 1500)
     keep = _intenv("VJ_PM_CURATE_KEEP", 120)
     size = os.environ.get("VJ_PM_CURATE_SIZE", "480x270")

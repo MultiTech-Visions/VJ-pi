@@ -137,6 +137,8 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 |---------------------|-----------------------------------------------------|
 | `−` / `=`           | Cycle CLIP library (prev / next, auto-repeat on hold) |
 | `[` / `]`           | Cycle GPU generator catalogue (prev / next, auto-repeat on hold) |
+| `Delete`            | **Remove the MilkDrop preset showing now** — judged a dud on the projector. Drops it from the cycle, the curated playlist, and adds it to `projectm_removed.txt` so it never returns (a re-curate skips it too). Advances to the next generator. MilkDrop (`pm:`) presets only. |
+| `Shift+Delete`      | **Undo the last removal** — pulls the preset just removed back into the cycle and jumps to it. |
 | `1`–`0`             | Clip favourite slots (10). Tap → play. **Hold ≥ ½ s → assign the currently-playing clip to that slot.** |
 | `A S D F G H J K L ;` | Generator favourite slots. Tap → play. **Hold ≥ ½ s → assign the currently-playing generator to that slot.** |
 | `Z`                 | HIT: strobe flash                                  |

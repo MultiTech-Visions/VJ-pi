@@ -29,6 +29,7 @@ from effects import (
     invert, posterize, edges, screen_blend,
 )
 from gpu_generators import GpuGeneratorBridge
+import projectm_presets
 from projectm_presets import PROJECTM_GENERATOR_ORDER
 from shader_catalog import GPU_GENERATOR_ORDER, IMAGE_GENERATORS
 
@@ -228,6 +229,11 @@ class Engine:
         self.active_generative = None
         self.current_generator_idx = 0
         self._generator_activation_token = 0
+        # Delete-key removal of pm:* presets judged bad on the projector. The
+        # last banished (name, filename) lets Shift+Delete undo it; a transient
+        # HUD line confirms each action. See remove_current_generator().
+        self._last_removed_gen = None
+        self.hud_message = None        # (text, expiry_monotonic) or None
         # Number-jump picker: None, or {"target": "gen"|"clip", "buffer": str}.
         # Lets the operator type an index and jump straight there instead of
         # cycling one-by-one through hundreds of generators / clips.
@@ -574,6 +580,77 @@ class Engine:
         else:
             idx = self.current_generator_idx
         self.select_generative((idx + step) % len(GENERATIVES))
+
+    # ── Removing a bad preset, live ──────────────────────────────────────
+    #
+    # Some auto-curated MilkDrop presets only reveal themselves as duds on the
+    # projector. Delete banishes the one showing now; Shift+Delete undoes the
+    # last banish. Persistence + the curator skip live in projectm_presets.
+
+    def _flash(self, text, secs=2.5):
+        """Show a short confirmation line on the HUD (drawn by control.py)."""
+        self.hud_message = (text, time.monotonic() + secs)
+
+    def _current_generator_name(self):
+        """The generator showing right now — the selected group's in mapping
+        mode, else the active base generator. None if no generator is up."""
+        if self._in_mapping():
+            g = self.mapping.selected_group()
+            if g and g.content_kind == "generative":
+                return g.gen_name
+            return None
+        return self.active_generative
+
+    def _forget_generative(self, name):
+        """Drop a generator name from the live cycle and fix up references so
+        this session matches what's now persisted on disk."""
+        if name not in GENERATIVES:
+            return
+        GENERATIVES.remove(name)
+        self.generator_favorites = [
+            None if f == name else f for f in self.generator_favorites]
+        if self.active_generative in GENERATIVES:
+            self.current_generator_idx = GENERATIVES.index(self.active_generative)
+        elif self.current_generator_idx >= len(GENERATIVES):
+            self.current_generator_idx = max(0, len(GENERATIVES) - 1)
+
+    def remove_current_generator(self):
+        """Delete key: banish the pm:* preset showing now — out of the live
+        cycle, out of the playlist, into projectm_removed.txt (permanent, even
+        across a re-curate). Advances to the next generator. pm:* only; GLSL
+        generators and non-generator bases are deliberately left alone."""
+        name = self._current_generator_name()
+        if not name or not name.startswith("pm:"):
+            self._flash("Delete: no MilkDrop preset to remove")
+            return
+        filename = projectm_presets.banish(name)
+        if not filename:
+            self._flash("Delete: couldn't resolve preset file")
+            return
+        self._last_removed_gen = (name, filename)
+        # Step off it first (re-selects a still-present neighbour), THEN drop it
+        # from the live list so it's gone this session too.
+        self.browse_generatives(1)
+        self._forget_generative(name)
+        self._flash(f"REMOVED  {name[3:][:40]}   (Shift+Del = undo)")
+
+    def restore_last_removed(self):
+        """Shift+Delete: un-banish the most recently removed preset and pull it
+        back into the live cycle. The curator owns the playlist, so the preset
+        simply rejoins the sample; here we re-insert it live for instant recall."""
+        if not self._last_removed_gen:
+            self._flash("Shift+Del: nothing to restore")
+            return
+        name, filename = self._last_removed_gen
+        if not projectm_presets.restore(filename):
+            self._flash("Shift+Del: already restored")
+            self._last_removed_gen = None
+            return
+        if name not in GENERATIVES:
+            GENERATIVES.append(name)
+        self._last_removed_gen = None
+        self.select_generative(GENERATIVES.index(name))
+        self._flash(f"RESTORED  {name[3:][:40]}")
 
     # ── Number-jump picker ───────────────────────────────────────────────
     def number_entry_total(self):

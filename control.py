@@ -3,6 +3,8 @@ Live preview, status panel, favourite-slot grids, output-display picker,
 and a key cheat sheet — laid out top-to-bottom with the preview and
 status sharing the top row to claim back horizontal space.
 """
+import time
+
 import pygame
 
 from state import load_state, update_state
@@ -624,6 +626,20 @@ class ControlWindow:
 
     def _draw_badges(self, surface, x, y):
         e = self.engine
+        # Transient confirmation line (preset removed / restored, etc.) — sits
+        # above the badge row and fades out on its own timer.
+        msg = getattr(e, "hud_message", None)
+        if msg:
+            text, expiry = msg
+            if time.monotonic() < expiry:
+                chip = self.font_m.render(f"  {text}  ", True, (20, 20, 30))
+                rect = chip.get_rect(topleft=(x, y))
+                pygame.draw.rect(surface, (255, 230, 120),
+                                 rect.inflate(4, 4), border_radius=4)
+                surface.blit(chip, rect)
+                y += 26
+            else:
+                e.hud_message = None
         badges = []
         if e.mode == "mapping":
             if e.mapping.edit_mode:

@@ -289,6 +289,18 @@ def dispatch(engine, key, mod):
         engine.browse_generatives(1)
         return
 
+    # Delete → banish the MilkDrop preset showing now (a dud spotted on the
+    # projector): out of the cycle, out of the playlist, into the removed list
+    # for good. Shift+Delete undoes the last removal. pm:* only; harmless on a
+    # clip / GLSL gen. In mapping EDIT mode Delete deletes a space (handled
+    # above and returns), so this only fires where a generator is on screen.
+    if key == pygame.K_DELETE:
+        if mod & pygame.KMOD_SHIFT:
+            engine.restore_last_removed()
+        else:
+            engine.remove_current_generator()
+        return
+
     # Live webcam: `\` toggles the camera as the base layer (or, in mapping
     # perform mode, as the selected group's content). Shift+\ flips the
     # selfie mirror. All existing FX/overlays/hits then run on the feed.
