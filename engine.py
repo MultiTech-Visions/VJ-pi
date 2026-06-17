@@ -106,6 +106,18 @@ def _window_pos_for(display_idx):
     return (centered, centered)
 
 
+# Generators drawn on a (near-)black field that we want to composite as if
+# the black were transparent — so overlapping mapping spaces let the layer
+# below show through instead of being painted over by the black background.
+# These have bright subjects on dark backdrops, so a simple luma key reads
+# the subject and drops the backdrop. Extend the set to key more generators.
+LUMA_KEYED_GENERATORS = {"eye", "seraphim"}
+# Pixels dimmer than this (0..255 luma) are treated as background and not
+# painted. Low enough to keep dim feathers/iris detail, high enough to drop
+# the dark field and the faint vignette.
+LUMA_KEY_THRESH = int(os.environ.get("VJ_GEN_KEY_THRESH", "24"))
+
+
 # X keysym names (as the GStreamer 4K player reports them) → SDL key-name
 # strings pygame.key.key_code understands. Single-character keysyms ("a",
 # "1") and "F1".."F12" are handled directly, so only the punctuation /
@@ -1527,6 +1539,10 @@ class Engine:
             elif kind == "reset_frame":
                 m.reset_frame()
             self._persist_mapping()
+        elif kind in ("raise", "lower"):
+            m.select_space(gi, si)
+            m.move_group_in_stack(gi, 1 if kind == "raise" else -1)
+            self._persist_mapping()
         elif kind == "delete":
             m.select_space(gi, si)
             m.delete_selected_space()
@@ -1603,6 +1619,12 @@ class Engine:
 
     def mapping_toggle_borders(self):
         self.mapping.toggle_borders()
+        self._persist_mapping()
+
+    def mapping_hide_borders(self):
+        """Hide the selected-group outline on the projection (Esc in perform
+        mapping). Toggle back on with B in edit mode."""
+        self.mapping.show_borders = False
         self._persist_mapping()
 
     def mapping_adjust_border_intensity(self, delta):
@@ -2215,19 +2237,32 @@ class Engine:
         polygons — many windows onto one playing video.
         """
         w, h = self.w, self.h
+        keyed = (group.content_kind == "generative"
+                 and group.gen_name in LUMA_KEYED_GENERATORS)
         if group.fit_mode == "stretch":
             ops = []
             for space in group.spaces:
-                op = self._warp_op(source, space.corners_px(w, h))
+                op = self._warp_op(source, space.corners_px(w, h), keyed=keyed)
                 if op is not None:
                     ops.append(op)
             return ops
         if mask_info is None:
             mask_info = self._group_mask(group)
-        op = self._window_op(source, group, mask_info)
+        op = self._window_op(source, group, mask_info, keyed=keyed)
         return [] if op is None else [op]
 
-    def _warp_op(self, source, dst_corners):
+    @staticmethod
+    def _luma_keyed_mask(bgr, base_mask):
+        """AND `base_mask` with a luma key of `bgr` so near-black background
+        pixels are NOT painted (the layer below shows through). Returns a NEW
+        array — never mutates `base_mask`, which for the window path is a slice
+        of the shared, cached group mask."""
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        # 255 where brighter than the threshold, else 0.
+        lk = cv2.compare(gray, LUMA_KEY_THRESH, cv2.CMP_GT)
+        return cv2.bitwise_and(base_mask, lk)
+
+    def _warp_op(self, source, dst_corners, keyed=False):
         """Stretch-mode paint op: warp `source` onto the quad `dst_corners`.
         Returns (y0, y1, x0, x1, warped_bbox, mask_bbox) or None for a
         degenerate quad. Pure cv2, no canvas writes → thread-safe.
@@ -2265,9 +2300,11 @@ class Engine:
         mask = np.zeros((bh, bw), dtype=np.uint8)
         poly = dst_corners.astype(np.int32) - np.array([x_min, y_min], dtype=np.int32)
         cv2.fillConvexPoly(mask, poly, 255)
+        if keyed:
+            mask = self._luma_keyed_mask(warped, mask)
         return (y_min, y_max, x_min, x_max, warped, mask)
 
-    def _window_op(self, source, group, mask_info):
+    def _window_op(self, source, group, mask_info, keyed=False):
         """Window/fit/fill paint op: place `source` once across the canvas at
         the group's zoom/pan, revealed through `mask_info` (the cached group
         mask + its bbox). Returns (y0, y1, x0, x1, src, mask) or None. Pure
@@ -2347,7 +2384,10 @@ class Engine:
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_REPLICATE,
         )
-        return (y0, y1, x0, x1, win, mask[y0:y1, x0:x1])
+        out_mask = mask[y0:y1, x0:x1]
+        if keyed:
+            out_mask = self._luma_keyed_mask(win, out_mask)
+        return (y0, y1, x0, x1, win, out_mask)
 
     def _group_mask(self, group):
         """Return (mask, (x0, y0, x1, y1)) for `group`. Cached by space
@@ -2549,6 +2589,19 @@ class Engine:
                 ty = cy + th // 2
                 cv2.putText(canvas, label, (tx, ty), font, scale,
                             (160, 220, 255), 1, cv2.LINE_AA)
+            elif kind in ("raise", "lower"):
+                col = (255, 200, 180)
+                up = kind == "raise"
+                bar_y = cy - r - 2 if up else cy + r + 2
+                cv2.line(canvas, (cx - r, bar_y), (cx + r, bar_y), col, 2,
+                         cv2.LINE_AA)
+                if up:
+                    tri = np.array([[cx, cy - r], [cx - r, cy + r],
+                                    [cx + r, cy + r]], dtype=np.int32)
+                else:
+                    tri = np.array([[cx, cy + r], [cx - r, cy - r],
+                                    [cx + r, cy - r]], dtype=np.int32)
+                cv2.fillConvexPoly(canvas, tri, col, cv2.LINE_AA)
             elif kind == "group":
                 label = f"G{gi + 1}"
                 # Size text relative to button height so it stays legible

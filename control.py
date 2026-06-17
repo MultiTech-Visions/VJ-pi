@@ -582,6 +582,18 @@ class ControlWindow:
             surface.blit(label,
                          (cx - label.get_width() // 2,
                           cy - label.get_height() // 2))
+        elif kind in ("raise", "lower"):
+            # Layer order: a triangle pointing at a bar (bring to top /
+            # send to bottom). Distinct from pan ^/v so they don't read alike.
+            col = (180, 200, 255)
+            up = kind == "raise"
+            bar_y = cy - r - 2 if up else cy + r + 2
+            pygame.draw.line(surface, col, (cx - r, bar_y), (cx + r, bar_y), 2)
+            if up:
+                pts = [(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)]
+            else:
+                pts = [(cx, cy + r), (cx - r, cy - r), (cx + r, cy - r)]
+            pygame.draw.polygon(surface, col, pts)
         elif kind == "group":
             label = self.font_s.render(f"G{gi + 1}", True, (220, 230, 250))
             surface.blit(label,

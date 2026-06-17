@@ -113,6 +113,14 @@ def dispatch(engine, key, mod):
             # stay in edit mode so the operator can keep working.
             engine.mapping_cancel_drag()
             return
+        # Perform mapping: first Esc clears the on-wall selection banner (the
+        # selected group's outline), which is otherwise always visible and
+        # bleeds light onto the projection. A second Esc (banner already
+        # hidden) falls through to the normal panic kill.
+        if (engine.mode == "mapping" and not engine.mapping.edit_mode
+                and engine.mapping.show_borders):
+            engine.mapping_hide_borders()
+            return
         engine.kill_all()
         return
 

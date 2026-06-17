@@ -342,6 +342,33 @@ class MappingManager:
         self.delete_group_armed = None
         self.create_points = []
 
+    def move_group_in_stack(self, gi, delta):
+        """Reorder group `gi` in the paint stack. Groups composite in list
+        order, so a later group paints ON TOP. delta>0 raises the group
+        (toward the end → on top); delta<0 lowers it (toward the front →
+        behind). The selection (group + space) follows the moved group so the
+        toolbar stays attached to it. Returns True if it actually moved."""
+        if not (0 <= gi < len(self.groups)):
+            return False
+        nj = gi + (1 if delta > 0 else -1)
+        if not (0 <= nj < len(self.groups)):
+            return False
+        self.groups[gi], self.groups[nj] = self.groups[nj], self.groups[gi]
+        # Keep the selected-group pointer and the picked space following the
+        # two groups that just swapped positions.
+        if self.selected == gi:
+            self.selected = nj
+        elif self.selected == nj:
+            self.selected = gi
+        if self.selected_space is not None:
+            sgi, ssi = self.selected_space
+            if sgi == gi:
+                self.selected_space = (nj, ssi)
+            elif sgi == nj:
+                self.selected_space = (gi, ssi)
+        self.delete_group_armed = None
+        return True
+
     def remove_selected_group(self):
         if len(self.groups) <= 1:
             # Keep one empty anchor group so the editor has somewhere to add
@@ -891,6 +918,10 @@ class MappingManager:
                 "pan_left", "pan_right", "pan_up", "pan_down",
                 "reset_frame",
             ])
+            # Layer order (only meaningful when there's another group to
+            # stack against): raise = paint later (on top), lower = behind.
+            if len(self.groups) > 1:
+                kinds.extend(["raise", "lower"])
             kinds.append("delete")
             if len(self.groups[gi].spaces) > 1:
                 kinds.append("unbind")
