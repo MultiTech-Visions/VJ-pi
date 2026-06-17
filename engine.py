@@ -1663,11 +1663,19 @@ class Engine:
         self._persist_mapping()
 
     def mapping_nudge_corner(self, dx_px, dy_px):
-        """Fine-tune the keyboard-active corner of the selected space by a
-        pixel offset on the output canvas. Corners are stored normalised, so
-        convert px → 0..1 using the canvas size; one arrow tap = one pixel."""
+        """Fine-tune the keyboard-active corner by a pixel offset on the
+        output canvas. Corners are stored normalised, so convert px → 0..1
+        using the canvas size; one arrow tap = one pixel.
+
+        While a four-click box is still being laid out, the arrows fine-place
+        the most-recently-dropped point instead (create_points isn't persisted
+        until the box locks, so there's nothing to write yet). Otherwise they
+        nudge the selected space's keyboard-active corner."""
         dx = dx_px / max(1, self.w)
         dy = dy_px / max(1, self.h)
+        if self.mapping.create_points:
+            self.mapping.nudge_create_point(dx, dy)
+            return
         if self.mapping.nudge_selected_corner(dx, dy):
             self._persist_mapping()
 
@@ -2463,7 +2471,8 @@ class Engine:
             cv2.line(canvas, (ax, ay), (bx, by), color, thickness, cv2.LINE_AA)
 
     def _draw_quad_create_preview(self, canvas):
-        pts = [tuple(p) for p in self.mapping.create_points]
+        dropped = [tuple(p) for p in self.mapping.create_points]
+        pts = list(dropped)
         if self.mapping.hover_norm is not None and len(pts) < 4:
             pts.append(tuple(self.mapping.hover_norm))
         if not pts:
@@ -2475,6 +2484,11 @@ class Engine:
             cv2.circle(canvas, (x, y), 6, (120, 255, 160), -1, cv2.LINE_AA)
         for a, b in zip(px, px[1:]):
             cv2.line(canvas, a, b, (120, 255, 160), 2, cv2.LINE_AA)
+        # Cyan ring on the last dropped point — the arrows fine-place it.
+        # cv2 is BGR, so (255, 230, 90) is the same light blue the HUD uses.
+        if dropped:
+            lx, ly = px[len(dropped) - 1]
+            cv2.circle(canvas, (lx, ly), 10, (255, 230, 90), 2, cv2.LINE_AA)
         if len(pts) >= 4:
             corners = pts[:4]
             cv2.polylines(
@@ -2507,9 +2521,16 @@ class Engine:
                 # Draw corner handles on the picked space so the operator
                 # can see where to grab.
                 if is_picked:
-                    for cx, cy in space.corners_px(w, h).astype(np.int32):
+                    for ci, (cx, cy) in enumerate(
+                            space.corners_px(w, h).astype(np.int32)):
                         cv2.circle(canvas, (int(cx), int(cy)), 6, (20, 20, 30), -1)
                         cv2.circle(canvas, (int(cx), int(cy)), 5, (255, 240, 120), -1)
+                        # The keyboard-active corner (the one the arrows
+                        # nudge) gets a light-blue ring so it's clear which
+                        # point is being dialled in. cv2 is BGR.
+                        if ci == m.selected_corner:
+                            cv2.circle(canvas, (int(cx), int(cy)), 9,
+                                       (255, 230, 90), 2, cv2.LINE_AA)
 
         # Hover toolbars — selected always; hovered too if different.
         for cand in {m.selected_space, m.hovered_space} - {None}:

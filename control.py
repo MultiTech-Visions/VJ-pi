@@ -437,7 +437,8 @@ class ControlWindow:
 
     def _draw_create_points_preview(self, surface):
         m = self.engine.mapping
-        pts = [tuple(p) for p in m.create_points]
+        dropped = [tuple(p) for p in m.create_points]
+        pts = list(dropped)
         if m.hover_norm is not None and len(pts) < 4:
             pts.append(tuple(m.hover_norm))
         if not pts:
@@ -448,6 +449,11 @@ class ControlWindow:
             pygame.draw.circle(surface, (120, 255, 160), p, 5)
         for a, b in zip(px, px[1:]):
             pygame.draw.line(surface, (120, 255, 160), a, b, 2)
+        # Blue ring on the last DROPPED point — that's the one the arrow keys
+        # are fine-placing right now (matches the selected-corner ring).
+        if dropped:
+            pygame.draw.circle(surface, (90, 230, 255),
+                               self._preview_xy(dropped[-1]), 8, 2)
         if len(pts) >= 4:
             corners = pts[:4]
             pygame.draw.polygon(

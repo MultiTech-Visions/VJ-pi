@@ -731,8 +731,23 @@ class MappingManager:
         self.create_points = [[_clamp01(start_norm[0]), _clamp01(start_norm[1])]]
         self.drag = None
         self.selected_space = None
+        self.selected_corner = None
         self.hovered_space = None
         self.delete_group_armed = None
+
+    def nudge_create_point(self, dx, dy):
+        """While laying out a new quad (four-click create), move the
+        most-recently-dropped point by (dx, dy) in normalised output units.
+        Lets the operator drop a point roughly with the mouse, then dial it
+        into a fine position with the arrows before dropping the next one —
+        the mouse still places the following corner. Returns True if a point
+        moved."""
+        if not self.create_points:
+            return False
+        pt = self.create_points[-1]
+        pt[0] = _clamp01(pt[0] + dx)
+        pt[1] = _clamp01(pt[1] + dy)
+        return True
 
     def add_create_point(self, norm_xy):
         """Add a point to the four-click quad creator. Returns True when a
@@ -758,6 +773,11 @@ class MappingManager:
         self.selected = gi
         self.selected_space = (gi, len(self.groups[gi].spaces) - 1)
         self.hovered_space = self.selected_space
+        # Keep the arrow keys bound to the corner that was just dropped (the
+        # 4th / last point) so the operator can fine-place it immediately,
+        # without re-grabbing it with the mouse. The blue ring marks it.
+        # Clicking elsewhere, Esc, or picking another space clears it.
+        self.selected_corner = 3
         self.create_points = []
         self.drag = None
         return True
