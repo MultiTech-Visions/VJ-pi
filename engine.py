@@ -1621,12 +1621,6 @@ class Engine:
         self.mapping.toggle_borders()
         self._persist_mapping()
 
-    def mapping_hide_borders(self):
-        """Hide the selected-group outline on the projection (Esc in perform
-        mapping). Toggle back on with B in edit mode."""
-        self.mapping.show_borders = False
-        self._persist_mapping()
-
     def mapping_adjust_border_intensity(self, delta):
         self.mapping.adjust_border_intensity(delta)
         self._persist_mapping()
@@ -2431,6 +2425,8 @@ class Engine:
     def _draw_selection_border(self, canvas):
         """Outline only the currently-selected group's spaces — keeps the
         rest of the projection clean (no light artefacts on the wall)."""
+        if self.mapping.banner_blank:
+            return  # Tab landed on the "blank" stop — clean projection.
         sel = self.mapping.selected_group()
         if sel is None:
             return

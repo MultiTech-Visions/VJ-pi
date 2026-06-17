@@ -607,6 +607,11 @@ class ControlWindow:
                                    True, (220, 220, 240))
         surface.blit(title, (x, y))
         y += 22
+        if e.mapping.banner_blank and not e.mapping.edit_mode:
+            blank = self.font_s.render("— blank — (banner hidden)",
+                                       True, (150, 170, 200))
+            surface.blit(blank, (x, y))
+            return
         if g is None:
             none = self.font_s.render("no groups", True, (180, 120, 120))
             surface.blit(none, (x, y))

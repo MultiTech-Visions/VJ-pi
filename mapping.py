@@ -261,6 +261,10 @@ class MappingManager:
         # Edit-mode transient state. None of this persists — the operator
         # always starts in perform mode and decides when to edit.
         self.edit_mode: bool = False
+        # Perform-mode Tab cycle includes one extra "blank" stop after the
+        # last group: the selection banner (outline) is suppressed so the
+        # projection is clean. Any explicit selection (click, edit) clears it.
+        self.banner_blank: bool = False
         # (group_idx, space_idx) of the space currently picked up for
         # editing; clicking another space changes it.
         self.selected_space: Optional[tuple] = None
@@ -325,7 +329,20 @@ class MappingManager:
     def cycle_selected(self, step=1):
         if not self.groups:
             return
-        self.selected = (self.selected + step) % len(self.groups)
+        n = len(self.groups)
+        if self.edit_mode:
+            # Editing always targets a real group — no blank stop.
+            self.selected = (self.selected + step) % n
+            self.banner_blank = False
+        else:
+            # Perform mode: cycle over n groups + 1 virtual "blank" stop
+            # (index n) where the on-wall banner is hidden. pos collapses the
+            # current state into that 0..n line; step + wrap; expand back.
+            pos = n if self.banner_blank else self.selected
+            pos = (pos + step) % (n + 1)
+            self.banner_blank = (pos == n)
+            if not self.banner_blank:
+                self.selected = pos
         self.delete_group_armed = None
         self.create_points = []
         self.drag = None  # cancel any in-flight edit
@@ -540,6 +557,9 @@ class MappingManager:
 
     def toggle_edit_mode(self):
         self.edit_mode = not self.edit_mode
+        # Entering edit mode always targets a real group, never the blank stop.
+        if self.edit_mode:
+            self.banner_blank = False
         # Leaving edit mode cancels any half-finished gesture.
         if not self.edit_mode:
             self.drag = None
@@ -562,6 +582,7 @@ class MappingManager:
             self.selected_space = (gi, si)
             self.selected_corner = None
             self.selected = gi
+            self.banner_blank = False
 
     def deselect_space(self):
         self.selected_space = None
