@@ -295,9 +295,25 @@ class MappingManager:
         self.create_points: List[List[float]] = []
         # Active drag, one of {None,
         # {"kind": "corner", "space": (gi,si), "corner": ci},
-        # {"kind": "move", "space": (gi,si), "last": (nx,ny)}}.
+        # {"kind": "move", "space": (gi,si), "last": (nx,ny)},
+        # {"kind": "toolbar_move", "off": (dx,dy)},
+        # {"kind": "toolbar_resize"}}.
         # New boxes use create_points instead of drag state.
         self.drag: Optional[dict] = None
+
+        # Floating editor toolbar placement (normalised top-left + size).
+        # Persisted so the operator parks it once on a flat, visible patch.
+        tp = persisted.get("toolbar_pos")
+        if isinstance(tp, (list, tuple)) and len(tp) == 2:
+            self.toolbar_pos = [_clamp01(tp[0]), _clamp01(tp[1])]
+        else:
+            self.toolbar_pos = [0.03, 0.05]
+        ts = persisted.get("toolbar_size")
+        if isinstance(ts, (list, tuple)) and len(ts) == 2:
+            self.toolbar_size = [max(0.07, min(1.0, float(ts[0]))),
+                                 max(0.05, min(1.0, float(ts[1])))]
+        else:
+            self.toolbar_size = [0.50, 0.085]
 
     # ── Persistence ──────────────────────────────────────────────────
 
@@ -310,6 +326,8 @@ class MappingManager:
             "border_intensity": self.border_intensity,
             "show_borders": self.show_borders,
             "render_scale": self.render_scale,
+            "toolbar_pos": list(self.toolbar_pos),
+            "toolbar_size": list(self.toolbar_size),
             "groups": [g.to_dict() for g in self.groups],
         }
 
@@ -813,6 +831,20 @@ class MappingManager:
                 c[0] += dx
                 c[1] += dy
             self.drag["last"] = tuple(norm_xy)
+        elif kind == "toolbar_move":
+            offx, offy = self.drag["off"]
+            nw = max(self.TOOLBAR_MIN_W, min(1.0, float(self.toolbar_size[0])))
+            nh = max(self.TOOLBAR_MIN_H, min(1.0, float(self.toolbar_size[1])))
+            self.toolbar_pos = [
+                max(0.0, min(1.0 - nw, norm_xy[0] - offx)),
+                max(0.0, min(1.0 - nh, norm_xy[1] - offy)),
+            ]
+        elif kind == "toolbar_resize":
+            nx, ny = self.toolbar_pos
+            self.toolbar_size = [
+                max(self.TOOLBAR_MIN_W, min(1.0 - nx, norm_xy[0] - nx)),
+                max(self.TOOLBAR_MIN_H, min(1.0 - ny, norm_xy[1] - ny)),
+            ]
         elif kind == "create":
             self.drag["current"] = (_clamp01(norm_xy[0]), _clamp01(norm_xy[1]))
 
@@ -887,156 +919,132 @@ class MappingManager:
         g.pan_x = 0.0
         g.pan_y = 0.0
 
-    # ── Hover toolbars (mouse-first editing UI) ──────────────────────
+    # ── Floating editor toolbar (mouse-first editing UI) ─────────────
+    #
+    # ONE toolbar for the whole editor instead of a strip glued under each
+    # box. The old per-space strip kept landing below the box, off the flat
+    # part of the projection surface, where it was invisible/unusable. This
+    # one floats: the operator drags it (grip bar) to any flat, visible
+    # patch and resizes it (bottom-right handle) so it reflows from a long
+    # one-row strip into a compact grid to fit the space available. It acts
+    # on whichever space is currently selected. Position + size are
+    # normalised 0..1 and persisted.
 
-    # Per-button width in normalized canvas units. ~4 % means the icons
-    # render readably on a 1280×720 projector (≈ 51 px) and stay clickable
-    # on a 640-wide HUD preview (≈ 26 px).
-    TOOLBAR_BTN = 0.04
-    TOOLBAR_GAP = 0.008
+    TOOLBAR_MIN_W = 0.07
+    TOOLBAR_MIN_H = 0.05
+    TOOLBAR_GRIP_FRAC = 0.26    # share of toolbar height used by the move grip
+    TOOLBAR_GRIP_MAX = 0.035    # …but never a fat grip on a tall square panel
+    TOOLBAR_RESIZE = 0.028      # bottom-right resize handle (normalised)
 
     def update_hover(self, norm_xy):
-        """Track which space the cursor is over so the renderer knows where
-        to put the hover toolbar.
-
-        Hover stays "sticky" while the cursor is anywhere inside the union
-        of body + toolbar bounding rect, so traversing the gap between
-        body and toolbar doesn't drop hover and make the buttons vanish.
-        Without this the toolbar of a non-selected space (the one with the
-        `+` bind button) is impossible to click — the cursor passes
-        through the dead zone and the toolbar disappears before the click
-        lands."""
+        """Track the cursor (projector crosshair) and which space body it's
+        over. With a single floating toolbar there's no per-space toolbar to
+        keep alive, so this is just the direct body hit — no sticky region."""
         self.hover_norm = norm_xy
-        if norm_xy is None:
-            self.hovered_space = None
-            return
-        # Direct body hit always wins — clicking on a new space changes
-        # hover to that space immediately.
-        hit = self.hit_test_space(norm_xy)
-        if hit is not None:
-            self.hovered_space = hit
-            return
-        # Otherwise: prefer the currently-hovered space (sticky), then
-        # the selected space. Both have toolbars rendered, so both have
-        # hover regions that should stay alive.
-        nx, ny = norm_xy
-        candidates = []
-        if self.hovered_space is not None:
-            candidates.append(self.hovered_space)
-        if (self.selected_space is not None
-                and self.selected_space not in candidates):
-            candidates.append(self.selected_space)
-        for gi, si in candidates:
-            x0, y0, x1, y1 = self._hover_region(gi, si)
-            if x0 <= nx <= x1 and y0 <= ny <= y1:
-                self.hovered_space = (gi, si)
-                return
-        self.hovered_space = None
+        self.hovered_space = (None if norm_xy is None
+                              else self.hit_test_space(norm_xy))
 
-    def _hover_region(self, gi, si):
-        """Bounding rect (nx0, ny0, nx1, ny1) covering body + toolbar +
-        the gap between them. Used as the "sticky" hover area so the
-        toolbar stays visible while the cursor walks from body to button."""
-        space = self.groups[gi].spaces[si]
-        xs = [c[0] for c in space.corners]
-        ys = [c[1] for c in space.corners]
-        x0, x1 = min(xs), max(xs)
-        y0, y1 = min(ys), max(ys)
-        for _kind, (bx, by, bw, bh) in self.hover_toolbar_buttons(gi, si):
-            x0 = min(x0, bx)
-            y0 = min(y0, by)
-            x1 = max(x1, bx + bw)
-            y1 = max(y1, by + bh)
-        return (x0, y0, x1, y1)
+    def floating_toolbar_rect(self):
+        """(nx, ny, nw, nh) of the floating toolbar, clamped on-canvas."""
+        nw = max(self.TOOLBAR_MIN_W, min(1.0, float(self.toolbar_size[0])))
+        nh = max(self.TOOLBAR_MIN_H, min(1.0, float(self.toolbar_size[1])))
+        nx = max(0.0, min(1.0 - nw, float(self.toolbar_pos[0])))
+        ny = max(0.0, min(1.0 - nh, float(self.toolbar_pos[1])))
+        return (nx, ny, nw, nh)
 
-    def toolbar_kinds(self, gi, si, force_selected=False):
-        """Decide which buttons appear on the toolbar for space (gi, si)."""
-        is_sel = force_selected or self.selected_space == (gi, si)
-        kinds = []
-        if is_sel:
-            kinds.extend([
-                "fit_mode", "zoom_out", "zoom_in",
-                "pan_left", "pan_right", "pan_up", "pan_down",
-                "reset_frame",
-            ])
-            # Layer order (only meaningful when there's another group to
-            # stack against): raise = paint later (on top), lower = behind.
-            if len(self.groups) > 1:
-                kinds.extend(["raise", "lower"])
-            kinds.append("delete")
-            if len(self.groups[gi].spaces) > 1:
-                kinds.append("unbind")
-        else:
-            kinds.append("delete")
-            # Show "bind into selected" only when a different group's
-            # space is selected — same-group spaces are already bound.
-            if (self.selected_space is not None
-                    and self.selected_space[0] != gi):
-                kinds.append("bind")
-        kinds.append("group")  # always show the group tag last
+    def floating_toolbar_kinds(self):
+        """Buttons shown on the floating toolbar. They all act on the
+        currently selected space; empty when nothing is selected."""
+        if self.selected_space is None:
+            return []
+        gi, si = self.selected_space
+        if not (0 <= gi < len(self.groups)) or not (
+                0 <= si < len(self.groups[gi].spaces)):
+            return []
+        kinds = ["fit_mode", "zoom_out", "zoom_in",
+                 "pan_left", "pan_right", "pan_up", "pan_down",
+                 "reset_frame"]
+        if len(self.groups) > 1:
+            kinds.extend(["raise", "lower"])
+        kinds.append("bind")   # arm a bind: next space click binds into this group
+        if len(self.groups[gi].spaces) > 1:
+            kinds.append("unbind")
+        kinds.append("delete")
         return kinds
 
-    def _toolbar_kinds(self, gi, si):
-        return self.toolbar_kinds(gi, si)
-
-    def hover_toolbar_buttons(self, gi, si):
-        """Returns [(kind, (nx, ny, nw, nh)), ...] for the hover toolbar of
-        space (gi, si). All coords normalized 0..1. Same layout used for
-        rendering and hit-testing — the caller just scales by surface
-        size. Returns [] if the space doesn't exist."""
-        if not (0 <= gi < len(self.groups)):
+    def _layout_buttons_in(self, body, canvas_w, canvas_h):
+        """Reflow the buttons into a grid that fills `body` (nx,ny,nw,nh)
+        with roughly square ON-SCREEN cells: a wide toolbar → many columns
+        (one-row strip), a square toolbar → a ~sqrt(n) grid. Needs the
+        canvas pixel size because normalised units aren't square."""
+        kinds = self.floating_toolbar_kinds()
+        bx, by, bw, bh = body
+        if not kinds or bw <= 0 or bh <= 0:
             return []
-        if not (0 <= si < len(self.groups[gi].spaces)):
-            return []
-        space = self.groups[gi].spaces[si]
-        xs = [c[0] for c in space.corners]
-        ys = [c[1] for c in space.corners]
-        bx0, by0 = min(xs), min(ys)
-        bx1, by1 = max(xs), max(ys)
-
-        kinds = self._toolbar_kinds(gi, si)
-        btn = self.TOOLBAR_BTN
-        gap = self.TOOLBAR_GAP
-        # Group label chip is a bit wider so a 2-digit "G12" fits.
-        widths = []
-        for k in kinds:
-            if k == "group":
-                widths.append(btn * 1.4)
-            elif k == "fit_mode":
-                widths.append(btn * 2.0)
-            else:
-                widths.append(btn)
-        total = sum(widths) + gap * (len(widths) - 1)
-
-        # Prefer above the bbox; fall back to below if no room.
-        above_y = by0 - btn - gap
-        toolbar_y = above_y if above_y >= 0 else min(1.0 - btn, by1 + gap)
-        # Anchor at bbox left, clamp so the strip stays on canvas.
-        toolbar_x = bx0
-        if toolbar_x + total > 1.0:
-            toolbar_x = max(0.0, 1.0 - total)
-
+        n = len(kinds)
+        px_w = max(1.0, bw * canvas_w)
+        px_h = max(1.0, bh * canvas_h)
+        cols = int(round((n * px_w / px_h) ** 0.5))
+        cols = max(1, min(n, cols))
+        rows = -(-n // cols)   # ceil
+        cell_w = bw / cols
+        cell_h = bh / rows
+        pad_x = cell_w * 0.10
+        pad_y = cell_h * 0.10
         result = []
-        x = toolbar_x
-        for kind, w in zip(kinds, widths):
-            result.append((kind, (x, toolbar_y, w, btn)))
-            x += w + gap
+        for i, kind in enumerate(kinds):
+            r, c = divmod(i, cols)
+            x = bx + c * cell_w + pad_x
+            y = by + r * cell_h + pad_y
+            result.append((kind, (x, y,
+                                  max(0.0, cell_w - 2 * pad_x),
+                                  max(0.0, cell_h - 2 * pad_y))))
         return result
 
-    def hit_test_hover_button(self, norm_xy):
-        """If the click landed on a hover-toolbar button, return
-        (kind, gi, si). Toolbar candidates are the hovered space AND the
-        selected space (so the selected space's toolbar stays clickable
-        even when the cursor briefly leaves the body)."""
-        candidates = []
-        if self.hovered_space is not None:
-            candidates.append(self.hovered_space)
-        if (self.selected_space is not None
-                and self.selected_space not in candidates):
-            candidates.append(self.selected_space)
+    def floating_toolbar_geometry(self, canvas_w, canvas_h):
+        """All sub-rects of the floating toolbar (normalised): the panel,
+        the move grip bar, the button body, the laid-out buttons, and the
+        resize handle. One source of truth for rendering AND hit-testing."""
+        nx, ny, nw, nh = self.floating_toolbar_rect()
+        grip_h = min(nh * self.TOOLBAR_GRIP_FRAC, self.TOOLBAR_GRIP_MAX)
+        grip = (nx, ny, nw, grip_h)
+        body = (nx, ny + grip_h, nw, max(0.0, nh - grip_h))
+        rh = min(self.TOOLBAR_RESIZE, nw * 0.5, nh * 0.5)
+        resize = (nx + nw - rh, ny + nh - rh, rh, rh)
+        return {
+            "rect": (nx, ny, nw, nh),
+            "grip": grip,
+            "body": body,
+            "resize": resize,
+            "buttons": self._layout_buttons_in(body, canvas_w, canvas_h),
+        }
+
+    def hit_test_floating_toolbar(self, norm_xy, canvas_w, canvas_h):
+        """Click priority on the floating toolbar: resize handle, then a
+        button, then the grip/body (move). Returns ('button', kind) |
+        ('move', None) | ('resize', None) | None."""
+        geo = self.floating_toolbar_geometry(canvas_w, canvas_h)
         nx, ny = norm_xy
-        for gi, si in candidates:
-            for kind, (bx, by, bw, bh) in self.hover_toolbar_buttons(gi, si):
-                if bx <= nx <= bx + bw and by <= ny <= by + bh:
-                    return (kind, gi, si)
+
+        def inside(rect):
+            rx, ry, rw, rh = rect
+            return rx <= nx <= rx + rw and ry <= ny <= ry + rh
+
+        if inside(geo["resize"]):
+            return ("resize", None)
+        for kind, brect in geo["buttons"]:
+            if inside(brect):
+                return ("button", kind)
+        if inside(geo["grip"]) or inside(geo["body"]):
+            return ("move", None)
         return None
+
+    def start_toolbar_move(self, norm_xy):
+        """Begin dragging the toolbar. Remember the grab offset so it doesn't
+        snap its corner to the cursor."""
+        nx, ny, _nw, _nh = self.floating_toolbar_rect()
+        self.drag = {"kind": "toolbar_move",
+                     "off": (norm_xy[0] - nx, norm_xy[1] - ny)}
+
+    def start_toolbar_resize(self, _norm_xy):
+        self.drag = {"kind": "toolbar_resize"}

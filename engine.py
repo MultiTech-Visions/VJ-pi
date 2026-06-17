@@ -1462,16 +1462,23 @@ class Engine:
 
     def _mapping_handle_click(self, norm):
         """Shared edit-mode click priority for both projector and HUD
-        clicks: hover-toolbar button > shift-bind > corner > body > empty
-        area → create."""
+        clicks: floating toolbar (move/resize/button) > shift-bind > corner
+        > body > empty area → create."""
         m = self.mapping
         shift_held = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
 
-        # 1. Hover toolbar (frame controls, × delete, + bind, ⊘ unbind, G tag).
-        btn = m.hit_test_hover_button(norm)
-        if btn is not None:
-            kind, gi, si = btn
-            self.mapping_toolbar_action(kind, gi, si)
+        # 1. Floating editor toolbar — drag to move, drag the corner to
+        # resize, or click a button (acts on the selected space). Checked
+        # first so it stays operable even when parked over a box.
+        ft = m.hit_test_floating_toolbar(norm, self.w, self.h)
+        if ft is not None:
+            kind, val = ft
+            if kind == "move":
+                m.start_toolbar_move(norm)
+            elif kind == "resize":
+                m.start_toolbar_resize(norm)
+            elif kind == "button":
+                self._mapping_floating_action(val)
             return
 
         # 2. Four-point create in progress. Once started, every canvas click
@@ -1510,6 +1517,19 @@ class Engine:
 
         # 6. Empty area → first corner of a four-click quad.
         m.start_create(norm)
+
+    def _mapping_floating_action(self, kind):
+        """Run a floating-toolbar button against the currently selected
+        space. 'bind' arms a bind (the next space click binds it into the
+        selected group); everything else routes through the shared action."""
+        m = self.mapping
+        if kind == "bind":
+            m.arm_bind()
+            return
+        if m.selected_space is None:
+            return
+        gi, si = m.selected_space
+        self.mapping_toolbar_action(kind, gi, si)
 
     def mapping_toolbar_action(self, kind, gi, si):
         """Run one mapping toolbar action from either projector or HUD."""
@@ -2533,9 +2553,8 @@ class Engine:
                             cv2.circle(canvas, (int(cx), int(cy)), 9,
                                        (90, 230, 255), 2, cv2.LINE_AA)
 
-        # Hover toolbars — selected always; hovered too if different.
-        for cand in {m.selected_space, m.hovered_space} - {None}:
-            self._draw_hover_toolbar(canvas, *cand)
+        # Single floating editor toolbar (draggable + resizable).
+        self._draw_floating_toolbar(canvas)
 
         # Rubber-band rectangle while dragging-to-create a new space.
         drag = m.drag
@@ -2561,76 +2580,106 @@ class Engine:
             cv2.circle(canvas, (hx, hy), 9, (0, 0, 0), 2, cv2.LINE_AA)
             cv2.circle(canvas, (hx, hy), 8, (120, 255, 160), 1, cv2.LINE_AA)
 
-    def _draw_hover_toolbar(self, canvas, gi, si):
-        """Render the per-space hover toolbar on the projector output."""
+    def _draw_floating_toolbar(self, canvas):
+        """Render the single floating editor toolbar on the projector: a
+        panel with a move grip bar (title), a reflowed button grid acting on
+        the selected space, and a bottom-right resize handle."""
+        m = self.mapping
         w, h = self.w, self.h
-        for kind, (nx, ny, nw, nh) in self.mapping.hover_toolbar_buttons(gi, si):
-            x0, y0 = int(nx * w), int(ny * h)
-            x1, y1 = int((nx + nw) * w), int((ny + nh) * h)
-            cv2.rectangle(canvas, (x0, y0), (x1, y1), (28, 30, 40), -1)
-            cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 210, 230), 1)
-            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-            r = max(2, min(x1 - x0, y1 - y0) // 4)
-            if kind == "delete":
-                col = (90, 90, 255)
-                cv2.line(canvas, (cx - r, cy - r), (cx + r, cy + r), col, 2, cv2.LINE_AA)
-                cv2.line(canvas, (cx + r, cy - r), (cx - r, cy + r), col, 2, cv2.LINE_AA)
-            elif kind == "bind":
-                col = (140, 230, 140)
-                cv2.line(canvas, (cx - r, cy), (cx + r, cy), col, 2, cv2.LINE_AA)
-                cv2.line(canvas, (cx, cy - r), (cx, cy + r), col, 2, cv2.LINE_AA)
-            elif kind == "unbind":
-                col = (255, 180, 80)
-                cv2.line(canvas, (cx - r, cy + r), (cx + r, cy - r), col, 2, cv2.LINE_AA)
-                cv2.circle(canvas, (cx, cy), 2, (28, 30, 40), -1)
-            elif kind in {
-                    "fit_mode", "zoom_out", "zoom_in",
-                    "pan_left", "pan_right", "pan_up", "pan_down",
-                    "reset_frame",
-            }:
-                group = self.mapping.groups[gi]
-                labels = {
-                    "fit_mode": group.fit_mode.upper()[:5],
-                    "zoom_out": "-",
-                    "zoom_in": "+",
-                    "pan_left": "<",
-                    "pan_right": ">",
-                    "pan_up": "^",
-                    "pan_down": "v",
-                    "reset_frame": "0",
-                }
-                label = labels[kind]
-                scale = max(0.3, (y1 - y0) / 42.0)
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
-                tx = cx - tw // 2
-                ty = cy + th // 2
-                cv2.putText(canvas, label, (tx, ty), font, scale,
-                            (160, 220, 255), 1, cv2.LINE_AA)
-            elif kind in ("raise", "lower"):
-                col = (255, 200, 180)
-                up = kind == "raise"
-                bar_y = cy - r - 2 if up else cy + r + 2
-                cv2.line(canvas, (cx - r, bar_y), (cx + r, bar_y), col, 2,
-                         cv2.LINE_AA)
-                if up:
-                    tri = np.array([[cx, cy - r], [cx - r, cy + r],
-                                    [cx + r, cy + r]], dtype=np.int32)
-                else:
-                    tri = np.array([[cx, cy + r], [cx - r, cy - r],
-                                    [cx + r, cy - r]], dtype=np.int32)
-                cv2.fillConvexPoly(canvas, tri, col, cv2.LINE_AA)
-            elif kind == "group":
-                label = f"G{gi + 1}"
-                # Size text relative to button height so it stays legible
-                # whether the projector is 720p or the HUD preview is small.
-                scale = max(0.3, (y1 - y0) / 40.0)
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
-                tx = cx - tw // 2
-                ty = cy + th // 2
-                cv2.putText(canvas, label, (tx, ty), font, scale,
-                            (220, 230, 250), 1, cv2.LINE_AA)
+        geo = m.floating_toolbar_geometry(w, h)
+
+        def to_px(rect):
+            rx, ry, rw, rh = rect
+            return (int(rx * w), int(ry * h),
+                    int((rx + rw) * w), int((ry + rh) * h))
+
+        x0, y0, x1, y1 = to_px(geo["rect"])
+        cv2.rectangle(canvas, (x0, y0), (x1, y1), (18, 20, 28), -1)
+        cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 210, 230), 1)
+
+        # Grip bar (drag to move) with a title that names the target.
+        gx0, gy0, gx1, gy1 = to_px(geo["grip"])
+        cv2.rectangle(canvas, (gx0, gy0), (gx1, gy1), (44, 48, 64), -1)
+        sel = m.selected_space
+        if sel is not None:
+            title = f"EDIT  G{sel[0] + 1}" + ("   BIND…" if m.bind_armed else "")
+        else:
+            title = "EDIT - select a box"
+        gscale = max(0.32, (gy1 - gy0) / 30.0)
+        cv2.putText(canvas, title, (gx0 + 5, (gy0 + gy1) // 2 + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, gscale, (210, 220, 245), 1,
+                    cv2.LINE_AA)
+
+        # Buttons.
+        for kind, brect in geo["buttons"]:
+            bx0, by0, bx1, by1 = to_px(brect)
+            self._draw_toolbar_btn_cv(canvas, kind, bx0, by0, bx1, by1)
+
+        # Resize handle (bottom-right).
+        rx0, ry0, rx1, ry1 = to_px(geo["resize"])
+        cv2.rectangle(canvas, (rx0, ry0), (rx1, ry1), (90, 230, 255), -1)
+        cv2.line(canvas, (rx0, ry1), (rx1, ry0), (18, 20, 28), 1, cv2.LINE_AA)
+
+    def _draw_toolbar_btn_cv(self, canvas, kind, x0, y0, x1, y1):
+        """One floating-toolbar button (icon/label) on the projector."""
+        if x1 <= x0 or y1 <= y0:
+            return
+        armed = (kind == "bind" and self.mapping.bind_armed)
+        cv2.rectangle(canvas, (x0, y0), (x1, y1),
+                      (44, 70, 50) if armed else (28, 30, 40), -1)
+        cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 210, 230), 1)
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        r = max(2, min(x1 - x0, y1 - y0) // 4)
+        if kind == "delete":
+            col = (90, 90, 255)
+            cv2.line(canvas, (cx - r, cy - r), (cx + r, cy + r), col, 2, cv2.LINE_AA)
+            cv2.line(canvas, (cx + r, cy - r), (cx - r, cy + r), col, 2, cv2.LINE_AA)
+        elif kind == "bind":
+            col = (140, 230, 140)
+            cv2.line(canvas, (cx - r, cy), (cx + r, cy), col, 2, cv2.LINE_AA)
+            cv2.line(canvas, (cx, cy - r), (cx, cy + r), col, 2, cv2.LINE_AA)
+        elif kind == "unbind":
+            col = (255, 180, 80)
+            cv2.line(canvas, (cx - r, cy + r), (cx + r, cy - r), col, 2, cv2.LINE_AA)
+            cv2.circle(canvas, (cx, cy), 2, (28, 30, 40), -1)
+        elif kind in {
+                "fit_mode", "zoom_out", "zoom_in",
+                "pan_left", "pan_right", "pan_up", "pan_down",
+                "reset_frame",
+        }:
+            group = self.mapping.selected_group()
+            fit = group.fit_mode if group is not None else "fit"
+            labels = {
+                "fit_mode": fit.upper()[:5],
+                "zoom_out": "-",
+                "zoom_in": "+",
+                "pan_left": "<",
+                "pan_right": ">",
+                "pan_up": "^",
+                "pan_down": "v",
+                "reset_frame": "0",
+            }
+            label = labels[kind]
+            scale = max(0.3, (y1 - y0) / 42.0)
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
+            tx = cx - tw // 2
+            ty = cy + th // 2
+            cv2.putText(canvas, label, (tx, ty), font, scale,
+                        (160, 220, 255), 1, cv2.LINE_AA)
+        elif kind in ("raise", "lower"):
+            col = (255, 200, 180)
+            up = kind == "raise"
+            bar_y = cy - r - 2 if up else cy + r + 2
+            cv2.line(canvas, (cx - r, bar_y), (cx + r, bar_y), col, 2,
+                     cv2.LINE_AA)
+            if up:
+                tri = np.array([[cx, cy - r], [cx - r, cy + r],
+                                [cx + r, cy + r]], dtype=np.int32)
+            else:
+                tri = np.array([[cx, cy + r], [cx - r, cy - r],
+                                [cx + r, cy - r]], dtype=np.int32)
+            cv2.fillConvexPoly(canvas, tri, col, cv2.LINE_AA)
 
     def _output_size(self):
         """Logical output size to normalise mouse coords against. Under

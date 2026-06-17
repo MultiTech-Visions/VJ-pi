@@ -529,27 +529,51 @@ class ControlWindow:
                              pygame.Rect(x0, y0, x1 - x0, y1 - y0), 1)
         self._draw_create_points_preview(surface)
 
-        # Hover toolbars — render on the selected space always, and on the
-        # hovered space when it's a different one. Reuses the manager's
-        # normalized-coord layout so the projector and HUD show the same
-        # buttons in the same relative positions.
-        for cand in {m.selected_space, m.hovered_space} - {None}:
-            self._draw_preview_toolbar(surface, *cand)
+        # Single floating editor toolbar — same normalized geometry the
+        # projector uses, so the HUD mirrors exactly where it's parked. Only
+        # in edit mode; a live set shouldn't see the editor chrome.
+        if m.edit_mode:
+            self._draw_floating_toolbar_preview(surface)
 
-    def _draw_preview_toolbar(self, surface, gi, si):
-        m = self.engine.mapping
+    def _draw_floating_toolbar_preview(self, surface):
+        e = self.engine
+        m = e.mapping
         rect = self._preview_rect
-        group = m.groups[gi] if 0 <= gi < len(m.groups) else None
-        for kind, (nx, ny, nw, nh) in m.hover_toolbar_buttons(gi, si):
-            x0 = int(rect.x + nx * rect.w)
-            y0 = int(rect.y + ny * rect.h)
-            x1 = int(rect.x + (nx + nw) * rect.w)
-            y1 = int(rect.y + (ny + nh) * rect.h)
-            btn_rect = pygame.Rect(x0, y0, x1 - x0, y1 - y0)
-            self._draw_toolbar_button(surface, btn_rect, kind, group, gi)
+        geo = m.floating_toolbar_geometry(e.w, e.h)
+
+        def to_rect(r):
+            rx, ry, rw, rh = r
+            return pygame.Rect(int(rect.x + rx * rect.w),
+                               int(rect.y + ry * rect.h),
+                               max(1, int(rw * rect.w)),
+                               max(1, int(rh * rect.h)))
+
+        panel = to_rect(geo["rect"])
+        pygame.draw.rect(surface, (18, 20, 28), panel, border_radius=3)
+        pygame.draw.rect(surface, (200, 210, 230), panel, 1, border_radius=3)
+
+        grip = to_rect(geo["grip"])
+        pygame.draw.rect(surface, (44, 48, 64), grip, border_radius=2)
+        sel = m.selected_space
+        if sel is not None:
+            txt = f"EDIT G{sel[0] + 1}" + ("  BIND…" if m.bind_armed else "")
+        else:
+            txt = "EDIT — select a box"
+        lbl = self.font_s.render(txt, True, (210, 220, 245))
+        surface.blit(lbl, (grip.x + 4, grip.y + (grip.h - lbl.get_height()) // 2))
+
+        group = m.selected_group()
+        gi = sel[0] if sel is not None else 0
+        for kind, r in geo["buttons"]:
+            self._draw_toolbar_button(surface, to_rect(r), kind, group, gi)
+
+        resize = to_rect(geo["resize"])
+        pygame.draw.rect(surface, (90, 230, 255), resize, border_radius=2)
 
     def _draw_toolbar_button(self, surface, btn_rect, kind, group, gi):
-        pygame.draw.rect(surface, (28, 30, 40), btn_rect, border_radius=3)
+        armed = (kind == "bind" and self.engine.mapping.bind_armed)
+        bg = (44, 70, 50) if armed else (28, 30, 40)
+        pygame.draw.rect(surface, bg, btn_rect, border_radius=3)
         pygame.draw.rect(surface, (200, 210, 230), btn_rect, 1, border_radius=3)
         cx, cy = btn_rect.center
         r = max(2, min(btn_rect.w, btn_rect.h) // 4)
