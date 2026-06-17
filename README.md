@@ -195,28 +195,47 @@ resume in PERFORM with your saved layout.
 
 ### Edit sub-mode (mouse-first)
 
-Edit gestures work in **both** the HUD preview AND on the projector
-itself — pointing at physical features through the projection is the
-natural way to do projection mapping.
+Edit gestures work **on the projector output itself** — pointing at
+physical features through the projection is the natural way to do
+projection mapping. (The HUD preview is display-only: it's far too small
+on the operator's tablet to edit through, so all clicks/drags happen on
+the projected image.)
 
 | Gesture                | Action                                          |
 |------------------------|-------------------------------------------------|
 | Click + drag empty area | Rubber-band a rectangle → becomes a new space in a new group |
-| Click a space's body    | Pick that space (its group becomes the active group; corner handles + hover toolbar appear) |
+| Click a space's body    | Pick that space (its group becomes the active group; corner handles appear and the floating toolbar acts on it) |
 | Click + drag a space's body | Move the whole space                        |
 | Click + drag a corner handle | Reshape that corner of the picked space (it becomes the arrow-key target — a cyan ring marks it) |
-| `←` `→` `↑` `↓`         | Nudge the arrow-key corner one pixel (hold `Shift` for 10px). Drag a corner roughly into place with the mouse, then dial it in pixel-by-pixel |
-| Hover any space         | A small toolbar sprouts above its bounding box  |
+| `←` `→` `↑` `↓`         | Nudge the arrow-key corner one pixel (hold `Shift` for 10px). Drag a corner roughly into place with the mouse, then dial it in pixel-by-pixel. **While creating** a box, the arrows fine-place the last point you dropped; the mouse still drops the next one |
 
-The hover toolbar replaces the old keyboard-only editing commands. Each
-button is a 4 %-of-canvas chip drawn just above the space:
+The **floating toolbar** replaces the old per-space strip (which kept
+landing below the box, off the flat part of the surface). There is now
+**one** toolbar for the whole editor. It appears the moment you enter EDIT
+and **acts on whichever space is currently selected**. It is drawn **only
+on the projector output** (the HUD preview is far too small on a tablet to
+operate it) — point at it through the projection like everything else.
 
-| Button | Appears on              | Action                                  |
-|--------|-------------------------|-----------------------------------------|
-| **×**  | Every space             | Delete this space (group goes too if it was the last) |
-| **+**  | Hovered space that's in a different group from the picked one | Bind this space into the picked space's group (source group is deleted if it becomes empty); selection stays on the originator so you can chain binds |
-| **⊘**  | Picked space whose group has ≥ 2 spaces | Unbind this space into its own new group |
-| **G·n** | Every space            | Group-membership chip — also tappable to pick this space |
+- **Move it** — drag the dark **grip bar** along its top to any flat,
+  visible patch of the projection surface.
+- **Resize it** — drag the **blue square** at its bottom-right corner. The
+  buttons automatically reflow to fit: drag it wide and short for a thin
+  strip along a top boundary, or drag it toward a square for a compact grid
+  that fits a square patch.
+- Its position and size are **saved** between sessions.
+
+Buttons (all act on the selected space):
+
+| Button | Action                                                       |
+|--------|--------------------------------------------------------------|
+| Mode pill (`WINDO`/`FIT`/…) | Cycle the group's fit mode                      |
+| `−` `+` | Zoom the group's content ±15 %                              |
+| `◀ ▶ ^ v` | Pan the group's content                                   |
+| `0`     | Reset zoom/pan                                              |
+| ▲bar / ▼bar | Raise / lower the group in the paint stack (only with ≥2 groups) |
+| **+**   | Arm bind — then click another space to bind it into this group (grip bar shows `BIND…`) |
+| **⊘**   | Unbind the selected space into its own new group (only if its group has ≥2 spaces) |
+| **×**   | Delete the selected space                                   |
 
 ### Edit sub-mode (keyboard fallbacks)
 
@@ -227,7 +246,7 @@ button is a 4 %-of-canvas chip drawn just above the space:
 | `Tab` / `Shift+Tab` | Cycle the active group (same as PERFORM)          |
 | `M`                 | Leave MAPPING entirely                            |
 | `Shift+click` other space | Bind into the picked space's group (same as toolbar **+**) |
-| `B`                 | Arm bind — next plain click binds (alternative to Shift) |
+| `B`                 | Arm bind — next plain click binds (same as toolbar **+**) |
 | `U`                 | Unbind picked space (same as toolbar **⊘**)       |
 | `Delete`            | Delete the picked space (same as toolbar **×**)   |
 

@@ -120,34 +120,16 @@ class ControlWindow:
     # ── Event handling ───────────────────────────────────────────────
 
     def handle_event(self, event):
-        """Forward mouse activity from the control window to its buttons
-        and (in mapping/edit mode) to the spaces editor."""
+        """Forward mouse activity from the control window to its buttons.
+
+        The HUD preview is display-only: mapping boxes are created and
+        edited on the projector output (pointing through the projection),
+        never through this preview — it's far too small on the operator's
+        tablet to be usable for editing. So the only clickable things here
+        are the preview-toggle and the display-picker buttons."""
         if not self._event_is_ours(event):
             return
         e = self.engine
-
-        if event.type == pygame.MOUSEMOTION:
-            pos = getattr(event, "pos", None)
-            if (e.mode == "mapping" and e.mapping.edit_mode
-                    and pos is not None
-                    and self._preview_rect.collidepoint(pos)):
-                norm = self._preview_to_norm(pos)
-                if e.mapping.drag is not None:
-                    e.mapping.update_drag(norm)
-                else:
-                    e.mapping.update_hover(norm)
-            elif e.mode == "mapping" and e.mapping.drag is not None:
-                # Drag continues even if the cursor briefly leaves the
-                # preview (matches usual UX for click+drag).
-                if pos is not None:
-                    e.mapping.update_drag(self._preview_to_norm(pos))
-            return
-
-        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            if e.mode == "mapping" and e.mapping.drag is not None:
-                e.mapping.end_drag()
-                e._persist_mapping()
-            return
 
         if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
             return
@@ -159,29 +141,12 @@ class ControlWindow:
             self.toggle_preview()
             return
 
-        if (e.mode == "mapping" and e.mapping.edit_mode
-                and self._preview_rect.collidepoint(pos)):
-            # Delegate to the engine's shared click handler so the HUD
-            # preview and the projector share one source of truth for
-            # edit-mode gestures (and any future ones).
-            e._mapping_handle_click(self._preview_to_norm(pos))
-            return
-
         for idx, rect in self._display_btn_rects:
             if rect.collidepoint(pos):
                 self.engine.pending_display = idx
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
             self.engine.apply_pending_display()
-
-    def _preview_to_norm(self, pos):
-        """Convert a preview-window click position into normalized (0..1)
-        output coords. Clamped so out-of-preview drags still produce a
-        valid corner position."""
-        rect = self._preview_rect
-        nx = (pos[0] - rect.x) / max(1, rect.w)
-        ny = (pos[1] - rect.y) / max(1, rect.h)
-        return (max(0.0, min(1.0, nx)), max(0.0, min(1.0, ny)))
 
     def _event_is_ours(self, event):
         win = getattr(event, "window", None)
@@ -437,7 +402,8 @@ class ControlWindow:
 
     def _draw_create_points_preview(self, surface):
         m = self.engine.mapping
-        pts = [tuple(p) for p in m.create_points]
+        dropped = [tuple(p) for p in m.create_points]
+        pts = list(dropped)
         if m.hover_norm is not None and len(pts) < 4:
             pts.append(tuple(m.hover_norm))
         if not pts:
@@ -448,6 +414,11 @@ class ControlWindow:
             pygame.draw.circle(surface, (120, 255, 160), p, 5)
         for a, b in zip(px, px[1:]):
             pygame.draw.line(surface, (120, 255, 160), a, b, 2)
+        # Blue ring on the last DROPPED point — that's the one the arrow keys
+        # are fine-placing right now (matches the selected-corner ring).
+        if dropped:
+            pygame.draw.circle(surface, (90, 230, 255),
+                               self._preview_xy(dropped[-1]), 8, 2)
         if len(pts) >= 4:
             corners = pts[:4]
             pygame.draw.polygon(
@@ -522,83 +493,11 @@ class ControlWindow:
             pygame.draw.rect(surface, (200, 255, 200),
                              pygame.Rect(x0, y0, x1 - x0, y1 - y0), 1)
         self._draw_create_points_preview(surface)
-
-        # Hover toolbars — render on the selected space always, and on the
-        # hovered space when it's a different one. Reuses the manager's
-        # normalized-coord layout so the projector and HUD show the same
-        # buttons in the same relative positions.
-        for cand in {m.selected_space, m.hovered_space} - {None}:
-            self._draw_preview_toolbar(surface, *cand)
-
-    def _draw_preview_toolbar(self, surface, gi, si):
-        m = self.engine.mapping
-        rect = self._preview_rect
-        group = m.groups[gi] if 0 <= gi < len(m.groups) else None
-        for kind, (nx, ny, nw, nh) in m.hover_toolbar_buttons(gi, si):
-            x0 = int(rect.x + nx * rect.w)
-            y0 = int(rect.y + ny * rect.h)
-            x1 = int(rect.x + (nx + nw) * rect.w)
-            y1 = int(rect.y + (ny + nh) * rect.h)
-            btn_rect = pygame.Rect(x0, y0, x1 - x0, y1 - y0)
-            self._draw_toolbar_button(surface, btn_rect, kind, group, gi)
-
-    def _draw_toolbar_button(self, surface, btn_rect, kind, group, gi):
-        pygame.draw.rect(surface, (28, 30, 40), btn_rect, border_radius=3)
-        pygame.draw.rect(surface, (200, 210, 230), btn_rect, 1, border_radius=3)
-        cx, cy = btn_rect.center
-        r = max(2, min(btn_rect.w, btn_rect.h) // 4)
-        if kind == "delete":
-            pygame.draw.line(surface, (255, 90, 90),
-                             (cx - r, cy - r), (cx + r, cy + r), 2)
-            pygame.draw.line(surface, (255, 90, 90),
-                             (cx + r, cy - r), (cx - r, cy + r), 2)
-        elif kind == "bind":
-            pygame.draw.line(surface, (140, 230, 140),
-                             (cx - r, cy), (cx + r, cy), 2)
-            pygame.draw.line(surface, (140, 230, 140),
-                             (cx, cy - r), (cx, cy + r), 2)
-        elif kind == "unbind":
-            pygame.draw.line(surface, (255, 180, 80),
-                             (cx - r, cy + r), (cx + r, cy - r), 2)
-            pygame.draw.rect(surface, (28, 30, 40),
-                             pygame.Rect(cx - 1, cy - 1, 3, 3))
-        elif kind in {
-                "fit_mode", "zoom_out", "zoom_in",
-                "pan_left", "pan_right", "pan_up", "pan_down",
-                "reset_frame",
-        }:
-            fit = group.fit_mode if group is not None else "fit"
-            labels = {
-                "fit_mode": fit.upper()[:5],
-                "zoom_out": "-",
-                "zoom_in": "+",
-                "pan_left": "<",
-                "pan_right": ">",
-                "pan_up": "^",
-                "pan_down": "v",
-                "reset_frame": "0",
-            }
-            label = self.font_s.render(labels[kind], True, (160, 220, 255))
-            surface.blit(label,
-                         (cx - label.get_width() // 2,
-                          cy - label.get_height() // 2))
-        elif kind in ("raise", "lower"):
-            # Layer order: a triangle pointing at a bar (bring to top /
-            # send to bottom). Distinct from pan ^/v so they don't read alike.
-            col = (180, 200, 255)
-            up = kind == "raise"
-            bar_y = cy - r - 2 if up else cy + r + 2
-            pygame.draw.line(surface, col, (cx - r, bar_y), (cx + r, bar_y), 2)
-            if up:
-                pts = [(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)]
-            else:
-                pts = [(cx, cy + r), (cx - r, cy - r), (cx + r, cy - r)]
-            pygame.draw.polygon(surface, col, pts)
-        elif kind == "group":
-            label = self.font_s.render(f"G{gi + 1}", True, (220, 230, 250))
-            surface.blit(label,
-                         (cx - label.get_width() // 2,
-                          cy - label.get_height() // 2))
+        # NOTE: the editor toolbar is deliberately NOT drawn on the HUD
+        # preview. The preview is only a few percent of an already-small
+        # tablet screen, so a toolbar here is unusably tiny. The floating
+        # toolbar lives on the projector output (where it's drag/resizable)
+        # — that's the one and only place to operate it.
 
     def _draw_mapping_status(self, surface, x, y, width):
         e = self.engine

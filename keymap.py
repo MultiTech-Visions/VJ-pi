@@ -177,9 +177,11 @@ def dispatch(engine, key, mod):
             if key in (pygame.K_DELETE,):
                 engine.mapping_delete_selected_space()
                 return
-            # Arrow keys fine-tune the keyboard-active corner of the
-            # selected space, pixel-by-pixel — drag a corner close with the
-            # mouse, then dial it in with the arrows. Shift = coarse 10px
+            # Arrow keys fine-tune the keyboard-active corner, pixel-by-
+            # pixel — drag a corner close with the mouse, then dial it in
+            # with the arrows. While laying out a new box they fine-place the
+            # last-dropped point (the mouse still drops the next one); once
+            # the box locks they stay on the 4th corner. Shift = coarse 10px
             # step. (Auto-repeat is off, so one tap = one step.)
             if key in (pygame.K_LEFT, pygame.K_RIGHT,
                        pygame.K_UP, pygame.K_DOWN):
