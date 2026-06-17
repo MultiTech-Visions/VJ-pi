@@ -65,6 +65,20 @@ if [ ! -f vj_state.json ]; then
   ARGS+=( --output-display "$OUTPUT_DISPLAY" )
 fi
 
+# ── projectM (MilkDrop) safety profile ───────────────────────────────
+# Keeps live PM in mapping ENABLED but bounds its V3D GPU cost so a PM
+# mapping scene can't stall SDL present and wedge the graphics. See
+# Start VJ.sh for the full rationale. All overridable from the env.
+export VJ_PM_IN_MAPPING="${VJ_PM_IN_MAPPING:-1}"
+export VJ_PM_RENDER_MAX_W="${VJ_PM_RENDER_MAX_W:-640}"
+export VJ_PM_MESH="${VJ_PM_MESH:-32x24}"
+export VJ_PM_STREAM_FPS="${VJ_PM_STREAM_FPS:-18}"
+export VJ_PM_COMPOSITE_FPS="${VJ_PM_COMPOSITE_FPS:-18}"
+export VJ_PM_SWITCH_MS="${VJ_PM_SWITCH_MS:-550}"
+export VJ_PM_PRESENT_STALL_MS="${VJ_PM_PRESENT_STALL_MS:-220}"
+export VJ_PM_PRESENT_STALLS="${VJ_PM_PRESENT_STALLS:-2}"
+export VJ_PM_SAFETY_COOLDOWN_S="${VJ_PM_SAFETY_COOLDOWN_S:-8}"
+
 ./venv/bin/python main.py "${ARGS[@]}" >>"$LOG" 2>&1
 EXIT=$?
 if [ "$EXIT" -ne 0 ]; then

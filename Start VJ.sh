@@ -66,6 +66,25 @@ fi
 # ARGS=( --fullscreen --output-display "$OUTPUT_DISPLAY" --control \
 #        --control-display "$CONTROL_DISPLAY" --control-size "$CONTROL_SIZE" )
 
+# ── projectM (MilkDrop) safety profile ───────────────────────────────
+# Live projectM inside a mapping scene is the heaviest GPU path on this
+# Pi's V3D — it can stall SDL present and wedge the graphics. This keeps
+# PM in mapping ENABLED (VJ_PM_IN_MAPPING=1) but bounds its GPU cost:
+# small render width, coarse mesh, ONE shared low frame budget divided
+# across all visible PM boxes, throttled preset switches, and a present-
+# stall watchdog that briefly cools PM if the display starts blocking.
+# Without these, Start VJ.sh ran PM in mapping at the heaviest defaults
+# (896px / 48x32 / 30fps) — the documented crash path. All overridable.
+export VJ_PM_IN_MAPPING="${VJ_PM_IN_MAPPING:-1}"
+export VJ_PM_RENDER_MAX_W="${VJ_PM_RENDER_MAX_W:-640}"
+export VJ_PM_MESH="${VJ_PM_MESH:-32x24}"
+export VJ_PM_STREAM_FPS="${VJ_PM_STREAM_FPS:-18}"
+export VJ_PM_COMPOSITE_FPS="${VJ_PM_COMPOSITE_FPS:-18}"
+export VJ_PM_SWITCH_MS="${VJ_PM_SWITCH_MS:-550}"
+export VJ_PM_PRESENT_STALL_MS="${VJ_PM_PRESENT_STALL_MS:-220}"
+export VJ_PM_PRESENT_STALLS="${VJ_PM_PRESENT_STALLS:-2}"
+export VJ_PM_SAFETY_COOLDOWN_S="${VJ_PM_SAFETY_COOLDOWN_S:-8}"
+
 ./venv/bin/python main.py "${ARGS[@]}" >>"$LOG" 2>&1
 EXIT=$?
 if [ "$EXIT" -ne 0 ]; then
