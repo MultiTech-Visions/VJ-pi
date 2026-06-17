@@ -76,8 +76,12 @@ fi
 # Without these, Start VJ.sh ran PM in mapping at the heaviest defaults
 # (896px / 48x32 / 30fps) — the documented crash path. All overridable.
 export VJ_PM_IN_MAPPING="${VJ_PM_IN_MAPPING:-1}"
-export VJ_PM_RENDER_MAX_W="${VJ_PM_RENDER_MAX_W:-640}"
-export VJ_PM_MESH="${VJ_PM_MESH:-32x24}"
+# Lowered render res to lift projectM fps: at 640x360 each MilkDrop frame
+# was ~140-200ms on V3D (=5-7fps), which is the GPU shader cost, not the
+# 18fps ceiling. 480x270 cuts the pixels ~44%; pm is upscaled/warped into
+# boxes anyway so the resolution drop is invisible. Mesh coarsened too.
+export VJ_PM_RENDER_MAX_W="${VJ_PM_RENDER_MAX_W:-480}"
+export VJ_PM_MESH="${VJ_PM_MESH:-24x16}"
 export VJ_PM_STREAM_FPS="${VJ_PM_STREAM_FPS:-18}"
 export VJ_PM_COMPOSITE_FPS="${VJ_PM_COMPOSITE_FPS:-18}"
 export VJ_PM_SWITCH_MS="${VJ_PM_SWITCH_MS:-550}"
