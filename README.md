@@ -195,9 +195,11 @@ resume in PERFORM with your saved layout.
 
 ### Edit sub-mode (mouse-first)
 
-Edit gestures work in **both** the HUD preview AND on the projector
-itself — pointing at physical features through the projection is the
-natural way to do projection mapping.
+Edit gestures work **on the projector output itself** — pointing at
+physical features through the projection is the natural way to do
+projection mapping. (The HUD preview is display-only: it's far too small
+on the operator's tablet to edit through, so all clicks/drags happen on
+the projected image.)
 
 | Gesture                | Action                                          |
 |------------------------|-------------------------------------------------|

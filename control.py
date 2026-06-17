@@ -120,34 +120,16 @@ class ControlWindow:
     # ── Event handling ───────────────────────────────────────────────
 
     def handle_event(self, event):
-        """Forward mouse activity from the control window to its buttons
-        and (in mapping/edit mode) to the spaces editor."""
+        """Forward mouse activity from the control window to its buttons.
+
+        The HUD preview is display-only: mapping boxes are created and
+        edited on the projector output (pointing through the projection),
+        never through this preview — it's far too small on the operator's
+        tablet to be usable for editing. So the only clickable things here
+        are the preview-toggle and the display-picker buttons."""
         if not self._event_is_ours(event):
             return
         e = self.engine
-
-        if event.type == pygame.MOUSEMOTION:
-            pos = getattr(event, "pos", None)
-            if (e.mode == "mapping" and e.mapping.edit_mode
-                    and pos is not None
-                    and self._preview_rect.collidepoint(pos)):
-                norm = self._preview_to_norm(pos)
-                if e.mapping.drag is not None:
-                    e.mapping.update_drag(norm)
-                else:
-                    e.mapping.update_hover(norm)
-            elif e.mode == "mapping" and e.mapping.drag is not None:
-                # Drag continues even if the cursor briefly leaves the
-                # preview (matches usual UX for click+drag).
-                if pos is not None:
-                    e.mapping.update_drag(self._preview_to_norm(pos))
-            return
-
-        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            if e.mode == "mapping" and e.mapping.drag is not None:
-                e.mapping.end_drag()
-                e._persist_mapping()
-            return
 
         if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
             return
@@ -159,32 +141,12 @@ class ControlWindow:
             self.toggle_preview()
             return
 
-        if (e.mode == "mapping" and e.mapping.edit_mode
-                and self._preview_rect.collidepoint(pos)):
-            # Delegate to the engine's shared click handler so the HUD
-            # preview and the projector share one source of truth for
-            # edit-mode gestures (and any future ones). allow_toolbar=False:
-            # the floating toolbar isn't drawn on the tiny preview, so its
-            # hit region must not intercept preview clicks.
-            e._mapping_handle_click(self._preview_to_norm(pos),
-                                    allow_toolbar=False)
-            return
-
         for idx, rect in self._display_btn_rects:
             if rect.collidepoint(pos):
                 self.engine.pending_display = idx
                 return
         if self._apply_rect is not None and self._apply_rect.collidepoint(pos):
             self.engine.apply_pending_display()
-
-    def _preview_to_norm(self, pos):
-        """Convert a preview-window click position into normalized (0..1)
-        output coords. Clamped so out-of-preview drags still produce a
-        valid corner position."""
-        rect = self._preview_rect
-        nx = (pos[0] - rect.x) / max(1, rect.w)
-        ny = (pos[1] - rect.y) / max(1, rect.h)
-        return (max(0.0, min(1.0, nx)), max(0.0, min(1.0, ny)))
 
     def _event_is_ours(self, event):
         win = getattr(event, "window", None)
