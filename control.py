@@ -33,7 +33,7 @@ MAPPING_KEY_CHEAT = [
     ("M",            "Leave MAPPING mode"),
     ("E",            "Toggle EDIT mode (mouse drives the editor)"),
     ("Tab",          "Next group (Shift+Tab = prev)"),
-    ("EDIT — drag empty",  "rubber-band a new rectangle → new group"),
+    ("EDIT — click empty", "place 4 corners → new mapped box"),
     ("EDIT — click body",  "pick that space (handles + toolbar appear)"),
     ("EDIT — drag body",   "move the whole space"),
     ("EDIT — drag corner", "reshape the picked space"),
@@ -45,9 +45,10 @@ MAPPING_KEY_CHEAT = [
     ("EDIT — −/= [/]", "cycle clip / generator for selected box's group"),
     ("hold −+= / [+]", "JUMP picker: type a #, Enter → selected group"),
     ("P",            "Toggle HUD live preview on/off (saves CPU)"),
-    ("EDIT — Esc",   "cancel drag / deselect"),
+    ("EDIT — Backspace", "delete selected group: press twice"),
+    ("EDIT — Esc",   "cancel drag / pending delete / deselect"),
     ("Ctrl+N",       "New group"),
-    ("Ctrl+Back",    "Delete current group"),
+    ("Ctrl+Back",    "Delete current group immediately"),
     ("Ctrl+= / -",   "Add / remove a space in current group"),
     ("Ctrl+G",       "Cycle grid layout (1·2x1·2x2·3x2·3x3·4x2·4x3)"),
     ("Ctrl+A",       "Toggle autopilot on current group"),
@@ -403,10 +404,63 @@ class ControlWindow:
                      (tog_x + (tog_w - tog_label.get_width()) // 2,
                       tog_y + (tog_h - tog_label.get_height()) // 2))
 
+    @staticmethod
+    def _mesh_segments(corners, steps=4):
+        if len(corners) != 4:
+            return []
+        tl, tr, br, bl = corners
+        segs = []
+        for i in range(1, steps):
+            t = i / steps
+            top = (tl[0] * (1.0 - t) + tr[0] * t,
+                   tl[1] * (1.0 - t) + tr[1] * t)
+            bottom = (bl[0] * (1.0 - t) + br[0] * t,
+                      bl[1] * (1.0 - t) + br[1] * t)
+            left = (tl[0] * (1.0 - t) + bl[0] * t,
+                    tl[1] * (1.0 - t) + bl[1] * t)
+            right = (tr[0] * (1.0 - t) + br[0] * t,
+                     tr[1] * (1.0 - t) + br[1] * t)
+            segs.append((top, bottom))
+            segs.append((left, right))
+        return segs
+
+    def _preview_xy(self, pt):
+        rect = self._preview_rect
+        return (int(round(rect.x + pt[0] * rect.w)),
+                int(round(rect.y + pt[1] * rect.h)))
+
+    def _draw_preview_mesh(self, surface, corners, color):
+        for a, b in self._mesh_segments(corners):
+            pygame.draw.line(surface, color, self._preview_xy(a),
+                             self._preview_xy(b), 1)
+
+    def _draw_create_points_preview(self, surface):
+        m = self.engine.mapping
+        pts = [tuple(p) for p in m.create_points]
+        if m.hover_norm is not None and len(pts) < 4:
+            pts.append(tuple(m.hover_norm))
+        if not pts:
+            return
+        px = [self._preview_xy(p) for p in pts]
+        for p in px:
+            pygame.draw.circle(surface, (20, 20, 30), p, 6)
+            pygame.draw.circle(surface, (120, 255, 160), p, 5)
+        for a, b in zip(px, px[1:]):
+            pygame.draw.line(surface, (120, 255, 160), a, b, 2)
+        if len(pts) >= 4:
+            corners = pts[:4]
+            pygame.draw.polygon(
+                surface,
+                (120, 255, 160),
+                [self._preview_xy(p) for p in corners],
+                2,
+            )
+            self._draw_preview_mesh(surface, corners, (120, 255, 160))
+
     def _draw_space_overlay(self, surface):
         """Outline every group's spaces on the preview, highlight the
         picked-for-edit space, draw corner handles on the picked space,
-        and rubber-band the create-drag rectangle if one is in flight."""
+        and preview four-point quad creation if one is in flight."""
         e = self.engine
         m = e.mapping
         rect = self._preview_rect
@@ -418,6 +472,7 @@ class ControlWindow:
                 pts = [(rect.x + c[0] * rect.w, rect.y + c[1] * rect.h)
                        for c in space.corners]
                 pygame.draw.polygon(surface, outline, pts, 1)
+                self._draw_preview_mesh(surface, space.corners, outline)
                 # Tiny group-index tag at the centre so it's clear which
                 # spaces belong together.
                 cx = sum(p[0] for p in pts) / 4
@@ -434,6 +489,7 @@ class ControlWindow:
                 pts = [(rect.x + c[0] * rect.w, rect.y + c[1] * rect.h)
                        for c in picked.corners]
                 pygame.draw.polygon(surface, (255, 240, 120), pts, 2)
+                self._draw_preview_mesh(surface, picked.corners, (255, 240, 120))
                 drag = m.drag
                 for ci, c in enumerate(picked.corners):
                     hx = int(rect.x + c[0] * rect.w)
@@ -457,6 +513,7 @@ class ControlWindow:
             y1 = int(rect.y + max(sy, cy) * rect.h)
             pygame.draw.rect(surface, (200, 255, 200),
                              pygame.Rect(x0, y0, x1 - x0, y1 - y0), 1)
+        self._draw_create_points_preview(surface)
 
         # Hover toolbars — render on the selected space always, and on the
         # hovered space when it's a different one. Reuses the manager's
@@ -468,56 +525,60 @@ class ControlWindow:
     def _draw_preview_toolbar(self, surface, gi, si):
         m = self.engine.mapping
         rect = self._preview_rect
+        group = m.groups[gi] if 0 <= gi < len(m.groups) else None
         for kind, (nx, ny, nw, nh) in m.hover_toolbar_buttons(gi, si):
             x0 = int(rect.x + nx * rect.w)
             y0 = int(rect.y + ny * rect.h)
             x1 = int(rect.x + (nx + nw) * rect.w)
             y1 = int(rect.y + (ny + nh) * rect.h)
             btn_rect = pygame.Rect(x0, y0, x1 - x0, y1 - y0)
-            pygame.draw.rect(surface, (28, 30, 40), btn_rect, border_radius=3)
-            pygame.draw.rect(surface, (200, 210, 230), btn_rect, 1, border_radius=3)
-            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-            r = max(2, min(x1 - x0, y1 - y0) // 4)
-            if kind == "delete":
-                pygame.draw.line(surface, (255, 90, 90),
-                                 (cx - r, cy - r), (cx + r, cy + r), 2)
-                pygame.draw.line(surface, (255, 90, 90),
-                                 (cx + r, cy - r), (cx - r, cy + r), 2)
-            elif kind == "bind":
-                pygame.draw.line(surface, (140, 230, 140),
-                                 (cx - r, cy), (cx + r, cy), 2)
-                pygame.draw.line(surface, (140, 230, 140),
-                                 (cx, cy - r), (cx, cy + r), 2)
-            elif kind == "unbind":
-                pygame.draw.line(surface, (255, 180, 80),
-                                 (cx - r, cy + r), (cx + r, cy - r), 2)
-                pygame.draw.rect(surface, (28, 30, 40),
-                                 pygame.Rect(cx - 1, cy - 1, 3, 3))
-            elif kind in {
-                    "fit_mode", "zoom_out", "zoom_in",
-                    "pan_left", "pan_right", "pan_up", "pan_down",
-                    "reset_frame",
-            }:
-                group = m.groups[gi]
-                labels = {
-                    "fit_mode": group.fit_mode.upper()[:5],
-                    "zoom_out": "-",
-                    "zoom_in": "+",
-                    "pan_left": "<",
-                    "pan_right": ">",
-                    "pan_up": "^",
-                    "pan_down": "v",
-                    "reset_frame": "0",
-                }
-                label = self.font_s.render(labels[kind], True, (160, 220, 255))
-                surface.blit(label,
-                             (cx - label.get_width() // 2,
-                              cy - label.get_height() // 2))
-            elif kind == "group":
-                label = self.font_s.render(f"G{gi + 1}", True, (220, 230, 250))
-                surface.blit(label,
-                             (cx - label.get_width() // 2,
-                              cy - label.get_height() // 2))
+            self._draw_toolbar_button(surface, btn_rect, kind, group, gi)
+
+    def _draw_toolbar_button(self, surface, btn_rect, kind, group, gi):
+        pygame.draw.rect(surface, (28, 30, 40), btn_rect, border_radius=3)
+        pygame.draw.rect(surface, (200, 210, 230), btn_rect, 1, border_radius=3)
+        cx, cy = btn_rect.center
+        r = max(2, min(btn_rect.w, btn_rect.h) // 4)
+        if kind == "delete":
+            pygame.draw.line(surface, (255, 90, 90),
+                             (cx - r, cy - r), (cx + r, cy + r), 2)
+            pygame.draw.line(surface, (255, 90, 90),
+                             (cx + r, cy - r), (cx - r, cy + r), 2)
+        elif kind == "bind":
+            pygame.draw.line(surface, (140, 230, 140),
+                             (cx - r, cy), (cx + r, cy), 2)
+            pygame.draw.line(surface, (140, 230, 140),
+                             (cx, cy - r), (cx, cy + r), 2)
+        elif kind == "unbind":
+            pygame.draw.line(surface, (255, 180, 80),
+                             (cx - r, cy + r), (cx + r, cy - r), 2)
+            pygame.draw.rect(surface, (28, 30, 40),
+                             pygame.Rect(cx - 1, cy - 1, 3, 3))
+        elif kind in {
+                "fit_mode", "zoom_out", "zoom_in",
+                "pan_left", "pan_right", "pan_up", "pan_down",
+                "reset_frame",
+        }:
+            fit = group.fit_mode if group is not None else "fit"
+            labels = {
+                "fit_mode": fit.upper()[:5],
+                "zoom_out": "-",
+                "zoom_in": "+",
+                "pan_left": "<",
+                "pan_right": ">",
+                "pan_up": "^",
+                "pan_down": "v",
+                "reset_frame": "0",
+            }
+            label = self.font_s.render(labels[kind], True, (160, 220, 255))
+            surface.blit(label,
+                         (cx - label.get_width() // 2,
+                          cy - label.get_height() // 2))
+        elif kind == "group":
+            label = self.font_s.render(f"G{gi + 1}", True, (220, 230, 250))
+            surface.blit(label,
+                         (cx - label.get_width() // 2,
+                          cy - label.get_height() // 2))
 
     def _draw_mapping_status(self, surface, x, y, width):
         e = self.engine
@@ -560,6 +621,11 @@ class ControlWindow:
 
         self._param_bar(surface, "PARAM X", g.param_x, x, y, width); y += 18
         self._param_bar(surface, "PARAM Y", g.param_y, x, y, width); y += 22
+        armed = e.mapping.delete_group_armed
+        if armed == e.mapping.selected:
+            warn = self.font_s.render("Backspace again deletes this group · Esc cancels",
+                                      True, (255, 190, 100))
+            surface.blit(warn, (x, y))
 
     def _draw_groups_list(self, surface, x, y, width):
         e = self.engine
