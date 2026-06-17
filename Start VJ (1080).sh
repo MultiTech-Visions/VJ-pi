@@ -57,7 +57,7 @@ if [ ! -f vj_state.json ]; then
 fi
 
 # ── projectM (MilkDrop) safety profile ───────────────────────────────
-# Identical to Start VJ.sh so PM behaviour is the same in the test.
+# Identical to Start VJ.sh so PM behaviour is the same.
 export VJ_PM_IN_MAPPING="${VJ_PM_IN_MAPPING:-1}"
 export VJ_PM_RENDER_MAX_W="${VJ_PM_RENDER_MAX_W:-480}"
 export VJ_PM_MESH="${VJ_PM_MESH:-24x16}"
