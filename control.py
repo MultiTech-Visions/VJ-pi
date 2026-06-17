@@ -37,6 +37,7 @@ MAPPING_KEY_CHEAT = [
     ("EDIT — click body",  "pick that space (handles + toolbar appear)"),
     ("EDIT — drag body",   "move the whole space"),
     ("EDIT — drag corner", "reshape the picked space"),
+    ("EDIT — ←→↑↓",     "nudge active corner 1px (Shift=10px)"),
     ("EDIT — toolbar ×",   "delete this space"),
     ("EDIT — toolbar +",   "bind this space into the selected space's group"),
     ("EDIT — toolbar ⊘",   "unbind this space into its own new group"),
@@ -498,10 +499,17 @@ class ControlWindow:
                                    and drag.get("kind") == "corner"
                                    and drag.get("space") == (gi, si)
                                    and drag.get("corner") == ci)
+                    # The keyboard-active corner (the one the arrows nudge)
+                    # gets a bigger cyan ring so the operator can see which
+                    # point they're dialling in.
+                    is_kbd = (ci == m.selected_corner)
                     color = (255, 220, 80) if is_dragging else (255, 240, 180)
                     pygame.draw.circle(surface, (20, 20, 30), (hx, hy), 6)
                     pygame.draw.circle(surface, color, (hx, hy), 5)
                     pygame.draw.circle(surface, (40, 40, 60), (hx, hy), 5, 1)
+                    if is_kbd:
+                        pygame.draw.circle(surface, (90, 230, 255),
+                                           (hx, hy), 8, 2)
 
         # Rubber-band rectangle while drag-creating.
         if m.drag is not None and m.drag.get("kind") == "create":

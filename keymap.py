@@ -171,18 +171,32 @@ def dispatch(engine, key, mod):
             if key == pygame.K_u and not (mod & pygame.KMOD_CTRL):
                 engine.mapping_unbind_selected_space()
                 return
+            if key == pygame.K_BACKSPACE and not (mod & pygame.KMOD_CTRL):
+                engine.mapping_request_remove_group()
+                return
             if key in (pygame.K_DELETE,):
                 engine.mapping_delete_selected_space()
+                return
+            # Arrow keys fine-tune the keyboard-active corner of the
+            # selected space, pixel-by-pixel — drag a corner close with the
+            # mouse, then dial it in with the arrows. Shift = coarse 10px
+            # step. (Auto-repeat is off, so one tap = one step.)
+            if key in (pygame.K_LEFT, pygame.K_RIGHT,
+                       pygame.K_UP, pygame.K_DOWN):
+                step = 10 if (mod & pygame.KMOD_SHIFT) else 1
+                dx = (-step if key == pygame.K_LEFT
+                      else step if key == pygame.K_RIGHT else 0)
+                dy = (-step if key == pygame.K_UP
+                      else step if key == pygame.K_DOWN else 0)
+                engine.mapping_nudge_corner(dx, dy)
                 return
             # In edit mode, swallow the content / FX / favourite keys —
             # the operator is laying out spaces, not jamming. Mapping
             # operations under Ctrl below still work, and so do
-            # Tab / M / Esc above.
+            # Tab / M / Esc / Backspace above.
             if (key in FAV_KEYS or key in HIT_KEYS
                     or key in FX_KEYS
-                    or key == pygame.K_BACKSLASH
-                    or key in (pygame.K_LEFT, pygame.K_RIGHT,
-                               pygame.K_UP, pygame.K_DOWN)):
+                    or key == pygame.K_BACKSLASH):
                 return
         if mod & pygame.KMOD_CTRL:
             if key == pygame.K_n:

@@ -204,7 +204,8 @@ natural way to do projection mapping.
 | Click + drag empty area | Rubber-band a rectangle → becomes a new space in a new group |
 | Click a space's body    | Pick that space (its group becomes the active group; corner handles + hover toolbar appear) |
 | Click + drag a space's body | Move the whole space                        |
-| Click + drag a corner handle | Reshape that corner of the picked space    |
+| Click + drag a corner handle | Reshape that corner of the picked space (it becomes the arrow-key target — a cyan ring marks it) |
+| `←` `→` `↑` `↓`         | Nudge the arrow-key corner one pixel (hold `Shift` for 10px). Drag a corner roughly into place with the mouse, then dial it in pixel-by-pixel |
 | Hover any space         | A small toolbar sprouts above its bounding box  |
 
 The hover toolbar replaces the old keyboard-only editing commands. Each

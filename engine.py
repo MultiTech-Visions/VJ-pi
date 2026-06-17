@@ -157,6 +157,23 @@ class Engine:
                 os.environ.get("VJ_PM_COMPOSITE_FPS", "20")))
         except ValueError:
             self._pm_composite_fps = 20
+        try:
+            self._pm_present_stall_ms = max(0.0, float(
+                os.environ.get("VJ_PM_PRESENT_STALL_MS", "250")))
+        except ValueError:
+            self._pm_present_stall_ms = 250.0
+        try:
+            self._pm_present_stalls = max(1, int(
+                os.environ.get("VJ_PM_PRESENT_STALLS", "2")))
+        except ValueError:
+            self._pm_present_stalls = 2
+        try:
+            self._pm_safety_cooldown_s = max(1.0, float(
+                os.environ.get("VJ_PM_SAFETY_COOLDOWN_S", "8")))
+        except ValueError:
+            self._pm_safety_cooldown_s = 8.0
+        self._pm_present_stall_count = 0
+        self._pm_in_mapping = os.environ.get("VJ_PM_IN_MAPPING", "1") != "0"
         self.start_time = time.time()
         self.fps_measured = 0.0   # smoothed achieved frame rate, shown on the HUD
         # Smoothed per-phase mapping render times (ms) for the HUD breakdown.
@@ -353,6 +370,28 @@ class Engine:
                 print(f"[vj] mapping: generator '{group.gen_name}' not found")
                 group.gen_name = GENERATIVES[0] if GENERATIVES else None
                 if group.gen_name is None:
+                    group.content_kind = "blackout"
+                dirty = True
+            if (not self._pm_in_mapping
+                    and group.content_kind == "generative"
+                    and group.gen_name
+                    and group.gen_name.startswith("pm:")):
+                has_clip = (group.clip_stem
+                            and self.clips.find_by_stem(group.clip_stem)
+                            is not None)
+                if has_clip:
+                    print(f"[vj] mapping: PM disabled in 2K path; "
+                          f"{group.name} uses clip '{group.clip_stem}'")
+                    group.content_kind = "clip"
+                elif fallback_clip is not None:
+                    print(f"[vj] mapping: PM disabled in 2K path; "
+                          f"{group.name} retargeting to {fallback_clip}")
+                    group.content_kind = "clip"
+                    group.clip_stem = fallback_clip
+                    self.clips.ensure_open(0)
+                else:
+                    print(f"[vj] mapping: PM disabled in 2K path; "
+                          f"{group.name} has no clip fallback")
                     group.content_kind = "blackout"
                 dirty = True
         if dirty:
@@ -1370,6 +1409,7 @@ class Engine:
     def mapping_cancel_drag(self):
         self.mapping.cancel_drag()
         self.mapping.bind_armed = False
+        self.mapping.delete_group_armed = None
         self.mapping.deselect_space()
 
     def _handle_output_mouse_event(self, event):
@@ -1419,47 +1459,17 @@ class Engine:
         btn = m.hit_test_hover_button(norm)
         if btn is not None:
             kind, gi, si = btn
-            if kind in {
-                    "fit_mode", "zoom_out", "zoom_in",
-                    "pan_left", "pan_right", "pan_up", "pan_down",
-                    "reset_frame",
-            }:
-                m.select_space(gi, si)
-                if kind == "fit_mode":
-                    m.cycle_fit_mode(1)
-                elif kind == "zoom_out":
-                    m.adjust_zoom(1.0 / 1.15)
-                elif kind == "zoom_in":
-                    m.adjust_zoom(1.15)
-                elif kind == "pan_left":
-                    m.adjust_pan(-0.08, 0.0)
-                elif kind == "pan_right":
-                    m.adjust_pan(0.08, 0.0)
-                elif kind == "pan_up":
-                    m.adjust_pan(0.0, -0.08)
-                elif kind == "pan_down":
-                    m.adjust_pan(0.0, 0.08)
-                elif kind == "reset_frame":
-                    m.reset_frame()
-                self._persist_mapping()
-            elif kind == "delete":
-                m.select_space(gi, si)
-                m.delete_selected_space()
-                self._persist_mapping()
-            elif kind == "bind":
-                m.bind_to_selected(gi, si)
-                self._persist_mapping()
-            elif kind == "unbind":
-                m.select_space(gi, si)
-                m.unbind_selected_space()
-                self._persist_mapping()
-            elif kind == "group":
-                # Tap the group chip to make this space the picked one.
-                m.select_space(gi, si)
-                self._persist_mapping()
+            self.mapping_toolbar_action(kind, gi, si)
             return
 
-        # 2. Keyboard-fallback Shift+click bind / bind-armed.
+        # 2. Four-point create in progress. Once started, every canvas click
+        # adds the next corner until the quad is complete.
+        if m.create_points:
+            m.add_create_point(norm)
+            self._persist_mapping()
+            return
+
+        # 3. Keyboard-fallback Shift+click bind / bind-armed.
         if (shift_held or m.bind_armed) and m.selected_space is not None:
             hit = m.hit_test_space(norm)
             if hit is not None and hit != m.selected_space:
@@ -1471,14 +1481,14 @@ class Engine:
                 return
             m.bind_armed = False
 
-        # 3. Corner handle of the picked space.
+        # 4. Corner handle of the picked space.
         radius_norm = 0.025
         corner = m.hit_test_corner_of_selected_space(norm, radius_norm)
         if corner is not None:
             m.start_corner_drag(corner)
             return
 
-        # 4. Click on any space's body → select + start move drag.
+        # 5. Click on any space's body → select + start move drag.
         hit = m.hit_test_space(norm)
         if hit is not None:
             m.select_space(*hit)
@@ -1486,8 +1496,52 @@ class Engine:
             self._persist_mapping()
             return
 
-        # 5. Empty area → drag a brand-new rectangle into existence.
+        # 6. Empty area → first corner of a four-click quad.
         m.start_create(norm)
+
+    def mapping_toolbar_action(self, kind, gi, si):
+        """Run one mapping toolbar action from either projector or HUD."""
+        m = self.mapping
+        if not (0 <= gi < len(m.groups) and 0 <= si < len(m.groups[gi].spaces)):
+            return
+        if kind in {
+                "fit_mode", "zoom_out", "zoom_in",
+                "pan_left", "pan_right", "pan_up", "pan_down",
+                "reset_frame",
+        }:
+            m.select_space(gi, si)
+            if kind == "fit_mode":
+                m.cycle_fit_mode(1)
+            elif kind == "zoom_out":
+                m.adjust_zoom(1.0 / 1.15)
+            elif kind == "zoom_in":
+                m.adjust_zoom(1.15)
+            elif kind == "pan_left":
+                m.adjust_pan(-0.08, 0.0)
+            elif kind == "pan_right":
+                m.adjust_pan(0.08, 0.0)
+            elif kind == "pan_up":
+                m.adjust_pan(0.0, -0.08)
+            elif kind == "pan_down":
+                m.adjust_pan(0.0, 0.08)
+            elif kind == "reset_frame":
+                m.reset_frame()
+            self._persist_mapping()
+        elif kind == "delete":
+            m.select_space(gi, si)
+            m.delete_selected_space()
+            self._persist_mapping()
+        elif kind == "bind":
+            m.bind_to_selected(gi, si)
+            self._persist_mapping()
+        elif kind == "unbind":
+            m.select_space(gi, si)
+            m.unbind_selected_space()
+            self._persist_mapping()
+        elif kind == "group":
+            # Tap the group chip to make this space the picked one.
+            m.select_space(gi, si)
+            self._persist_mapping()
 
     def cycle_mapping_group(self, step=1):
         self.mapping.cycle_selected(step)
@@ -1500,6 +1554,28 @@ class Engine:
     def mapping_remove_group(self):
         self.mapping.remove_selected_group()
         self._persist_mapping()
+
+    def mapping_request_remove_group(self):
+        """Two-step selected-group delete for mapping edit mode.
+
+        First Backspace arms deletion for the current selected group. A second
+        Backspace while the same group is still selected confirms. Esc cancels
+        through mapping_cancel_drag().
+        """
+        m = self.mapping
+        if not m.groups:
+            return
+        idx = m.selected
+        if m.delete_group_armed == idx:
+            name = m.groups[idx].name
+            m.remove_selected_group()
+            print(f"[vj] mapping: deleted group '{name}'", flush=True)
+            self._persist_mapping()
+            return
+        m.delete_group_armed = idx
+        name = m.groups[idx].name
+        print(f"[vj] mapping: Backspace again to delete group '{name}' "
+              "(Esc cancels)", flush=True)
 
     def mapping_add_space(self):
         self.mapping.add_space_to_selected()
@@ -1569,6 +1645,15 @@ class Engine:
     def mapping_reset_frame(self):
         self.mapping.reset_frame()
         self._persist_mapping()
+
+    def mapping_nudge_corner(self, dx_px, dy_px):
+        """Fine-tune the keyboard-active corner of the selected space by a
+        pixel offset on the output canvas. Corners are stored normalised, so
+        convert px → 0..1 using the canvas size; one arrow tap = one pixel."""
+        dx = dx_px / max(1, self.w)
+        dy = dy_px / max(1, self.h)
+        if self.mapping.nudge_selected_corner(dx, dy):
+            self._persist_mapping()
 
     # ── Render pipeline ───────────────────────────────────────────────
 
@@ -1955,6 +2040,28 @@ class Engine:
         self._perf["fx"] += time.perf_counter() - _tf
         return frame
 
+    def _read_mapping_clip_source(self, group, predecoded=None):
+        """Read the group's clip source at the current mapping canvas size."""
+        w, h = self.w, self.h
+        idx = self.clips.find_by_stem(group.clip_stem)
+        if idx is None and len(self.clips) > 0:
+            idx = 0
+            group.clip_stem = self.clips.name(idx)
+            self._persist_mapping()
+        if idx is None:
+            return np.zeros((h, w, 3), dtype=np.uint8)
+        if predecoded is not None and idx in predecoded:
+            frame = predecoded[idx]
+            return (frame if frame is not None
+                    else np.zeros((h, w, 3), dtype=np.uint8))
+        self.clips.ensure_open(idx)
+        _tc = time.perf_counter()
+        frame = self.clips.read_at(idx)
+        self._perf["clip"] += time.perf_counter() - _tc
+        if frame is None:
+            return np.zeros((h, w, 3), dtype=np.uint8)
+        return frame
+
     def _group_io(self, group, now, predecoded=None):
         """Phase 1 (serial): decode the clip / render the generator and READ
         (not blend) the overlay. Touches the non-thread-safe clip & overlay
@@ -1973,37 +2080,27 @@ class Engine:
         w, h = self.w, self.h
         is_clip = (group.content_kind == "clip" and group.clip_stem)
         if is_clip:
-            idx = self.clips.find_by_stem(group.clip_stem)
-            if idx is None and len(self.clips) > 0:
-                idx = 0
-                group.clip_stem = self.clips.name(idx)
-                self._persist_mapping()
-            if idx is None:
-                frame = np.zeros((h, w, 3), dtype=np.uint8)
-            elif predecoded is not None and idx in predecoded:
-                frame = predecoded[idx]
-                if frame is None:
+            frame = self._read_mapping_clip_source(group, predecoded)
+        elif group.content_kind == "generative" and group.gen_name:
+            if (group.gen_name.startswith("pm:")
+                    and not self._pm_in_mapping):
+                if group.clip_stem:
+                    frame = self._read_mapping_clip_source(group)
+                else:
                     frame = np.zeros((h, w, 3), dtype=np.uint8)
             else:
-                self.clips.ensure_open(idx)
-                _tc = time.perf_counter()
-                frame = self.clips.read_at(idx)
-                self._perf["clip"] += time.perf_counter() - _tc
+                gw, gh = self._gen_render_size()
+                _tg = time.perf_counter()
+                frame = self._render_generative(
+                    group.gen_name,
+                    gw,
+                    gh,
+                    now - self.start_time + group._time_offset,
+                    (group.param_x, group.param_y),
+                )
+                self._perf["gen"] += time.perf_counter() - _tg
                 if frame is None:
                     frame = np.zeros((h, w, 3), dtype=np.uint8)
-        elif group.content_kind == "generative" and group.gen_name:
-            gw, gh = self._gen_render_size()
-            _tg = time.perf_counter()
-            frame = self._render_generative(
-                group.gen_name,
-                gw,
-                gh,
-                now - self.start_time + group._time_offset,
-                (group.param_x, group.param_y),
-            )
-            self._perf["gen"] += time.perf_counter() - _tg
-            if frame is None:
-                frame = np.zeros((h, w, 3), dtype=np.uint8)
         elif group.content_kind == "camera":
             _tc = time.perf_counter()
             cam = self._ensure_camera()
@@ -2304,6 +2401,57 @@ class Engine:
             pts = space.corners_px(w, h).astype(np.int32).reshape(-1, 1, 2)
             cv2.polylines(canvas, [pts], True, color, thickness, cv2.LINE_AA)
 
+    @staticmethod
+    def _quad_mesh_segments(corners, w, h, steps=4):
+        pts = np.array([[c[0] * w, c[1] * h] for c in corners],
+                       dtype=np.float32)
+        if pts.shape != (4, 2):
+            return []
+        tl, tr, br, bl = pts
+        segs = []
+        for i in range(1, steps):
+            t = i / steps
+            top = tl * (1.0 - t) + tr * t
+            bottom = bl * (1.0 - t) + br * t
+            left = tl * (1.0 - t) + bl * t
+            right = tr * (1.0 - t) + br * t
+            segs.append((top, bottom))
+            segs.append((left, right))
+        return segs
+
+    def _draw_quad_mesh_cv(self, canvas, corners, color, thickness=1):
+        h, w = canvas.shape[:2]
+        for a, b in self._quad_mesh_segments(corners, w, h):
+            ax, ay = int(round(a[0])), int(round(a[1]))
+            bx, by = int(round(b[0])), int(round(b[1]))
+            cv2.line(canvas, (ax, ay), (bx, by), color, thickness, cv2.LINE_AA)
+
+    def _draw_quad_create_preview(self, canvas):
+        pts = [tuple(p) for p in self.mapping.create_points]
+        if self.mapping.hover_norm is not None and len(pts) < 4:
+            pts.append(tuple(self.mapping.hover_norm))
+        if not pts:
+            return
+        h, w = canvas.shape[:2]
+        px = [(int(round(x * w)), int(round(y * h))) for x, y in pts]
+        for x, y in px:
+            cv2.circle(canvas, (x, y), 7, (20, 20, 30), -1, cv2.LINE_AA)
+            cv2.circle(canvas, (x, y), 6, (120, 255, 160), -1, cv2.LINE_AA)
+        for a, b in zip(px, px[1:]):
+            cv2.line(canvas, a, b, (120, 255, 160), 2, cv2.LINE_AA)
+        if len(pts) >= 4:
+            corners = pts[:4]
+            cv2.polylines(
+                canvas,
+                [np.array([[x * w, y * h] for x, y in corners],
+                          dtype=np.int32).reshape(-1, 1, 2)],
+                True,
+                (120, 255, 160),
+                2,
+                cv2.LINE_AA,
+            )
+            self._draw_quad_mesh_cv(canvas, corners, (120, 255, 160), 1)
+
     def _draw_edit_overlay(self, canvas):
         """Edit-mode UI drawn onto the actual projector output: outlines
         on every group (dim) + the picked space (bright) + corner handles
@@ -2319,6 +2467,7 @@ class Engine:
                 color = (255, 240, 120) if is_picked else (90, 110, 140)
                 thickness = 3 if is_picked else 1
                 cv2.polylines(canvas, [pts], True, color, thickness, cv2.LINE_AA)
+                self._draw_quad_mesh_cv(canvas, space.corners, color, 1)
                 # Draw corner handles on the picked space so the operator
                 # can see where to grab.
                 if is_picked:
@@ -2339,6 +2488,7 @@ class Engine:
             y0, y1 = int(min(sy, cy) * h), int(max(sy, cy) * h)
             if x1 - x0 >= 2 and y1 - y0 >= 2:
                 cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 255, 200), 1)
+        self._draw_quad_create_preview(canvas)
 
         # Big crosshair cursor at the hover position. The OS pointer is tiny
         # on a 4K projector; full-canvas intersecting lines make it obvious
@@ -2507,13 +2657,41 @@ class Engine:
         g["tex"].draw()           # logical_size → fills the window (GPU scale)
         renderer.present()
 
+    def _watch_pm_present(self, elapsed_ms):
+        """Safety breaker for the Pi graphics path.
+
+        projectM uses an offscreen GLES worker while the output window presents
+        through SDL. If present starts blocking for hundreds of ms with PM live,
+        the GPU path is already overloaded and can wedge hard. Drop PM briefly
+        so the compositor and HEVC/mapping path keep running.
+        """
+        if self._pm_present_stall_ms <= 0:
+            return
+        pm_n = self.gpu_generators.pm_active_streams()
+        if pm_n <= 0:
+            self._pm_present_stall_count = 0
+            return
+        if elapsed_ms < self._pm_present_stall_ms:
+            if self._pm_present_stall_count:
+                self._pm_present_stall_count -= 1
+            return
+        self._pm_present_stall_count += 1
+        if (elapsed_ms < self._pm_present_stall_ms * 2.0
+                and self._pm_present_stall_count < self._pm_present_stalls):
+            return
+        reason = f"display present {elapsed_ms:.0f}ms with {pm_n} pm stream(s)"
+        print(f"[vj] projectM safety: {reason}; cooling down PM", flush=True)
+        self.gpu_generators.relieve_pm(self._pm_safety_cooldown_s, reason)
+        self._pm_present_stall_count = 0
+
     def blit_to_output(self, frame):
         _t = time.perf_counter()
         if self._gpu_out is not None:
             try:
                 self._blit_gpu(frame)
-                self._disp_ms += ((time.perf_counter() - _t) * 1000.0
-                                  - self._disp_ms) * 0.2
+                elapsed_ms = (time.perf_counter() - _t) * 1000.0
+                self._disp_ms += (elapsed_ms - self._disp_ms) * 0.2
+                self._watch_pm_present(elapsed_ms)
                 return
             except Exception as exc:
                 print(f"[vj] GPU output present failed ({exc!r}); "
@@ -2538,7 +2716,9 @@ class Engine:
                 np.ascontiguousarray(frame), (fw, fh), "RGB")
         self.screen.blit(surface, (0, 0))
         pygame.display.flip()
-        self._disp_ms += ((time.perf_counter() - _t) * 1000.0 - self._disp_ms) * 0.2
+        elapsed_ms = (time.perf_counter() - _t) * 1000.0
+        self._disp_ms += (elapsed_ms - self._disp_ms) * 0.2
+        self._watch_pm_present(elapsed_ms)
 
     def render(self):
         """Convenience: compose + blit (used when there is no control window)."""

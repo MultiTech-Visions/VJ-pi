@@ -264,6 +264,11 @@ class MappingManager:
         # (group_idx, space_idx) of the space currently picked up for
         # editing; clicking another space changes it.
         self.selected_space: Optional[tuple] = None
+        # Corner index (0..3) of the selected space that the arrow keys
+        # nudge. Set when a corner is clicked/dragged; cleared when the
+        # selection changes. Lets the operator drag a corner close with the
+        # mouse, then fine-tune it pixel-by-pixel with the arrows.
+        self.selected_corner: Optional[int] = None
         # (group_idx, space_idx) the cursor is currently over — updated on
         # MOUSEMOTION in either the HUD preview or the projector output,
         # used to decide which space's hover toolbar to render.
@@ -276,9 +281,18 @@ class MappingManager:
         # Still used by the keyboard fallback path; the hover toolbar's +
         # button is the primary way to bind now.
         self.bind_armed: bool = False
-        # Active drag, one of {None, {"kind": "corner", "space": (gi,si), "corner": ci},
-        # {"kind": "move", "space": (gi,si), "last": (nx,ny)},
-        # {"kind": "create", "start": (nx,ny), "current": (nx,ny)}}
+        # Two-step destructive group delete. Backspace arms the currently
+        # selected group; Backspace again confirms; Esc or selection changes
+        # cancel it.
+        self.delete_group_armed: Optional[int] = None
+        # Four-click quad creation. Empty-space clicks add TL/TR/BR/BL-ish
+        # points in the order the operator clicks them; the fourth point
+        # creates the new mapped box.
+        self.create_points: List[List[float]] = []
+        # Active drag, one of {None,
+        # {"kind": "corner", "space": (gi,si), "corner": ci},
+        # {"kind": "move", "space": (gi,si), "last": (nx,ny)}}.
+        # New boxes use create_points instead of drag state.
         self.drag: Optional[dict] = None
 
     # ── Persistence ──────────────────────────────────────────────────
@@ -312,6 +326,8 @@ class MappingManager:
         if not self.groups:
             return
         self.selected = (self.selected + step) % len(self.groups)
+        self.delete_group_armed = None
+        self.create_points = []
         self.drag = None  # cancel any in-flight edit
 
     def add_group(self, seed_from: Optional[Group] = None):
@@ -323,12 +339,32 @@ class MappingManager:
             g.name = f"Group {n}"
         self.groups.append(g)
         self.selected = len(self.groups) - 1
+        self.delete_group_armed = None
+        self.create_points = []
 
     def remove_selected_group(self):
         if len(self.groups) <= 1:
+            # Keep one empty anchor group so the editor has somewhere to add
+            # the next box, but remove the last visible box/group from output.
+            if self.groups:
+                self.groups[0].spaces = []
+                self.groups[0].content_kind = "blackout"
+                self.groups[0].clip_stem = None
+                self.groups[0].gen_name = None
+                self.groups[0].overlay_stem = None
+                self.selected = 0
+                self.selected_space = None
+                self.hovered_space = None
+                self.drag = None
+                self.create_points = []
+            self.delete_group_armed = None
             return
         del self.groups[self.selected]
         self.selected = min(self.selected, len(self.groups) - 1)
+        self.selected_space = None
+        self.hovered_space = None
+        self.delete_group_armed = None
+        self.create_points = []
         self.drag = None
 
     def add_space_to_selected(self):
@@ -346,9 +382,15 @@ class MappingManager:
 
     def remove_space_from_selected(self):
         g = self.selected_group()
-        if g is None or len(g.spaces) <= 1:
+        if g is None or not g.spaces:
+            return
+        if len(g.spaces) <= 1:
+            self.remove_selected_group()
             return
         g.spaces.pop()
+        self.selected_space = None
+        self.hovered_space = None
+        self.delete_group_armed = None
 
     def cycle_grid_for_selected(self):
         """Cycle through pre-baked grid layouts (1x1 → 2x1 → … → 4x3 → 1x1)."""
@@ -487,12 +529,19 @@ class MappingManager:
         """Pick a space for editing — its corners get handles, key actions
         target its group."""
         if 0 <= gi < len(self.groups) and 0 <= si < len(self.groups[gi].spaces):
+            if self.selected != gi:
+                self.delete_group_armed = None
+            self.create_points = []
             self.selected_space = (gi, si)
+            self.selected_corner = None
             self.selected = gi
 
     def deselect_space(self):
         self.selected_space = None
+        self.selected_corner = None
         self.bind_armed = False
+        self.delete_group_armed = None
+        self.create_points = []
 
     def delete_selected_space(self):
         if self.selected_space is None:
@@ -503,16 +552,24 @@ class MappingManager:
             return
         del self.groups[gi].spaces[si]
         if not self.groups[gi].spaces:
-            # Group went empty — delete it too. Keep at least one group
-            # alive so the manager always has something to draw into.
+            # Group went empty — delete it too, unless it is the final group.
+            # The final group stays as an empty anchor so the last visible box
+            # can truly disappear while the editor remains usable.
             if len(self.groups) > 1:
                 del self.groups[gi]
                 if self.selected >= len(self.groups):
                     self.selected = len(self.groups) - 1
             else:
-                # Last group; reseed a fullscreen blackout space.
-                self.groups[0].spaces.append(Space.fullscreen())
+                self.selected = 0
+                self.groups[0].content_kind = "blackout"
+                self.groups[0].clip_stem = None
+                self.groups[0].gen_name = None
+                self.groups[0].overlay_stem = None
         self.selected_space = None
+        self.selected_corner = None
+        self.hovered_space = None
+        self.delete_group_armed = None
+        self.create_points = []
 
     def unbind_selected_space(self):
         """Pull the selected space out into its own new group (so it can
@@ -527,6 +584,11 @@ class MappingManager:
         self.groups.append(new_group)
         self.selected = len(self.groups) - 1
         self.selected_space = (self.selected, 0)
+        self.selected_corner = None
+        self.hovered_space = None
+        self.bind_armed = False
+        self.delete_group_armed = None
+        self.create_points = []
 
     def bind_to_selected(self, gi, si):
         """Move space (gi, si) into the selected space's group. If the
@@ -537,6 +599,10 @@ class MappingManager:
             return
         dst_gi, dst_si = self.selected_space
         if gi == dst_gi or not (0 <= gi < len(self.groups)):
+            return
+        if not (0 <= dst_gi < len(self.groups)
+                and 0 <= dst_si < len(self.groups[dst_gi].spaces)):
+            self.selected_space = None
             return
         if not (0 <= si < len(self.groups[gi].spaces)):
             return
@@ -550,6 +616,8 @@ class MappingManager:
         self.selected = dst_gi
         self.selected_space = (dst_gi, dst_si)
         self.bind_armed = False
+        self.delete_group_armed = None
+        self.create_points = []
         # The space the cursor was over is gone or moved — invalidate.
         self.hovered_space = None
 
@@ -589,13 +657,62 @@ class MappingManager:
             return
         gi, si = self.selected_space
         self.drag = {"kind": "corner", "space": (gi, si), "corner": corner_i}
+        # Remember which corner the mouse grabbed so the arrow keys nudge it.
+        self.selected_corner = corner_i
+
+    def nudge_selected_corner(self, dx, dy):
+        """Move the keyboard-active corner of the selected space by (dx, dy)
+        in normalised output units. Returns True if a corner actually moved."""
+        if self.selected_space is None or self.selected_corner is None:
+            return False
+        gi, si = self.selected_space
+        if not (0 <= gi < len(self.groups)) or not (0 <= si < len(self.groups[gi].spaces)):
+            return False
+        space = self.groups[gi].spaces[si]
+        ci = self.selected_corner
+        if not (0 <= ci < len(space.corners)):
+            return False
+        cx, cy = space.corners[ci]
+        space.set_corner(ci, cx + dx, cy + dy)
+        return True
 
     def start_move(self, gi, si, start_norm):
         self.drag = {"kind": "move", "space": (gi, si), "last": tuple(start_norm)}
 
     def start_create(self, start_norm):
-        self.drag = {"kind": "create",
-                     "start": tuple(start_norm), "current": tuple(start_norm)}
+        self.create_points = [[_clamp01(start_norm[0]), _clamp01(start_norm[1])]]
+        self.drag = None
+        self.selected_space = None
+        self.hovered_space = None
+        self.delete_group_armed = None
+
+    def add_create_point(self, norm_xy):
+        """Add a point to the four-click quad creator. Returns True when a
+        new space was created."""
+        pt = [_clamp01(norm_xy[0]), _clamp01(norm_xy[1])]
+        if not self.create_points:
+            self.start_create(pt)
+            return False
+        self.create_points.append(pt)
+        if len(self.create_points) < 4:
+            return False
+        space = Space(corners=[list(p) for p in self.create_points[:4]])
+        empty_gi = next((i for i, g in enumerate(self.groups)
+                         if not g.spaces), None)
+        if empty_gi is not None:
+            self.groups[empty_gi].spaces.append(space)
+            gi = empty_gi
+        else:
+            self.groups.append(Group(
+                name=f"Group {len(self.groups) + 1}", spaces=[space]
+            ))
+            gi = len(self.groups) - 1
+        self.selected = gi
+        self.selected_space = (gi, len(self.groups[gi].spaces) - 1)
+        self.hovered_space = self.selected_space
+        self.create_points = []
+        self.drag = None
+        return True
 
     def update_drag(self, norm_xy):
         self.hover_norm = norm_xy
@@ -665,6 +782,7 @@ class MappingManager:
 
     def cancel_drag(self):
         self.drag = None
+        self.create_points = []
 
     # ── Frame controls (per-group zoom / pan / fit mode) ─────────────
 
@@ -763,9 +881,9 @@ class MappingManager:
             y1 = max(y1, by + bh)
         return (x0, y0, x1, y1)
 
-    def _toolbar_kinds(self, gi, si):
+    def toolbar_kinds(self, gi, si, force_selected=False):
         """Decide which buttons appear on the toolbar for space (gi, si)."""
-        is_sel = (self.selected_space == (gi, si))
+        is_sel = force_selected or self.selected_space == (gi, si)
         kinds = []
         if is_sel:
             kinds.extend([
@@ -785,6 +903,9 @@ class MappingManager:
                 kinds.append("bind")
         kinds.append("group")  # always show the group tag last
         return kinds
+
+    def _toolbar_kinds(self, gi, si):
+        return self.toolbar_kinds(gi, si)
 
     def hover_toolbar_buttons(self, gi, si):
         """Returns [(kind, (nx, ny, nw, nh)), ...] for the hover toolbar of
