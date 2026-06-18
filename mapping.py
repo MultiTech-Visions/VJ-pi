@@ -132,10 +132,14 @@ class Group:
     pan_x: float = 0.0             # -1..+1 of bbox half-width
     pan_y: float = 0.0             # -1..+1 of bbox half-height
 
-    # Autopilot
+    # Autopilot. Content auto-cycles WITHIN the type currently shown
+    # (clip→random clip, generative→random generative); it also toggles
+    # this group's FX and drifts its PARAM X/Y, mirroring the live
+    # autopilot. autopilot_kind is legacy/unused (kept for state compat).
     autopilot_enabled: bool = False
     autopilot_kind: str = "cycle_clips"
-    autopilot_interval_s: float = 8.0
+    autopilot_interval_s: float = 8.0      # content switch delay
+    autopilot_fx_interval_s: float = 4.0   # FX toggle rate
 
     # Index into GRID_PRESETS used the last time Ctrl+G was hit on this
     # group — needed because preset (2,1) and (1,2) share a space count,
@@ -145,6 +149,12 @@ class Group:
     # Transient (not persisted)
     _last_change_at: float = 0.0
     _time_offset: float = 0.0
+    # Autopilot scheduling / drift state (all transient).
+    _next_fx_at: float = 0.0
+    _next_param_at: float = 0.0
+    _target_x: float = 0.5
+    _target_y: float = 0.5
+    _fx_expiry: dict = field(default_factory=dict)
 
     def __post_init__(self):
         # Stagger generative phase so identical generatives across groups
@@ -176,6 +186,7 @@ class Group:
             autopilot_enabled=bool(d.get("autopilot_enabled", False)),
             autopilot_kind=kind,
             autopilot_interval_s=max(1.0, float(d.get("autopilot_interval_s", 8.0))),
+            autopilot_fx_interval_s=max(0.5, float(d.get("autopilot_fx_interval_s", 4.0))),
             grid_idx=int(d.get("grid_idx", 0)) % len(GRID_PRESETS),
             fit_mode=fit_mode,
             zoom=max(0.1, min(10.0, float(d.get("zoom", 1.0)))),
@@ -198,6 +209,7 @@ class Group:
             "autopilot_enabled": self.autopilot_enabled,
             "autopilot_kind": self.autopilot_kind,
             "autopilot_interval_s": self.autopilot_interval_s,
+            "autopilot_fx_interval_s": self.autopilot_fx_interval_s,
             "grid_idx": self.grid_idx,
             "fit_mode": self.fit_mode,
             "zoom": self.zoom,
@@ -516,15 +528,6 @@ class MappingManager:
         g.autopilot_interval_s = max(1.0, min(300.0,
                                               g.autopilot_interval_s + delta))
 
-    def cycle_autopilot_kind(self):
-        g = self.selected_group()
-        if g is None:
-            return
-        try:
-            i = AUTOPILOT_KINDS.index(g.autopilot_kind)
-            g.autopilot_kind = AUTOPILOT_KINDS[(i + 1) % len(AUTOPILOT_KINDS)]
-        except ValueError:
-            g.autopilot_kind = AUTOPILOT_KINDS[0]
 
     def toggle_autopilot_selected(self):
         g = self.selected_group()
@@ -543,60 +546,92 @@ class MappingManager:
             g._last_change_at = time.time()
 
     def tick_autopilot(self, engine, now):
-        """Advance each group's content if its autopilot interval elapsed."""
-        from engine import GENERATIVES
-        # On by default during this debugging pass (any launcher); set
-        # VJ_DEBUG_AUTOPILOT=0 to silence.
+        """Drive each enabled group's autopilot: random-cycle its content
+        within the type currently shown, toggle its FX, and drift its
+        PARAM X/Y — analogous to the live autopilot, but per group."""
+        from engine import GENERATIVES, FX_TOGGLES, AUTO_FX_MAX_HOLD
         dbg = os.environ.get("VJ_DEBUG_AUTOPILOT", "1") != "0"
         for g in self.groups:
             if not g.autopilot_enabled:
                 continue
+            # First tick after enabling: arm all the timers from `now`.
             if g._last_change_at <= 0.0:
                 g._last_change_at = now
+                g._next_fx_at = now + g.autopilot_fx_interval_s
+                g._next_param_at = now
+                g._target_x, g._target_y = g.param_x, g.param_y
                 if dbg:
-                    print(f"[autopilot] '{g.name}' armed "
-                          f"(kind={g.autopilot_kind}, every {g.autopilot_interval_s:.0f}s)")
+                    print(f"[autopilot] '{g.name}' armed (content every "
+                          f"{g.autopilot_interval_s:.0f}s, fx {g.autopilot_fx_interval_s:.0f}s)")
                 continue
-            remaining = g.autopilot_interval_s - (now - g._last_change_at)
-            if remaining > 0:
-                if dbg and now - getattr(g, "_ap_dbg_at", 0.0) >= 2.0:
-                    g._ap_dbg_at = now
-                    print(f"[autopilot] '{g.name}' waiting "
-                          f"{remaining:.1f}s (kind={g.autopilot_kind})")
-                continue
-            g._last_change_at = now
-            before = (g.content_kind, g.clip_stem, g.gen_name)
-            self._autopilot_step(g, engine, GENERATIVES)
-            if dbg:
-                after = (g.content_kind, g.clip_stem, g.gen_name)
-                print(f"[autopilot] '{g.name}' step {before} -> {after}")
+
+            # Enforce per-FX max-hold caps (e.g. edges) so a dark FX can't
+            # sit too long, regardless of the toggle interval.
+            for fx in list(g._fx_expiry.keys()):
+                if now >= g._fx_expiry[fx]:
+                    g.fx_state[fx] = False
+                    del g._fx_expiry[fx]
+
+            # Content switch — random pick WITHIN the type currently shown.
+            if now - g._last_change_at >= g.autopilot_interval_s:
+                g._last_change_at = now
+                before = (g.content_kind, g.clip_stem, g.gen_name)
+                self._autopilot_content(g, engine, GENERATIVES)
+                if dbg:
+                    after = (g.content_kind, g.clip_stem, g.gen_name)
+                    print(f"[autopilot] '{g.name}' content {before} -> {after}")
+
+            # FX toggle (jittered around the group's fx interval).
+            if now >= g._next_fx_at:
+                self._autopilot_fx(g, now, FX_TOGGLES, AUTO_FX_MAX_HOLD)
+                g._next_fx_at = now + g.autopilot_fx_interval_s * random.uniform(0.5, 1.8)
+
+            # PARAM X/Y drift toward fresh random targets every few seconds.
+            if now >= g._next_param_at:
+                g._target_x = random.random()
+                g._target_y = random.random()
+                g._next_param_at = now + random.uniform(2.0, 5.0)
+            g.param_x += (g._target_x - g.param_x) * 0.04
+            g.param_y += (g._target_y - g.param_y) * 0.04
 
     @staticmethod
-    def _autopilot_step(g, engine, generatives):
-        kind = g.autopilot_kind
-        if kind in ("cycle_clips", "random_clips"):
-            clips = engine.clips
-            if len(clips) == 0:
-                return
-            g.content_kind = "clip"
-            if kind == "cycle_clips":
-                cur = clips.find_by_stem(g.clip_stem)
-                new_idx = 0 if cur is None else (cur + 1) % len(clips)
-            else:
-                new_idx = random.randrange(len(clips))
-            g.clip_stem = clips.name(new_idx)
-        elif kind in ("cycle_generatives", "random_generatives"):
-            g.content_kind = "generative"
+    def _autopilot_content(g, engine, generatives):
+        """Swap the group to a different source of the SAME type it's
+        currently showing (clip→clip, generative→generative). Camera /
+        blackout groups keep their content (autopilot still does FX +
+        param drift on them)."""
+        if g.content_kind == "generative":
             if not generatives:
                 return
-            if kind == "cycle_generatives":
-                if g.gen_name in generatives:
-                    i = (generatives.index(g.gen_name) + 1) % len(generatives)
-                else:
-                    i = 0
-                g.gen_name = generatives[i]
-            else:
-                g.gen_name = random.choice(generatives)
+            choices = [x for x in generatives if x != g.gen_name] or list(generatives)
+            g.gen_name = random.choice(choices)
+        elif g.content_kind == "clip":
+            clips = engine.clips
+            n = len(clips)
+            if n == 0:
+                return
+            cur = clips.find_by_stem(g.clip_stem)
+            new_idx = random.randrange(n)
+            if n > 1:
+                while new_idx == cur:
+                    new_idx = random.randrange(n)
+            g.clip_stem = clips.name(new_idx)
+
+    @staticmethod
+    def _autopilot_fx(g, now, fx_toggles, max_hold):
+        """Toggle one of the group's FX on/off, keeping the active count
+        sane — same policy as the live autopilot."""
+        active_on = [k for k in fx_toggles if g.fx_state.get(k)]
+        active_off = [k for k in fx_toggles if not g.fx_state.get(k)]
+        if active_on and (len(active_on) >= 3 or random.random() < 0.45):
+            turned_off = random.choice(active_on)
+            g.fx_state[turned_off] = False
+            g._fx_expiry.pop(turned_off, None)
+        elif active_off:
+            turned_on = random.choice(active_off)
+            g.fx_state[turned_on] = True
+            if turned_on in max_hold:
+                g._fx_expiry[turned_on] = now + max_hold[turned_on]
 
     # ── Edit mode ────────────────────────────────────────────────────
 

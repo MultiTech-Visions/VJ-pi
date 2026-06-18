@@ -219,9 +219,6 @@ def dispatch(engine, key, mod):
             if key == pygame.K_a:
                 engine.mapping_toggle_autopilot()
                 return
-            if key == pygame.K_k:
-                engine.mapping_cycle_autopilot_kind()
-                return
             if key == pygame.K_COMMA:
                 engine.mapping_adjust_autopilot_interval(-1.0)
                 return

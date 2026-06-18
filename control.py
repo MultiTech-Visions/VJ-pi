@@ -56,8 +56,8 @@ MAPPING_KEY_CHEAT = [
     ("Ctrl+G",       "Cycle grid layout (1·2x1·2x2·3x2·3x3·4x2·4x3)"),
     ("Enter Enter",  "Engage autopilot on selected group (Enter = off)"),
     ("Ctrl+A",       "Toggle autopilot on current group"),
-    ("Ctrl+K",       "Cycle autopilot kind"),
-    ("Ctrl+, / .",   "Autopilot interval ±1s"),
+    ("AUTO — ↑↓",    "content switch delay · ←→ FX rate"),
+    ("Ctrl+, / .",   "Autopilot content delay ±1s"),
     ("PERFORM — content keys", "1-0/A-L;/[]/F1-F8/←→↑↓ → selected group"),
 ]
 
@@ -539,7 +539,7 @@ class ControlWindow:
                          border_radius=3)
         surface.blit(chip, chip_rect)
         info = self.font_s.render(
-            f"  {g.autopilot_kind}  ·  every {g.autopilot_interval_s:.0f}s",
+            f"  content {g.autopilot_interval_s:.0f}s · fx {g.autopilot_fx_interval_s:.0f}s",
             True, (180, 180, 200),
         )
         surface.blit(info, (chip_rect.right + 8,

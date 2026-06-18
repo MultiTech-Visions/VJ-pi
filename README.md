@@ -287,8 +287,8 @@ you set up for a show is there again the next time you launch.
 | `Ctrl+G`            | Cycle pre-baked grid layouts (1·2x1·1x2·2x2·3x2·3x3·4x2·4x3) for the current group |
 | `Enter Enter`       | Engage **autopilot** on the selected group (double-tap); single `Enter` turns it off. (In mapping mode `Enter` drives the *group's* autopilot, not the live one.) |
 | `Ctrl+A`            | Toggle **autopilot** on the current group          |
-| `Ctrl+K`            | Cycle autopilot kind: cycle/random clips, cycle/random generatives |
-| `Ctrl+,` / `Ctrl+.` | Autopilot interval ± 1 second (default 8 s)        |
+| `←→↑↓` (autopilot on) | While the selected group's autopilot is engaged, `↑/↓` tune the content-switch delay and `←/→` tune the FX rate (same scheme as the live autopilot) |
+| `Ctrl+,` / `Ctrl+.` | Autopilot content-switch delay ± 1 second (default 8 s) |
 | `Ctrl+B`            | Toggle the on-projector selection border on/off    |
 | `Ctrl+C`            | Cycle border colour (light gray / cyan / amber / violet / mint / red-pink — never white) |
 | `Ctrl+[` / `Ctrl+]` | Border intensity ± 10 %                            |

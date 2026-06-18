@@ -1421,6 +1421,27 @@ class Engine:
         step = PARAM_RATE * dt
         if self._in_mapping():
             g = self.mapping.selected_group()
+            # When this group's autopilot is engaged, arrows tune ITS rates
+            # (same scheme as the live autopilot): Up/Down = content switch
+            # delay, Left/Right = FX rate. Manual PARAM tuning is moot here
+            # because autopilot is drifting the params itself.
+            if g is not None and g.autopilot_enabled:
+                changed = False
+                if keys[pygame.K_UP]:
+                    g.autopilot_interval_s = max(1.0, g.autopilot_interval_s - dt * 4.0)
+                    changed = True
+                if keys[pygame.K_DOWN]:
+                    g.autopilot_interval_s = min(60.0, g.autopilot_interval_s + dt * 4.0)
+                    changed = True
+                if keys[pygame.K_RIGHT]:
+                    g.autopilot_fx_interval_s = max(0.5, g.autopilot_fx_interval_s - dt * 3.0)
+                    changed = True
+                if keys[pygame.K_LEFT]:
+                    g.autopilot_fx_interval_s = min(30.0, g.autopilot_fx_interval_s + dt * 3.0)
+                    changed = True
+                if changed:
+                    self._persist_mapping()
+                return
             if keys[pygame.K_LEFT]:
                 g.param_x = max(0.0, g.param_x - step)
             if keys[pygame.K_RIGHT]:
@@ -1713,10 +1734,6 @@ class Engine:
 
     def mapping_set_autopilot(self, on):
         self.mapping.set_autopilot_selected(on)
-        self._persist_mapping()
-
-    def mapping_cycle_autopilot_kind(self):
-        self.mapping.cycle_autopilot_kind()
         self._persist_mapping()
 
     def mapping_adjust_autopilot_interval(self, delta):
