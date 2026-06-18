@@ -537,7 +537,9 @@ class MappingManager:
     def tick_autopilot(self, engine, now):
         """Advance each group's content if its autopilot interval elapsed."""
         from engine import GENERATIVES
-        dbg = os.environ.get("VJ_DEBUG_AUTOPILOT")
+        # On by default during this debugging pass (any launcher); set
+        # VJ_DEBUG_AUTOPILOT=0 to silence.
+        dbg = os.environ.get("VJ_DEBUG_AUTOPILOT", "1") != "0"
         for g in self.groups:
             if not g.autopilot_enabled:
                 continue
