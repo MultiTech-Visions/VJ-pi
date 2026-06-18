@@ -261,9 +261,10 @@ class MappingManager:
         # Edit-mode transient state. None of this persists — the operator
         # always starts in perform mode and decides when to edit.
         self.edit_mode: bool = False
-        # Perform-mode Tab cycle includes one extra "blank" stop after the
-        # last group: the selection banner (outline) is suppressed so the
-        # projection is clean. Any explicit selection (click, edit) clears it.
+        # When True the on-wall selection banner (outline) is suppressed so
+        # the projection is clean. Set by a Tab LONG-PRESS in perform mode
+        # (see clear_selection); any explicit selection — Tab tap, click,
+        # entering edit mode — clears it.
         self.banner_blank: bool = False
         # (group_idx, space_idx) of the space currently picked up for
         # editing; clicking another space changes it.
@@ -348,22 +349,24 @@ class MappingManager:
         if not self.groups:
             return
         n = len(self.groups)
-        if self.edit_mode:
-            # Editing always targets a real group — no blank stop.
-            self.selected = (self.selected + step) % n
-            self.banner_blank = False
-        else:
-            # Perform mode: cycle over n groups + 1 virtual "blank" stop
-            # (index n) where the on-wall banner is hidden. pos collapses the
-            # current state into that 0..n line; step + wrap; expand back.
-            pos = n if self.banner_blank else self.selected
-            pos = (pos + step) % (n + 1)
-            self.banner_blank = (pos == n)
-            if not self.banner_blank:
-                self.selected = pos
+        # Tab cycles over real groups only — in both perform and edit mode.
+        # Clearing the selection banner (the clean-projection state) is now a
+        # long-press on Tab, handled separately (see clear_selection); a tap
+        # always lands on a real group and re-shows the banner.
+        self.selected = (self.selected + step) % n
+        self.banner_blank = False
         self.delete_group_armed = None
         self.create_points = []
         self.drag = None  # cancel any in-flight edit
+
+    def clear_selection(self):
+        """Hide the on-wall selection banner for a clean projection (Tab
+        long-press in perform mode). Any explicit selection — a Tab tap, a
+        click, entering edit mode — brings it back."""
+        self.banner_blank = True
+        self.delete_group_armed = None
+        self.create_points = []
+        self.drag = None
 
     def add_group(self, seed_from: Optional[Group] = None):
         n = len(self.groups) + 1

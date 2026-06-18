@@ -34,7 +34,7 @@ KEY_CHEAT = [
 MAPPING_KEY_CHEAT = [
     ("M",            "Leave MAPPING mode"),
     ("E",            "Toggle EDIT mode (mouse drives the editor)"),
-    ("Tab",          "Next group (Shift+Tab = prev)"),
+    ("Tab",          "Next group (Shift+Tab = prev; hold = hide border)"),
     ("EDIT — click empty", "place 4 corners → new mapped box"),
     ("EDIT — click body",  "pick that space (handles + toolbar appear)"),
     ("EDIT — drag body",   "move the whole space"),

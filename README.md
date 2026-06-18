@@ -279,6 +279,7 @@ you set up for a show is there again the next time you launch.
 | Key                 | Action                                              |
 |---------------------|-----------------------------------------------------|
 | `Tab` / `Shift+Tab` | Next / previous group (the active group's spaces get a coloured border on the projector) |
+| `Tab` (long-press)  | Hide the selection border for a clean projection; a tap brings it back |
 | `1-0` `Q-P` `A-L` `F1-F7` `←→↑↓` `−/=` `[/]` `\` | Apply to the SELECTED group only — each group keeps its own state (`\` sets the group's content to the live webcam) |
 | `Ctrl+N`            | New group                                          |
 | `Ctrl+Backspace`    | Delete the current group                           |
