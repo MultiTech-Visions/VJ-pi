@@ -2960,12 +2960,10 @@ class Engine:
         fav_pressed_at = {}      # key → initial-press timestamp
         long_press_fired = set() # keys whose long-press action has fired
         LONG_PRESS_S = 0.5
-        # Mapping perform-mode Tab: tap cycles groups, long-press clears the
-        # selection banner (clean projection). Tracked here (not via dispatch)
-        # so a tap fires on release and a hold fires the clear instead.
+        # Mapping perform-mode Tab: cycles immediately on press; if held past
+        # LONG_PRESS_S it also clears the selection banner (clean projection).
         tab_pressed_at = None    # press timestamp, or None
         tab_long_fired = False   # clear-selection already fired this hold
-        tab_press_mod = 0        # modifier state captured at press
 
         arrow_keys = (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN)
 
@@ -3032,17 +3030,17 @@ class Engine:
                     if is_initial and self.auto_mode and event.key not in arrow_keys:
                         self.disengage_auto()
 
-                    # Mapping PERFORM-mode Tab: intercept for tap/long timing.
-                    # A tap (released < LONG_PRESS_S) cycles the selected group;
-                    # a hold clears the selection banner for a clean projection.
-                    # Edit-mode Tab is left to dispatch (immediate cycle).
+                    # Mapping PERFORM-mode Tab: cycle immediately on press, and
+                    # if held past LONG_PRESS_S also clear the selection banner
+                    # for a clean projection. Edit-mode Tab is left to dispatch.
                     if (is_initial and event.key == pygame.K_TAB
                             and self.mode == "mapping"
                             and not self.mapping.edit_mode
                             and not (event.mod & pygame.KMOD_CTRL)):
+                        step = -1 if (event.mod & pygame.KMOD_SHIFT) else 1
+                        self.cycle_mapping_group(step)
                         tab_pressed_at = time.time()
                         tab_long_fired = False
-                        tab_press_mod = event.mod
                         continue
 
                     # In mapping/edit mode the operator is laying out spaces,
@@ -3077,11 +3075,7 @@ class Engine:
                         dispatch(self, event.key, event.mod)
 
                 elif event.type == pygame.KEYUP:
-                    if event.key == pygame.K_TAB and tab_pressed_at is not None:
-                        elapsed = time.time() - tab_pressed_at
-                        if not tab_long_fired and elapsed < LONG_PRESS_S:
-                            step = -1 if (tab_press_mod & pygame.KMOD_SHIFT) else 1
-                            self.cycle_mapping_group(step)
+                    if event.key == pygame.K_TAB:
                         tab_pressed_at = None
                         tab_long_fired = False
                     if event.key in fav_pressed_at:
