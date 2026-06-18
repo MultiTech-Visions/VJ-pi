@@ -365,6 +365,24 @@ F3 to switch on feedback, …) immediately disengages autopilot and
 performs the action — perfect for grabbing back control when the
 random output happens to land on something you want to embellish.
 
+### Brightness safety limiter
+
+The audience may be in altered states, so a sudden flash to full white —
+from a bright projectM preset, an invert, a stack of FX, or all of them
+combining — is too much light. Every composed frame's mean luminance is
+measured; if it exceeds a ceiling, the **whole frame is scaled down** so
+the screen can't blow out. It's **fast-attack, slow-release**: a flash is
+caught the same frame, then it eases back so it doesn't pump. This runs in
+**every mode**, not just autopilot, so a manual action can't blast the
+room either. The HUD shows a yellow **DIM −NN%** badge while it's actively
+cutting. The ceiling is `VJ_MAX_BRIGHTNESS` (fraction of full white,
+default `0.72`; set `1.0` to disable).
+
+When autopilot is also running and the output is over the ceiling, the
+affected group **switches content sooner** to move off the bright source
+(the limiter holds the line meanwhile). FX are left alone — they don't
+reliably brighten (invert can darken an all-white scene).
+
 ## Asset sources
 
 Free libraries (download once, no internet needed at the party):

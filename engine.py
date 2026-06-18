@@ -310,6 +310,20 @@ class Engine:
         self._mushroom_color = None       # EMA-smoothed average RGB (float)
         self._mushroom_last = 0.0         # last sample/push time (monotonic)
 
+        # ── Brightness safety limiter ────────────────────────────────────
+        # Audience may be in altered states; a sudden flash to full white (a
+        # bright pm gen, an invert, an FX pile-up, or all combined) is too much
+        # light. Every composed frame is measured; if its mean luminance
+        # exceeds this ceiling the whole frame is scaled down so the screen
+        # can't blow out. Fraction of full white (0..1); 1.0 disables.
+        try:
+            self._bright_ceiling = max(0.2, min(1.0,
+                float(os.environ.get("VJ_MAX_BRIGHTNESS", "0.72"))))
+        except ValueError:
+            self._bright_ceiling = 0.72
+        self._bright_scale = 1.0          # currently applied dim factor (0..1)
+        self._bright_level = 0.0          # last measured luma fraction (0..1)
+
         # Projection-mapping mode. When enabled, the render pipeline draws
         # each group's content into its spaces' quads on a black canvas;
         # most live-action keys (clip / gen / FX / params / favourites)
@@ -2026,8 +2040,39 @@ class Engine:
         # of set checks in steady state, not per-frame work.
         self.gpu_generators.pause_idle()
 
+        # Brightness safety limiter — clamp the final composite so it can't
+        # blow out to blinding white (applies to projector AND HUD preview).
+        frame = self._apply_brightness_limit(frame)
+
         if not self.freeze:
             self.prev_frame = frame
+        return frame
+
+    def _apply_brightness_limit(self, frame):
+        """Scale `frame` down if its mean luminance exceeds the ceiling, so a
+        sudden bright flash can't reach the audience at full intensity.
+
+        Fast attack (a flash is caught the same frame), slow release (eases
+        back so it doesn't pump). Luminance is measured on the RAW frame each
+        call, so the clamp tracks true content brightness without oscillating.
+        """
+        if self._bright_ceiling >= 1.0:
+            return frame
+        try:
+            samp = frame[::8, ::8].astype(np.float32)
+            luma = float((0.299 * samp[..., 0] + 0.587 * samp[..., 1]
+                          + 0.114 * samp[..., 2]).mean())
+        except Exception:
+            return frame
+        self._bright_level = luma / 255.0
+        ceiling = self._bright_ceiling * 255.0
+        target = 1.0 if luma <= ceiling else max(0.05, ceiling / luma)
+        if target < self._bright_scale:
+            self._bright_scale = target            # clamp down immediately
+        else:
+            self._bright_scale += (target - self._bright_scale) * 0.08  # ease up
+        if self._bright_scale < 0.997:
+            frame = cv2.convertScaleAbs(frame, alpha=self._bright_scale, beta=0)
         return frame
 
     # ── Mapping render pipeline ───────────────────────────────────────

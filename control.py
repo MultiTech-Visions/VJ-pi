@@ -664,6 +664,9 @@ class ControlWindow:
             linked = mush is not None and mush.connected()
             badges.append(("MUSHROOM" if linked else "MUSHROOM · link…",
                            (210, 130, 255) if linked else (150, 110, 160)))
+        if getattr(e, "_bright_scale", 1.0) < 0.97:
+            cut = int(round((1.0 - e._bright_scale) * 100))
+            badges.append((f"DIM −{cut}%", (255, 230, 120)))
         if e.blackout:
             badges.append(("BLACKOUT", (255, 80, 80)))
         if e.freeze:

@@ -577,17 +577,30 @@ class MappingManager:
                     g.fx_state[fx] = False
                     del g._fx_expiry[fx]
 
+            # The output is over the brightness ceiling (the limiter is
+            # already dimming it). FX don't reliably brighten — invert can even
+            # DARKEN an all-white scene — so we don't touch FX for this; we
+            # just move OFF the bright source sooner by pulling the content
+            # switch forward (floored so it can't thrash).
+            too_bright = (getattr(engine, "_bright_level", 0.0)
+                          >= getattr(engine, "_bright_ceiling", 1.0))
+
             # Content switch — random pick WITHIN the type currently shown.
-            if now - g._last_change_at >= g.autopilot_interval_s:
+            held = now - g._last_change_at
+            switch_due = held >= g.autopilot_interval_s
+            if too_bright and held >= 2.0:
+                switch_due = True
+            if switch_due:
                 g._last_change_at = now
                 before = (g.content_kind, g.clip_stem, g.gen_name)
                 self._autopilot_content(g, engine, GENERATIVES)
                 if dbg:
                     after = (g.content_kind, g.clip_stem, g.gen_name)
-                    print(f"[autopilot] '{g.name}' content {before} -> {after}")
+                    tag = " (too bright)" if too_bright else ""
+                    print(f"[autopilot] '{g.name}' content{tag} {before} -> {after}")
 
-            # FX toggle (jittered around the group's fx interval) — UNLESS
-            # the group is on a heavy projectM preset that's already crawling
+            # FX toggle (jittered around the group's fx interval) — UNLESS the
+            # group is on a heavy projectM preset that's already crawling
             # (≤ PM_HEAVY_FPS). FX add per-pixel cost that a 4fps pm gen can't
             # afford, so suppress new FX and clear any that are on.
             fps = getattr(engine, "fps_measured", 0.0)
