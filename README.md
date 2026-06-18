@@ -285,6 +285,7 @@ you set up for a show is there again the next time you launch.
 | `Ctrl+Backspace`    | Delete the current group                           |
 | `Ctrl+=` / `Ctrl+-` | Add / remove a space in the current group          |
 | `Ctrl+G`            | Cycle pre-baked grid layouts (1·2x1·1x2·2x2·3x2·3x3·4x2·4x3) for the current group |
+| `Enter Enter`       | Engage **autopilot** on the selected group (double-tap); single `Enter` turns it off. (In mapping mode `Enter` drives the *group's* autopilot, not the live one.) |
 | `Ctrl+A`            | Toggle **autopilot** on the current group          |
 | `Ctrl+K`            | Cycle autopilot kind: cycle/random clips, cycle/random generatives |
 | `Ctrl+,` / `Ctrl+.` | Autopilot interval ± 1 second (default 8 s)        |

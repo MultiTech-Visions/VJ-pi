@@ -534,6 +534,14 @@ class MappingManager:
         if g.autopilot_enabled:
             g._last_change_at = time.time()
 
+    def set_autopilot_selected(self, enabled):
+        g = self.selected_group()
+        if g is None:
+            return
+        g.autopilot_enabled = bool(enabled)
+        if g.autopilot_enabled:
+            g._last_change_at = time.time()
+
     def tick_autopilot(self, engine, now):
         """Advance each group's content if its autopilot interval elapsed."""
         from engine import GENERATIVES

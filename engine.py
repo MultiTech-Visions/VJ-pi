@@ -1711,6 +1711,10 @@ class Engine:
         self.mapping.toggle_autopilot_selected()
         self._persist_mapping()
 
+    def mapping_set_autopilot(self, on):
+        self.mapping.set_autopilot_selected(on)
+        self._persist_mapping()
+
     def mapping_cycle_autopilot_kind(self):
         self.mapping.cycle_autopilot_kind()
         self._persist_mapping()
@@ -3011,10 +3015,22 @@ class Engine:
 
                     # Autopilot Enter handling — engage (double-tap when off)
                     # or disengage (single tap when on). Enter itself never
-                    # falls through to any further action.
+                    # falls through to any further action. In MAPPING mode it
+                    # drives the SELECTED GROUP's autopilot (the global one does
+                    # nothing visible there); elsewhere it drives the live one.
                     if is_initial and event.key == pygame.K_RETURN:
                         now_t = time.time()
-                        if self.auto_mode:
+                        if self.mode == "mapping":
+                            g = self.mapping.selected_group()
+                            if g is not None and g.autopilot_enabled:
+                                self.mapping_set_autopilot(False)
+                                self.last_enter_t = 0.0
+                            elif now_t - self.last_enter_t < 0.6:
+                                self.mapping_set_autopilot(True)
+                                self.last_enter_t = 0.0
+                            else:
+                                self.last_enter_t = now_t
+                        elif self.auto_mode:
                             self.disengage_auto()
                             self.last_enter_t = 0.0
                         elif now_t - self.last_enter_t < 0.6:

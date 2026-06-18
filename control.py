@@ -54,6 +54,7 @@ MAPPING_KEY_CHEAT = [
     ("Ctrl+Back",    "Delete current group immediately"),
     ("Ctrl+= / -",   "Add / remove a space in current group"),
     ("Ctrl+G",       "Cycle grid layout (1·2x1·2x2·3x2·3x3·4x2·4x3)"),
+    ("Enter Enter",  "Engage autopilot on selected group (Enter = off)"),
     ("Ctrl+A",       "Toggle autopilot on current group"),
     ("Ctrl+K",       "Cycle autopilot kind"),
     ("Ctrl+, / .",   "Autopilot interval ±1s"),
