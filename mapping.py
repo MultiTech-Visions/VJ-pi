@@ -23,6 +23,7 @@ Pitfalls this module tries to avoid:
   * Border drawing is skippable (`show_borders=False`) so during a live
     set there are no light artefacts on the wall.
 """
+import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -536,16 +537,29 @@ class MappingManager:
     def tick_autopilot(self, engine, now):
         """Advance each group's content if its autopilot interval elapsed."""
         from engine import GENERATIVES
+        dbg = os.environ.get("VJ_DEBUG_AUTOPILOT")
         for g in self.groups:
             if not g.autopilot_enabled:
                 continue
             if g._last_change_at <= 0.0:
                 g._last_change_at = now
+                if dbg:
+                    print(f"[autopilot] '{g.name}' armed "
+                          f"(kind={g.autopilot_kind}, every {g.autopilot_interval_s:.0f}s)")
                 continue
-            if now - g._last_change_at < g.autopilot_interval_s:
+            remaining = g.autopilot_interval_s - (now - g._last_change_at)
+            if remaining > 0:
+                if dbg and now - getattr(g, "_ap_dbg_at", 0.0) >= 2.0:
+                    g._ap_dbg_at = now
+                    print(f"[autopilot] '{g.name}' waiting "
+                          f"{remaining:.1f}s (kind={g.autopilot_kind})")
                 continue
             g._last_change_at = now
+            before = (g.content_kind, g.clip_stem, g.gen_name)
             self._autopilot_step(g, engine, GENERATIVES)
+            if dbg:
+                after = (g.content_kind, g.clip_stem, g.gen_name)
+                print(f"[autopilot] '{g.name}' step {before} -> {after}")
 
     @staticmethod
     def _autopilot_step(g, engine, generatives):

@@ -89,6 +89,10 @@ export VJ_PM_PRESENT_STALL_MS="${VJ_PM_PRESENT_STALL_MS:-220}"
 export VJ_PM_PRESENT_STALLS="${VJ_PM_PRESENT_STALLS:-2}"
 export VJ_PM_SAFETY_COOLDOWN_S="${VJ_PM_SAFETY_COOLDOWN_S:-8}"
 
+# Temporary: trace per-group mapping autopilot into vj_last_run.log so we
+# can see whether the timer is firing. Set to 0 to silence.
+export VJ_DEBUG_AUTOPILOT="${VJ_DEBUG_AUTOPILOT:-1}"
+
 ./venv/bin/python main.py "${ARGS[@]}" >>"$LOG" 2>&1
 EXIT=$?
 if [ "$EXIT" -ne 0 ]; then
