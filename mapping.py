@@ -585,7 +585,7 @@ class MappingManager:
             too_bright = (getattr(engine, "_bright_level", 0.0)
                           >= getattr(engine, "_bright_ceiling", 1.0))
 
-            # Content switch — random pick WITHIN the type currently shown.
+            # Content switch — step to the NEXT source of the current type.
             held = now - g._last_change_at
             switch_due = held >= g.autopilot_interval_s
             if too_bright and held >= 2.0:
@@ -629,25 +629,28 @@ class MappingManager:
 
     @staticmethod
     def _autopilot_content(g, engine, generatives):
-        """Swap the group to a different source of the SAME type it's
-        currently showing (clip→clip, generative→generative). Camera /
-        blackout groups keep their content (autopilot still does FX +
-        param drift on them)."""
+        """Advance the group to the NEXT source of the SAME type it's
+        currently showing (clip→next clip, generative→next generative), in
+        the same order as the manual cycle keys. Sequential (not random) so
+        that if the operator likes what lands, they can stop autopilot and
+        step BACK to it with `−/=` (clips) or `[/]` (generators). Camera /
+        blackout groups keep their content (autopilot still does FX + param
+        drift on them)."""
         if g.content_kind == "generative":
             if not generatives:
                 return
-            choices = [x for x in generatives if x != g.gen_name] or list(generatives)
-            g.gen_name = random.choice(choices)
+            if g.gen_name in generatives:
+                i = (generatives.index(g.gen_name) + 1) % len(generatives)
+            else:
+                i = 0
+            g.gen_name = generatives[i]
         elif g.content_kind == "clip":
             clips = engine.clips
             n = len(clips)
             if n == 0:
                 return
             cur = clips.find_by_stem(g.clip_stem)
-            new_idx = random.randrange(n)
-            if n > 1:
-                while new_idx == cur:
-                    new_idx = random.randrange(n)
+            new_idx = 0 if cur is None else (cur + 1) % n
             g.clip_stem = clips.name(new_idx)
 
     @staticmethod
