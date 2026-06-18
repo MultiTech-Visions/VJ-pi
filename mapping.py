@@ -37,6 +37,11 @@ AUTOPILOT_KINDS = [
     "cycle_generatives", "random_generatives",
 ]
 
+# At or below this achieved frame rate, autopilot won't pile FX onto a
+# group running a heavy projectM preset (and clears any already on) —
+# FX are per-pixel work a crawling pm gen can't afford.
+PM_HEAVY_FPS = 4.0
+
 # How a group's content (clip frame or generative) is placed inside its
 # spaces' quads. "window" is the default — the quad is a viewport into
 # the video, free zoom + pan. "stretch" is the legacy warp-to-quad
@@ -581,8 +586,23 @@ class MappingManager:
                     after = (g.content_kind, g.clip_stem, g.gen_name)
                     print(f"[autopilot] '{g.name}' content {before} -> {after}")
 
-            # FX toggle (jittered around the group's fx interval).
-            if now >= g._next_fx_at:
+            # FX toggle (jittered around the group's fx interval) — UNLESS
+            # the group is on a heavy projectM preset that's already crawling
+            # (≤ PM_HEAVY_FPS). FX add per-pixel cost that a 4fps pm gen can't
+            # afford, so suppress new FX and clear any that are on.
+            fps = getattr(engine, "fps_measured", 0.0)
+            heavy_pm = ((g.gen_name or "").startswith("pm:")
+                        and g.content_kind == "generative"
+                        and 0.0 < fps <= PM_HEAVY_FPS)
+            if heavy_pm:
+                if any(g.fx_state.get(k) for k in FX_TOGGLES):
+                    for k in FX_TOGGLES:
+                        g.fx_state[k] = False
+                    g._fx_expiry.clear()
+                    if dbg:
+                        print(f"[autopilot] '{g.name}' heavy pm @ {fps:.1f}fps "
+                              f"— FX cleared/suppressed")
+            elif now >= g._next_fx_at:
                 self._autopilot_fx(g, now, FX_TOGGLES, AUTO_FX_MAX_HOLD)
                 g._next_fx_at = now + g.autopilot_fx_interval_s * random.uniform(0.5, 1.8)
 
