@@ -383,6 +383,35 @@ affected group **switches content sooner** to move off the bright source
 (the limiter holds the line meanwhile). FX are left alone — they don't
 reliably brighten (invert can darken an all-white scene).
 
+## Display brightness (dim a screen that ignores its own controls)
+
+Some field gear won't respond to its own brightness buttons — the
+projector's bulb stays at full no matter the number, and the portable
+panel has no control at all. The Pi's desktop settings can't help either,
+because on a normal monitor brightness lives in the display's own
+electronics. So we dim in **software**: the compositor scales the colour
+ramp it sends to each output, which genuinely cuts the light the
+projector/panel emits.
+
+- Double-click **`Display Brightness.sh`** → "Execute". A small window
+  opens with **one slider per connected display**, each labelled with its
+  output name (e.g. `HDMI-A-1`, `HDMI-A-2`) and resolution.
+- Drag a slider down to dim that screen. It takes effect live, and it dims
+  **everything on that output** — including the fullscreen VJ projector
+  image, because it's applied at scan-out above all windows.
+- **Closing the window restores every screen to full brightness.** That's
+  deliberate: you can never get stuck on a black screen. The tool floors at
+  10% for the same reason. Last-used levels are remembered for next launch.
+- It can dim, not boost past the panel's native maximum — that's all
+  software can do.
+- One-time only **if** the window says Tk is missing: double-click
+  **`Setup Display Brightness.sh`** once (most Pi desktops already have it).
+
+This works on the operator's **labwc/Wayland** setup via the
+`wlr-gamma-control` protocol (it also falls back to `xrandr` on an X11
+session). It's separate from the in-app **Brightness safety limiter** above:
+that caps how bright the *content* gets; this sets the *display's* level.
+
 ## Asset sources
 
 Free libraries (download once, no internet needed at the party):
