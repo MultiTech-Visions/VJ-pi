@@ -1466,7 +1466,7 @@ vec3 edgeDots(vec2 px, vec3 A3, vec3 B3, float ei) {
     vec2 dotpos = a + (idx / count) * ab;
     float d = length(px - dotpos);
 
-    float r = 0.0065;
+    float r = 0.0100;   // larger than before: stays crisp through the upscale
     float m = smoothstep(r, r * 0.55, d);
     float hue = fract(ei / 12.0 + idx * 0.012 + time * 0.04);
     return hsv2rgb(vec3(hue, 1.0, 1.0)) * m;
@@ -1517,7 +1517,12 @@ void main() {
     // near and far faces overlap on screen with no occlusion or z fade,
     // so there is still no cue to which plane is in front. Brightness
     // varies per dot for life, but size is constant.
-    for (int i = 0; i < 144; i++) {
+    // PERF: this loop is the generator's whole cost (it runs for EVERY
+    // pixel). 100 dots reads as solid face-sheets just as well as 144 did,
+    // and the worker renders at a reduced width (see GENERATOR_RENDER_MAX_W)
+    // then upscales — so the dot radii below are a touch larger to stay
+    // crisp through that upscale.
+    for (int i = 0; i < 100; i++) {
         float fi = float(i);
         float f = floor(hash(fi + 0.1) * 6.0);   // which face, 0..5
         float a = (hash(fi + 5.7)  * 2.0 - 1.0) * 0.97;   // in-plane coords
@@ -1531,7 +1536,7 @@ void main() {
         else              pp = vec3(a, b, -1.0);
         vec2 sp = proj(rot(pp));
         float d = length(px - sp);
-        float m = smoothstep(0.0042, 0.0018, d);
+        float m = smoothstep(0.0066, 0.0028, d);
         float hue = fract(hash(fi + 3.3));
         float val = 0.7 + 0.3 * hash(fi + 17.0);
         col = max(col, hsv2rgb(vec3(hue, 1.0, val)) * m);
@@ -1578,6 +1583,18 @@ GPU_GENERATORS = {
 }
 
 GPU_GENERATOR_ORDER = list(GPU_GENERATORS.keys())
+
+# Per-generator render-width caps for the heavy ones. Most GLSL generators
+# do roughly constant (analytic) work per pixel, so the default cap is fine.
+# A few are "splatting" shaders — a per-pixel loop over many primitives —
+# whose cost is (pixels × primitives); on V3D that saturates the GPU and the
+# --gpu-scale output present stalls behind it (juddery 'pulse'). For those,
+# render much smaller and let the normal upscale blur it back up — the
+# content (a sparse dotfield) hides the lower resolution. Falls back to the
+# global VJ_GPU_RENDER_MAX_W when a generator isn't listed here.
+GENERATOR_RENDER_MAX_W = {
+    'neckercube': 480,   # 144-dot per-pixel loop — needs far fewer pixels
+}
 
 # Generators that need an image bound as `sampler2D tex` (vs the default
 # black videotestsrc). The worker drives these through its image/atlas
