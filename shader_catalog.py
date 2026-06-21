@@ -1365,6 +1365,143 @@ void main() {
 
 
 
+# ── Neckercube: the ambiguous / bistable spinning wireframe cube ─────
+#
+# A skeletal cube whose 12 edges are strung with coloured dots, floating
+# in a field of looser coloured "dust", slowly turning on a turntable.
+# The whole point is the ILLUSION: there is no actual change of
+# direction in the footage, yet the brain freely flips which way it
+# reads the spin (the spinning-dancer / Necker-cube bistable effect).
+#
+# What makes that work — and what this shader is built to PRESERVE — is
+# the deliberate ABSENCE of every depth cue:
+#   * ORTHOGRAPHIC projection (we just drop z; no perspective divide),
+#     so near and far edges are the same length and never converge.
+#   * Every dot is the SAME size regardless of depth.
+#   * Every dot is the SAME brightness regardless of depth.
+#   * NO occlusion / depth sorting — all 12 edges and every dust mote are
+#     drawn equally (max-blended), so the front face never hides the back.
+# Add any one of those cues back (perspective, size-by-z, fog, occlusion)
+# and the ambiguity collapses — the brain locks onto one direction. This
+# is the exact inverse of `dotsphere`, which ADDS size/brightness-by-z on
+# purpose to read as solid. Don't "fix" the missing cues here.
+#
+# The cube spins one steady direction forever (the viewer's perception is
+# what reverses, not the geometry). Two live knobs:
+#   param_x — SPIN SPEED (added to a base, so it never fully freezes).
+#   param_y — NOD: 0 = a clean single-axis turntable spin (strongest
+#             illusion); turn up to add a gentle pitch wobble.
+NECKERCUBE_SHADER = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform float time;
+uniform float width;
+uniform float height;
+uniform float param_x;   // spin speed   (arrow Left/Right)
+uniform float param_y;   // nod / wobble  (arrow Up/Down)
+
+const float TILT  = -0.32;   // fixed forward tilt -> reads as a 3/4 turntable
+const float SCALE =  0.30;   // cube half-extent 1.0 -> ~0.42 of frame height
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+float hash(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+
+vec3 rotY(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); }
+vec3 rotX(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
+
+// Turntable: spin about the vertical axis, then a fixed forward tilt
+// (plus an optional slow nod). One steady direction — the reversal the
+// operator sees is entirely in their head, which is the whole gag.
+vec3 spinPt(vec3 p) {
+    float spin = time * (0.30 + param_x * 1.4);
+    float nod  = TILT + param_y * 0.35 * sin(time * 0.5);
+    p = rotY(p, spin);
+    p = rotX(p, nod);
+    return p;
+}
+
+// Orthographic projection: just keep x,y (NO perspective divide). This
+// is the load-bearing line for the illusion — see the header note.
+vec2 proj(vec3 p) { return p.xy * SCALE; }
+
+// One cube edge, drawn as a string of round dots fixed on the 3D edge.
+// `t` along the projected segment equals the 3D parameter (orthographic
+// projection is affine), so the dots stay pinned to the same 3D points
+// as the cube turns. Returns a full-brightness coloured contribution.
+vec3 edgeDots(vec2 px, vec3 A3, vec3 B3, float ei) {
+    vec2 a = proj(A3);
+    vec2 b = proj(B3);
+    vec2 ab = b - a;
+    float L2 = max(dot(ab, ab), 1e-6);
+    float t = clamp(dot(px - a, ab) / L2, 0.0, 1.0);
+
+    float count = 12.0;                 // dots per edge (incl. both corners)
+    float idx = floor(t * count + 0.5); // snap to nearest dot
+    vec2 dotpos = a + (idx / count) * ab;
+    float d = length(px - dotpos);
+
+    float r = 0.0065;
+    float m = smoothstep(r, r * 0.55, d);
+    float hue = fract(ei / 12.0 + idx * 0.012 + time * 0.04);
+    return hsv2rgb(vec3(hue, 1.0, 1.0)) * m;
+}
+
+void main() {
+    float asp = (height > 0.5) ? (width / height) : (1280.0 / 720.0);
+    vec2 px = (v_texcoord - 0.5) * vec2(asp, 1.0);
+
+    vec3 col = vec3(0.012, 0.013, 0.020);   // near-black space
+
+    // Eight cube corners, rotated once.
+    vec3 v0 = spinPt(vec3(-1.0, -1.0, -1.0));
+    vec3 v1 = spinPt(vec3( 1.0, -1.0, -1.0));
+    vec3 v2 = spinPt(vec3( 1.0,  1.0, -1.0));
+    vec3 v3 = spinPt(vec3(-1.0,  1.0, -1.0));
+    vec3 v4 = spinPt(vec3(-1.0, -1.0,  1.0));
+    vec3 v5 = spinPt(vec3( 1.0, -1.0,  1.0));
+    vec3 v6 = spinPt(vec3( 1.0,  1.0,  1.0));
+    vec3 v7 = spinPt(vec3(-1.0,  1.0,  1.0));
+
+    // 12 edges, max-blended (no occlusion -> wireframe, no depth cue).
+    col = max(col, edgeDots(px, v0, v1, 0.0));   // bottom face
+    col = max(col, edgeDots(px, v1, v2, 1.0));
+    col = max(col, edgeDots(px, v2, v3, 2.0));
+    col = max(col, edgeDots(px, v3, v0, 3.0));
+    col = max(col, edgeDots(px, v4, v5, 4.0));   // top face
+    col = max(col, edgeDots(px, v5, v6, 5.0));
+    col = max(col, edgeDots(px, v6, v7, 6.0));
+    col = max(col, edgeDots(px, v7, v4, 7.0));
+    col = max(col, edgeDots(px, v0, v4, 8.0));   // verticals
+    col = max(col, edgeDots(px, v1, v5, 9.0));
+    col = max(col, edgeDots(px, v2, v6, 10.0));
+    col = max(col, edgeDots(px, v3, v7, 11.0));
+
+    // Floating dust inside the cube. Fixed random 3D points that tumble
+    // WITH the cube. Brightness varies per mote for life, but size is
+    // constant and there is no z fade -> still no depth cue.
+    for (int i = 0; i < 100; i++) {
+        float fi = float(i);
+        vec3 pp = vec3(hash(fi + 0.1), hash(fi + 5.7), hash(fi + 11.3)) * 2.0 - 1.0;
+        vec2 sp = proj(spinPt(pp * 0.96));
+        float d = length(px - sp);
+        float m = smoothstep(0.0042, 0.0018, d);
+        float hue = fract(hash(fi + 3.3));
+        float val = 0.7 + 0.3 * hash(fi + 17.0);
+        col = max(col, hsv2rgb(vec3(hue, 1.0, val)) * m);
+    }
+
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+
 GPU_GENERATORS = {
     'plasma': PLASMA_SHADER,
     'tunnel': TUNNEL_SHADER,
@@ -1396,6 +1533,7 @@ GPU_GENERATORS = {
     'phyllotaxis': PHYLLOTAXIS_SHADER,
     'sunplasma': SUNPLASMA_SHADER,
     'dotsphere': DOTSPHERE_SHADER,
+    'neckercube': NECKERCUBE_SHADER,
     'cube': CUBE_SHADER,
 }
 
