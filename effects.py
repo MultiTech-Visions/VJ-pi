@@ -280,7 +280,7 @@ _TABLE_IMAGES_DIR = _TABLE_HERE / "assets" / "images"
 
 # Card geometry (base resolution; on-screen size is reached by the affine
 # `scale`, so the decoded card is cached once per image, not per size).
-_CARD_LONG = 360          # longest side of the decoded photo, px
+_CARD_LONG = 480          # longest side of the decoded photo, px
 _CARD_BORDER = 14         # white matte border baked around the photo, px
 _CARD_MATTE = (236, 234, 227)
 _CARD_CACHE_MAX = 64      # LRU cap on decoded cards (~0.4 MB each)
@@ -328,8 +328,9 @@ def _make_wood(w, h):
 
 
 class _TableTop:
-    """Stateful CPU generator: the only persistent state is the decoded-card
-    LRU and the (stable) image shuffle; all motion is derived from ctx.t."""
+    """Stateful CPU generator: persistent state is the decoded-card LRU, the
+    (stable) image shuffle, and the integrated camera pan (so speed changes
+    don't jump). Slot layout is still a deterministic function of the index."""
 
     def __init__(self):
         self._cards = OrderedDict()   # path -> bordered RGB card (LRU)
@@ -338,6 +339,10 @@ class _TableTop:
         self._last_scan_t = -1e9
         self._wood = None
         self._wood_size = None
+        # Camera pan is integrated on the host (accumulated px), not computed
+        # as speed*t, so a live speed change doesn't teleport the whole table.
+        self._cam_x = 0.0
+        self._last_t = None
 
     def _refresh_images(self, t):
         # Re-scan the folder at most ~once a second so the operator can drop
@@ -468,13 +473,20 @@ class _TableTop:
         if self._wood_size != (w, h):
             self._wood = _make_wood(w, h)
             self._wood_size = (w, h)
-        target = (0.24 + 0.12 * ctx.py) * min(w, h)   # photo longest side, px
+        target = (0.24 + 0.84 * ctx.py) * min(w, h)   # photo longest side, px
         target = max(48.0, target)
         photo_scale = target / float(_CARD_LONG)
         spacing = target * 0.74                        # ~26% overlap
-        # Camera path: pan right forever, plus a slow lateral "curve".
-        pan_speed = (0.045 + 0.11 * ctx.px) * w        # world px / sec
-        cam_x = pan_speed * t
+        # Camera path: pan right forever (integrated, see below) plus a slow
+        # lateral "curve". The pan is accumulated per-frame so a live PARAM X
+        # change only alters the rate from here on — computing speed*t would
+        # teleport the table on every speed change (the cube/neckercube bug).
+        pan_speed = (0.022 + 0.12 * ctx.px) * w        # world px / sec
+        dt = t - self._last_t if self._last_t is not None else 0.0
+        dt = min(0.2, max(0.0, dt))   # clamp gaps from switching away and back
+        self._last_t = t
+        self._cam_x += pan_speed * dt
+        cam_x = self._cam_x
         cam_y = 0.06 * h * math.sin(t * 0.23)
         ox = int(cam_x) % w
         oy = int(cam_y) % h
