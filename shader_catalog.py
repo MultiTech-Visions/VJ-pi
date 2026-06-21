@@ -1412,7 +1412,7 @@ uniform float spin_phase; // host-integrated spin angle: param_x sets the
                           // (gpu_generator_worker) so changing speed never
                           // jumps the cube. spin = time*speed would leap.
 
-const float TILT  = -0.32;   // fixed forward tilt -> reads as a 3/4 turntable
+const float TILT  = -0.16;   // shallow forward tilt -> top face reads edge-on
 const float SCALE =  0.30;   // cube half-extent 1.0 -> ~0.42 of frame height
 
 vec3 hsv2rgb(vec3 c) {
