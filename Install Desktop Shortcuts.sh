@@ -39,7 +39,6 @@ EOF
 
 write_launcher "Start VJ"             "Start VJ.sh"              "Dual display: control HUD + projector output"
 write_launcher "VJ Test (single)"     "Test (single screen).sh"  "Single screen test mode — both windows on primary"
-write_launcher "Display Brightness"   "Display Brightness.sh"     "Software brightness sliders for the projector + field monitor"
 
 echo ""
 echo "Done. Look for the icons on your desktop."
