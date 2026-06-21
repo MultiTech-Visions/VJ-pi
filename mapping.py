@@ -279,6 +279,10 @@ class MappingManager:
         # Edit-mode transient state. None of this persists — the operator
         # always starts in perform mode and decides when to edit.
         self.edit_mode: bool = False
+        # "Adjust" sub-mode (toggled by the toolbar Adjust button or R): the
+        # arrow keys MOVE the selected group's content and -/= scale it.
+        # Transient — never persisted; cleared on edit toggle / mapping exit.
+        self.adjust_mode: bool = False
         # When True the on-wall selection banner (outline) is suppressed so
         # the projection is clean. Set by a Tab LONG-PRESS in perform mode
         # (see clear_selection); any explicit selection — Tab tap, click,
@@ -673,6 +677,7 @@ class MappingManager:
 
     def toggle_edit_mode(self):
         self.edit_mode = not self.edit_mode
+        self.adjust_mode = False   # adjust is its own mode; don't carry it over
         # Entering edit mode always targets a real group, never the blank stop.
         if self.edit_mode:
             self.banner_blank = False
@@ -1059,9 +1064,10 @@ class MappingManager:
         if not (0 <= gi < len(self.groups)) or not (
                 0 <= si < len(self.groups[gi].spaces)):
             return []
-        kinds = ["fit_mode", "zoom_out", "zoom_in",
-                 "pan_left", "pan_right", "pan_up", "pan_down",
-                 "reset_frame"]
+        # Scale + reposition are folded into the "adjust" toggle: tap it to
+        # move (arrows) and scale (-/=) the group's content directly, instead
+        # of a grid of zoom/pan nudge buttons.
+        kinds = ["fit_mode", "adjust", "reset_frame"]
         if len(self.groups) > 1:
             kinds.extend(["raise", "lower"])
         kinds.append("bind")   # arm a bind: next space click binds into this group

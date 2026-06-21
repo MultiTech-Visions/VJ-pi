@@ -108,6 +108,10 @@ def dispatch(engine, key, mod):
         if engine.mode == "cinematic":
             engine.stop_cinematic_mode()
             return
+        if engine.mode == "mapping" and engine.mapping.adjust_mode:
+            # Esc leaves the move/scale sub-mode but stays in mapping.
+            engine.exit_mapping_adjust()
+            return
         if engine.mode == "mapping" and engine.mapping.edit_mode:
             # Cancel any in-flight drag / deselect the picked space, but
             # stay in edit mode so the operator can keep working.
@@ -164,6 +168,24 @@ def dispatch(engine, key, mod):
         if key == pygame.K_F10:
             engine.mapping_adjust_render_scale(0.05)
             return
+        # R toggles the move/scale "adjust" sub-mode (same as the toolbar's
+        # ADJ button). Works in perform and edit mode.
+        if key == pygame.K_r and not (mod & pygame.KMOD_CTRL):
+            engine.toggle_mapping_adjust()
+            return
+        # While adjust mode is on, intercept its keys before the normal
+        # edit/perform handling: arrows fall through to the per-frame poll
+        # (which pans the group), and -/= scale the content down / up.
+        if engine.mapping.adjust_mode:
+            if key in (pygame.K_LEFT, pygame.K_RIGHT,
+                       pygame.K_UP, pygame.K_DOWN):
+                return
+            if key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                engine.mapping_adjust_zoom(1.0 / 1.08)
+                return
+            if key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                engine.mapping_adjust_zoom(1.08)
+                return
         if engine.mapping.edit_mode:
             if key == pygame.K_b and not (mod & pygame.KMOD_CTRL):
                 engine.mapping_arm_bind()

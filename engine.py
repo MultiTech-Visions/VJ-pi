@@ -1424,6 +1424,23 @@ class Engine:
         In mapping/edit mode arrows are ignored entirely — the operator's
         laying out spaces, not tweaking visuals.
         """
+        # Adjust sub-mode: the held arrow keys MOVE (pan) the selected group's
+        # content continuously. Scaling is on -/= (handled as discrete key
+        # presses in keymap). Checked before the edit-mode early-out so it
+        # works whether or not the operator is in edit mode.
+        if self.mode == "mapping" and self.mapping.adjust_mode:
+            g = self.mapping.selected_group()
+            if g is not None:
+                keys = pygame.key.get_pressed()
+                pan = 0.7 * dt   # pan units/sec (pan_x/y span -3..+3 of bbox)
+                dx = ((-pan if keys[pygame.K_LEFT] else 0.0)
+                      + (pan if keys[pygame.K_RIGHT] else 0.0))
+                dy = ((-pan if keys[pygame.K_UP] else 0.0)
+                      + (pan if keys[pygame.K_DOWN] else 0.0))
+                if dx or dy:
+                    self.mapping.adjust_pan(dx, dy)
+                    self._persist_mapping()
+            return
         if self.mode == "mapping" and self.mapping.edit_mode:
             return
         keys = pygame.key.get_pressed()
@@ -1492,6 +1509,7 @@ class Engine:
             self.mode = "live"
             self.mapping.enabled = False
             self.mapping.edit_mode = False
+            self.mapping.adjust_mode = False
             self.mapping.drag = None
             self.mapping.bind_armed = False
         else:
@@ -1526,6 +1544,18 @@ class Engine:
             return
         self.mapping.toggle_edit_mode()
         self._persist_mapping()
+
+    def toggle_mapping_adjust(self):
+        """Enter/leave the 'adjust' sub-mode (arrows move the selected group's
+        content, -/= scale it). No-op outside mapping or with no group."""
+        if self.mode != "mapping":
+            return
+        if self.mapping.selected_group() is None:
+            return
+        self.mapping.adjust_mode = not self.mapping.adjust_mode
+
+    def exit_mapping_adjust(self):
+        self.mapping.adjust_mode = False
 
     def mapping_arm_bind(self):
         self.mapping.arm_bind()
@@ -1656,6 +1686,12 @@ class Engine:
         """Run one mapping toolbar action from either projector or HUD."""
         m = self.mapping
         if not (0 <= gi < len(m.groups) and 0 <= si < len(m.groups[gi].spaces)):
+            return
+        if kind == "adjust":
+            # Toggle the move/scale sub-mode for this space's group: arrows
+            # then move the content and -/= scale it (Esc or tap again exits).
+            m.select_space(gi, si)
+            m.adjust_mode = not m.adjust_mode
             return
         if kind in {
                 "fit_mode", "zoom_out", "zoom_in",
@@ -2810,8 +2846,13 @@ class Engine:
         if x1 <= x0 or y1 <= y0:
             return
         armed = (kind == "bind" and self.mapping.bind_armed)
-        cv2.rectangle(canvas, (x0, y0), (x1, y1),
-                      (44, 70, 50) if armed else (28, 30, 40), -1)
+        adjust_on = (kind == "adjust" and self.mapping.adjust_mode)
+        fill = (28, 30, 40)
+        if armed:
+            fill = (44, 70, 50)
+        elif adjust_on:
+            fill = (70, 55, 30)   # lit amber while adjust mode is active
+        cv2.rectangle(canvas, (x0, y0), (x1, y1), fill, -1)
         cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 210, 230), 1)
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
         r = max(2, min(x1 - x0, y1 - y0) // 4)
@@ -2828,7 +2869,7 @@ class Engine:
             cv2.line(canvas, (cx - r, cy + r), (cx + r, cy - r), col, 2, cv2.LINE_AA)
             cv2.circle(canvas, (cx, cy), 2, (28, 30, 40), -1)
         elif kind in {
-                "fit_mode", "zoom_out", "zoom_in",
+                "fit_mode", "adjust", "zoom_out", "zoom_in",
                 "pan_left", "pan_right", "pan_up", "pan_down",
                 "reset_frame",
         }:
@@ -2836,6 +2877,7 @@ class Engine:
             fit = group.fit_mode if group is not None else "fit"
             labels = {
                 "fit_mode": fit.upper()[:5],
+                "adjust": "MOVE" if self.mapping.adjust_mode else "ADJ",
                 "zoom_out": "-",
                 "zoom_in": "+",
                 "pan_left": "<",

@@ -69,7 +69,8 @@ MAPPING_KEY_CHEAT = [
     ("EDIT — toolbar ×",   "delete this space"),
     ("EDIT — toolbar +",   "bind this space into the selected space's group"),
     ("EDIT — toolbar ⊘",   "unbind this space into its own new group"),
-    ("EDIT — toolbar frame", "mode / zoom / pan / reset selected group's video"),
+    ("EDIT — toolbar frame", "FIT mode · ADJ (move/scale) · 0 reset video"),
+    ("R  /  toolbar ADJ",  "ADJUST mode: ←→↑↓ move image · −/= scale (Esc=out)"),
     ("EDIT — toolbar G·",  "tag chip = which group this space belongs to"),
     ("EDIT — −/= [/]", "cycle clip / generator for selected box's group"),
     ("hold −+= / [+]", "JUMP picker: type a #, Enter → selected group"),
@@ -661,6 +662,14 @@ class ControlWindow:
         ap_color = (130, 220, 140) if g.autopilot_enabled else (130, 130, 150)
         self._row(surface, "NAME", g.name, x, y, width); y += lh
         self._row(surface, "SPACES", spaces_label, x, y, width); y += lh
+        if e.mapping.adjust_mode:
+            txt = self.font_m.render("ADJUST — ←→↑↓ move · −/= scale · Esc out",
+                                     True, (24, 22, 14))
+            r = txt.get_rect(topleft=(x, y + 1))
+            pygame.draw.rect(surface, (235, 190, 90),
+                             r.inflate(self._px(8), self._px(3)), border_radius=3)
+            surface.blit(txt, r)
+            y += lh + self._px(3)
         y = self._draw_content_block(surface, g, x, y, width)
         fx_on = [k for k, v in g.fx_state.items() if v]
         self._row(surface, "FX", ", ".join(fx_on) if fx_on else "—", x, y, width)
