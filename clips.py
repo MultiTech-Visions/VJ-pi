@@ -44,6 +44,10 @@ class ClipPool:
         )
         self.clips = [None] * len(self.paths)
         self.active_idx = None
+        # Last index that was actually selected, kept even after deselect() so
+        # we can resume browsing from where we left off when the clip layer is
+        # re-entered (e.g. after detouring through a generator / camera / face).
+        self.last_idx = None
         self.max_open = max_open
         self._open_order = []  # least-recent first, most-recent last
         # Track files that need live resizing so we can nudge the
@@ -86,16 +90,26 @@ class ClipPool:
         else:
             self._touch_lru(idx)
         self.active_idx = idx
+        self.last_idx = idx
 
     def deselect(self):
+        # Keep last_idx so a later step() resumes from here, not from 0.
         self.active_idx = None
 
     def step(self, n):
-        """Move active_idx by n positions, wrapping around the list."""
+        """Move active_idx by n positions, wrapping around the list.
+
+        When nothing is selected (we're returning to clips after a generator /
+        camera / face detour), resume from the last clip we were on and step in
+        the pressed direction — so leaving clip 34 and coming back with `=`
+        lands on 35, with `−` lands on 33."""
         if not self.paths:
             return
         if self.active_idx is None:
-            idx = 0 if n >= 0 else len(self.paths) - 1
+            if self.last_idx is None:
+                idx = 0 if n >= 0 else len(self.paths) - 1
+            else:
+                idx = (self.last_idx + n) % len(self.paths)
         else:
             idx = (self.active_idx + n) % len(self.paths)
         self.select(idx)
