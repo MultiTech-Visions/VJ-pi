@@ -31,7 +31,8 @@ from effects import (
 from gpu_generators import GpuGeneratorBridge
 import projectm_presets
 from projectm_presets import PROJECTM_GENERATOR_ORDER
-from shader_catalog import GPU_GENERATOR_ORDER, IMAGE_GENERATORS
+from shader_catalog import (GPU_GENERATOR_ORDER, IMAGE_GENERATORS,
+                            GENERATOR_RENDER_MAX_W)
 
 
 # MilkDrop presets (pm:*) join the cycle after the GLSL generators; they
@@ -1924,11 +1925,14 @@ class Engine:
             # the 'disp' phase, not 'gen', because the GLSL bridge pipelines).
             # Generators are upscaled like a generative anyway, so cap their
             # render resolution well under the cliff. Tunable via
-            # VJ_GPU_RENDER_MAX_W (0 disables the cap).
+            # VJ_GPU_RENDER_MAX_W (0 disables the cap). Heavy "splatting"
+            # shaders get a tighter per-generator cap (GENERATOR_RENDER_MAX_W)
+            # so they don't saturate V3D and stall the output present.
             try:
                 cap_w = int(os.environ.get("VJ_GPU_RENDER_MAX_W", "960"))
             except ValueError:
                 cap_w = 960
+            cap_w = GENERATOR_RENDER_MAX_W.get(name, cap_w)
             if cap_w > 0 and width > cap_w:
                 height = max(2, int(height * cap_w / width))
                 width = cap_w
