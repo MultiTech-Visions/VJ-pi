@@ -210,6 +210,16 @@ class Renderer:
         self.spin_phase = 0.0
         self.spin_t = None
         self.spin_name = None
+        # dotsphere's multi-axis tumble, integrated on the host for the same
+        # reason: the shader used angles like amp*sin(time*w), so changing the
+        # speed (amp) OR the delay (w) snapped the orientation. We integrate
+        # the angles from their velocity form (whose amplitude is just `speed`
+        # and whose phase rate is `w`), so both knobs only change future
+        # motion — no jump. Pushed as tumble_ax/ay/az uniforms.
+        self.tum_phase = 0.0
+        self.tum_ax = 0.0
+        self.tum_ay = 0.0
+        self.tum_az = 0.0
 
     def close(self):
         if self.pipeline is not None:
@@ -295,11 +305,28 @@ class Renderer:
         now = time.monotonic()
         if name != self.spin_name:
             self.spin_phase = 0.0
+            self.tum_phase = self.tum_ax = self.tum_ay = self.tum_az = 0.0
             self.spin_t = now
             self.spin_name = name
         dt = 0.0 if self.spin_t is None else min(0.2, max(0.0, now - self.spin_t))
         self.spin_t = now
-        self.spin_phase += dt * (0.30 + float(param_x) * 1.4)
+        px = float(param_x)
+        py = float(param_y)
+        # neckercube: monotonic turntable angle.
+        self.spin_phase += dt * (0.30 + px * 1.4)
+        # dotsphere: integrate the three tumble axes from the velocity form of
+        # the old closed-form motion (d/dt of amp*sin(time*w...), where
+        # amp*w == speed). speed = param_x*1.6, w = TAU/delay, delay from
+        # param_y. Integrating means neither knob jumps the orientation.
+        speed = px * 1.6
+        delay = 1.5 + (20.0 - 1.5) * min(1.0, max(0.0, py))
+        w = (2.0 * math.pi) / delay
+        self.tum_phase += dt * w
+        ph = self.tum_phase
+        self.tum_ay += dt * speed * (math.cos(ph) + 1.02 * math.cos(1.7 * ph + 1.3))
+        self.tum_ax += dt * speed * (0.8 * math.cos(0.8 * ph + 2.1)
+                                     + 0.78 * math.cos(1.3 * ph + 4.7))
+        self.tum_az += dt * speed * 0.55 * math.cos(1.1 * ph + 5.5)
         # Push the live 0..1 params as custom GLSL uniforms. glshader keeps
         # its built-in time/width/height/tex regardless, and a shader that
         # doesn't declare param_x/param_y just ignores them (unknown uniform
@@ -307,9 +334,12 @@ class Renderer:
         try:
             st = Gst.Structure.new_from_string(
                 "uniforms,param_x=(gfloat){:.6f},param_y=(gfloat){:.6f},"
-                "cube_spin=(gfloat){:.6f},spin_phase=(gfloat){:.6f}".format(
+                "cube_spin=(gfloat){:.6f},spin_phase=(gfloat){:.6f},"
+                "tumble_ax=(gfloat){:.6f},tumble_ay=(gfloat){:.6f},"
+                "tumble_az=(gfloat){:.6f}".format(
                     float(param_x), float(param_y), float(cube_spin),
-                    float(self.spin_phase)))
+                    float(self.spin_phase), float(self.tum_ax),
+                    float(self.tum_ay), float(self.tum_az)))
             if st is not None:
                 self.shader.set_property("uniforms", st)
         except Exception as exc:

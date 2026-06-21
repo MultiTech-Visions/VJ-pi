@@ -1256,6 +1256,12 @@ uniform float width;
 uniform float height;
 uniform float param_x;   // rotation speed          (arrow Left/Right)
 uniform float param_y;   // direction-change delay   (arrow Up/Down)
+// Tumble angles integrated on the host (gpu_generator_worker) so neither
+// the speed nor the delay knob snaps the orientation. param_x/param_y still
+// drive them — just through the host accumulator, not raw time here.
+uniform float tumble_ax;
+uniform float tumble_ay;
+uniform float tumble_az;
 
 const float PI  = 3.14159265359;
 const float TAU = 6.28318530718;
@@ -1275,23 +1281,15 @@ vec3 rotX(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(p.x, c*p.
 vec3 rotZ(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(c*p.x - s*p.y, s*p.x + c*p.y, p.z); }
 
 // Tumble the lookup with the sphere so the painted dots rotate with it.
-// Each axis angle is a sum of two sines whose base period is the
-// direction-change delay; the angular velocity (their derivative) flips
-// sign every ~delay/2, so the ball keeps redirecting on its own. Speed
-// scales the throw. It's a closed form of time, so orientation is always
-// continuous — no snap when the params move.
+// The wandering, self-redirecting motion is unchanged — but the per-axis
+// angles are now integrated on the host (see gpu_generator_worker) and
+// arrive as uniforms. Doing it inline as amp*sin(time*w) snapped the ball
+// whenever the speed (amp) or delay (w) knob moved; integrating the angles
+// means both knobs only steer the FUTURE motion, never jump it.
 vec3 tumble(vec3 p) {
-    float speed = param_x * 1.6;                 // 0 = frozen
-    float delay = mix(1.5, 20.0, clamp(param_y, 0.0, 1.0));
-    float w = TAU / delay;
-    float amp = speed * delay / TAU;             // keep peak rate ~ speed
-
-    float ay = amp * (sin(time * w        + 0.0) + 0.6 * sin(time * w * 1.7 + 1.3));
-    float ax = amp * (sin(time * w * 0.8  + 2.1) + 0.6 * sin(time * w * 1.3 + 4.7));
-    float az = amp * 0.5 * sin(time * w * 1.1 + 5.5);
-    p = rotY(p, ay);
-    p = rotX(p, ax);
-    p = rotZ(p, az);
+    p = rotY(p, tumble_ay);
+    p = rotX(p, tumble_ax);
+    p = rotZ(p, tumble_az);
     return p;
 }
 
@@ -1302,8 +1300,8 @@ vec4 sphereDots(vec3 sp, float sizeScale) {
     float lat = asin(clamp(sp.y, -1.0, 1.0));   // -PI/2 .. PI/2
     float lon = atan(sp.z, sp.x);               // -PI .. PI
 
-    float RINGS   = 26.0;                        // latitude bands
-    float LON_MAX = 52.0;                        // longitude dots at equator
+    float RINGS   = 18.0;                        // latitude bands (~half the dots)
+    float LON_MAX = 36.0;                        // longitude dots at equator
 
     float fLat = lat / PI + 0.5;                 // 0 .. 1
     float ring = floor(fLat * RINGS);
@@ -1319,7 +1317,7 @@ vec4 sphereDots(vec3 sp, float sizeScale) {
     float dlon = (fLon - lonC) * TAU * cl;       // metric offset (radians)
 
     float dist = length(vec2(dlon, dlat));
-    float dotR = (PI / RINGS) * 0.46 * sizeScale;
+    float dotR = (PI / RINGS) * 0.38 * sizeScale;   // smaller fill -> gaps show the far dots
     float mask = smoothstep(dotR, dotR * 0.68, dist);
 
     float hue = floor(hash(vec2(ring, lonIdx)) * 6.0) / 6.0;   // six primaries
