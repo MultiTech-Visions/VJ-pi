@@ -7,21 +7,25 @@
 # These are H.264 .mp4s, i.e. the format the regular "Start VJ.sh" plays,
 # so they drop straight into assets/clips/ with no processing.
 #
+# Downloads run in PARALLEL (several at once) for speed — set how many with
+# VJ_DL_JOBS (default 6).
+#
 # Re-runnable: it scans every loop you already have ANYWHERE under assets/
 # (clips, clips_hevc, _originals, …) and skips those, and it resumes a
-# partial download instead of starting over. Run it again any time to pick
-# up loops added later or finish an interrupted batch.
+# partial download instead of starting over. Cancel the progress bar any
+# time; half-finished files are left as .part and resume on the next run.
 
 cd "$(dirname "$0")"
-LOG="$(pwd)/vj_last_download.log"
+export LOG="$(pwd)/vj_last_download.log"
 
-BASE_URL="https://ftp.mantissa.xyz/vj_loops/"
-PREFIX="mantissa.xyz_loop_"
+export BASE_URL="https://ftp.mantissa.xyz/vj_loops/"
+export PREFIX="mantissa.xyz_loop_"
 FIRST=1
 LAST=127
-DEST="assets/clips"
+export DEST="assets/clips"
+JOBS="${VJ_DL_JOBS:-6}"
 
-show_info() {  # title, body, [--error]
+show_info() {  # title, body, [kind]
   local title="$1" body="$2" kind="${3:---info}"
   if command -v zenity >/dev/null 2>&1; then
     zenity "$kind" --width=640 --title="$title" --text="$body" 2>/dev/null
@@ -32,8 +36,27 @@ show_info() {  # title, body, [--error]
   fi
 }
 
+# One download, run by xargs in parallel. Prints exactly one result line
+# (OK/FAIL) to stdout so the progress counter can tick; detail goes to $LOG.
+dl_one() {
+  local num="$1"
+  local name="${PREFIX}${num}.mp4"
+  local part="$DEST/.${name}.part"
+  if curl -fsS --retry 3 --retry-delay 2 -C - -o "$part" "${BASE_URL}${name}" 2>>"$LOG"; then
+    mv -f "$part" "$DEST/$name"
+    echo "[download]   OK $name" >>"$LOG"
+    echo OK
+  else
+    rm -f "$part"
+    echo "[download]   FAILED $name" >>"$LOG"
+    echo FAIL
+  fi
+}
+export -f dl_one
+
 : >"$LOG"
 date '+[download] start: %Y-%m-%d %H:%M:%S' >>"$LOG"
+echo "[download] parallel jobs: $JOBS" >>"$LOG"
 mkdir -p "$DEST"
 
 # Loop numbers already present anywhere under assets/ (avoid duplicates).
@@ -49,7 +72,7 @@ for i in $(seq "$FIRST" "$LAST"); do
   [ -f "$DEST/${PREFIX}${num}.mp4" ] && continue
   TODO+=("$num")
 done
-TOTAL=${#TODO[@]}
+export TOTAL=${#TODO[@]}
 echo "[download] missing: $TOTAL loop(s)" >>"$LOG"
 
 if [ "$TOTAL" -eq 0 ]; then
@@ -58,49 +81,42 @@ if [ "$TOTAL" -eq 0 ]; then
   exit 0
 fi
 
-# RESULT file carries counts back out of the progress subshell.
-RESULT=$(mktemp)
-echo "0 0" >"$RESULT"   # ok failed
+RESULT=$(mktemp)   # final "ok fail" counts, carried out of the progress subshell
 
-run() {   # emits zenity --progress protocol on stdout; detail goes to $LOG
-  local done=0 ok=0 failed=0
-  for num in "${TODO[@]}"; do
-    local name="${PREFIX}${num}.mp4"
-    local url="${BASE_URL}${name}"
-    local part="$DEST/.${name}.part"
-    echo "# Downloading loop $num  ($((done+1)) of $TOTAL)…"
-    echo "[download] GET $url" >>"$LOG"
-    if curl -fL --retry 3 --retry-delay 2 -C - -o "$part" "$url" >>"$LOG" 2>&1; then
-      mv -f "$part" "$DEST/$name"
-      ok=$((ok+1))
-      echo "[download]   OK -> $DEST/$name" >>"$LOG"
-    else
-      failed=$((failed+1))
-      rm -f "$part"
-      echo "[download]   FAILED $name" >>"$LOG"
-    fi
-    done=$((done+1))
-    echo $(( done * 100 / TOTAL ))
-  done
-  echo "$ok $failed" >"$RESULT"
+# Fan the to-do list out to JOBS parallel curls. Each finished file prints
+# one OK/FAIL line; the counter turns that into a running percentage for
+# zenity and tallies the totals. Cancelling zenity breaks the pipe, which
+# stops xargs (partial files stay as .part and resume next run).
+run() {
+  printf '%s\n' "${TODO[@]}" \
+    | xargs -P "$JOBS" -I {} bash -c 'dl_one "$@"' _ {} \
+    | {
+        done=0; ok=0; fail=0
+        while read -r tag; do
+          [ "$tag" = OK ] && ok=$((ok+1)) || fail=$((fail+1))
+          done=$((done+1))
+          echo $(( done * 100 / TOTAL ))
+          echo "# Completed $done of $TOTAL  (downloaded $ok, failed $fail)"
+        done
+        echo "$ok $fail" >"$RESULT"
+      }
 }
 
 if command -v zenity >/dev/null 2>&1; then
-  run | zenity --progress --title="Downloading Mantissa loops" \
-        --width=520 --text="Starting…" --percentage=0 --auto-close 2>/dev/null
-  # If the user hit Cancel, zenity closes the pipe; partials are .part and
-  # resume next run, so nothing is corrupted.
+  run | zenity --progress --title="Downloading Mantissa loops ($JOBS at a time)" \
+        --width=560 --text="Starting $TOTAL downloads…" --percentage=0 --auto-close 2>/dev/null
 else
-  run
+  run >/dev/null
 fi
 
-read -r OK FAILED <"$RESULT"; rm -f "$RESULT"
+read -r OK FAIL <"$RESULT" 2>/dev/null; rm -f "$RESULT"
+OK=${OK:-0}; FAIL=${FAIL:-0}
 date '+[download] done: %Y-%m-%d %H:%M:%S' >>"$LOG"
-echo "[download] downloaded=$OK failed=$FAILED of $TOTAL" >>"$LOG"
+echo "[download] downloaded=$OK failed=$FAIL of $TOTAL" >>"$LOG"
 
-BODY="Downloaded: $OK\nFailed: $FAILED\nRequested this run: $TOTAL\n\nSaved to: $DEST/\n\nThey'll appear in Start VJ.sh on the next launch.\nRun this again any time to retry failures or grab new loops.\n\nLog: $LOG"
-if [ "$FAILED" -gt 0 ]; then
-  show_info "Mantissa loops — finished with $FAILED failure(s)" "$BODY" --warning
+BODY="Downloaded: $OK\nFailed: $FAIL\nRequested this run: $TOTAL\n\nSaved to: $DEST/\n\nThey'll appear in Start VJ.sh on the next launch.\nRun this again any time to retry failures or grab new loops.\n\nLog: $LOG"
+if [ "$FAIL" -gt 0 ]; then
+  show_info "Mantissa loops — finished with $FAIL failure(s)" "$BODY" --warning
 else
   show_info "Mantissa loops — done" "$BODY"
 fi
