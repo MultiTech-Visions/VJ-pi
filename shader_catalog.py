@@ -1417,20 +1417,33 @@ vec3 hsv2rgb(vec3 c) {
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
-float hash(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+// PERF: a sin-free hash (Dave Hoskins' hash11). The old hash was
+// fract(sin(n*..)*..) — one sin per call, and this shader calls it FIVE
+// times per face-dot inside a 144-iteration per-pixel loop, i.e. ~720
+// sins per pixel just to place the dots. On V3D that (plus the rotation
+// trig below) is what made this generator crawl while dotsphere — which
+// does O(1) analytic work per pixel — stays fast. This version is pure
+// multiply/fract. (Dot RNG positions shift vs the old hash; the look —
+// random coloured dots on the six faces — is unchanged.)
+float hash(float n) {
+    n = fract(n * 0.1031);
+    n *= n + 33.33;
+    n *= n + n;
+    return fract(n);
+}
 
-vec3 rotY(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z); }
-vec3 rotX(vec3 p, float a) { float c = cos(a), s = sin(a); return vec3(p.x, c*p.y - s*p.z, s*p.y + c*p.z); }
+// PERF: the cube's rotation (turntable spin + fixed tilt/nod) is the SAME
+// for every point this frame, so its cos/sin are computed ONCE per pixel
+// in main() into these globals — not re-derived on all 152 point
+// transforms per pixel as the old spinPt() did. rot() is a pure mat-vec.
+float cosS, sinS, cosN, sinN;
 
-// Turntable: spin about the vertical axis, then a fixed forward tilt
-// (plus an optional slow nod). One steady direction — the reversal the
-// operator sees is entirely in their head, which is the whole gag.
-vec3 spinPt(vec3 p) {
-    float spin = time * (0.30 + param_x * 1.4);
-    float nod  = TILT + param_y * 0.35 * sin(time * 0.5);
-    p = rotY(p, spin);
-    p = rotX(p, nod);
-    return p;
+// Turntable: spin about the vertical axis (rotY), then a fixed forward
+// tilt + optional slow nod (rotX), using the precomputed cos/sin. One
+// steady direction — the reversal the operator sees is in their head.
+vec3 rot(vec3 p) {
+    vec3 q = vec3(cosS * p.x + sinS * p.z, p.y, -sinS * p.x + cosS * p.z);
+    return vec3(q.x, cosN * q.y - sinN * q.z, sinN * q.y + cosN * q.z);
 }
 
 // Orthographic projection: just keep x,y (NO perspective divide). This
@@ -1465,15 +1478,23 @@ void main() {
 
     vec3 col = vec3(0.012, 0.013, 0.020);   // near-black space
 
+    // Build the frame's rotation ONCE (the only trig in the shader now:
+    // one sin for the nod plus cos/sin of spin and nod) into the globals
+    // rot() reads. Everything below is pure multiply/add.
+    float spin = time * (0.30 + param_x * 1.4);
+    float nod  = TILT + param_y * 0.35 * sin(time * 0.5);
+    cosS = cos(spin); sinS = sin(spin);
+    cosN = cos(nod);  sinN = sin(nod);
+
     // Eight cube corners, rotated once.
-    vec3 v0 = spinPt(vec3(-1.0, -1.0, -1.0));
-    vec3 v1 = spinPt(vec3( 1.0, -1.0, -1.0));
-    vec3 v2 = spinPt(vec3( 1.0,  1.0, -1.0));
-    vec3 v3 = spinPt(vec3(-1.0,  1.0, -1.0));
-    vec3 v4 = spinPt(vec3(-1.0, -1.0,  1.0));
-    vec3 v5 = spinPt(vec3( 1.0, -1.0,  1.0));
-    vec3 v6 = spinPt(vec3( 1.0,  1.0,  1.0));
-    vec3 v7 = spinPt(vec3(-1.0,  1.0,  1.0));
+    vec3 v0 = rot(vec3(-1.0, -1.0, -1.0));
+    vec3 v1 = rot(vec3( 1.0, -1.0, -1.0));
+    vec3 v2 = rot(vec3( 1.0,  1.0, -1.0));
+    vec3 v3 = rot(vec3(-1.0,  1.0, -1.0));
+    vec3 v4 = rot(vec3(-1.0, -1.0,  1.0));
+    vec3 v5 = rot(vec3( 1.0, -1.0,  1.0));
+    vec3 v6 = rot(vec3( 1.0,  1.0,  1.0));
+    vec3 v7 = rot(vec3(-1.0,  1.0,  1.0));
 
     // 12 edges, max-blended (no occlusion -> wireframe, no depth cue).
     col = max(col, edgeDots(px, v0, v1, 0.0));   // bottom face
@@ -1508,7 +1529,7 @@ void main() {
         else if (f < 3.5) pp = vec3(a, -1.0, b);
         else if (f < 4.5) pp = vec3(a, b,  1.0);
         else              pp = vec3(a, b, -1.0);
-        vec2 sp = proj(spinPt(pp));
+        vec2 sp = proj(rot(pp));
         float d = length(px - sp);
         float m = smoothstep(0.0042, 0.0018, d);
         float hue = fract(hash(fi + 3.3));
