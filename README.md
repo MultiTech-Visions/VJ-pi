@@ -67,6 +67,23 @@ The default `Start VJ.sh` assumes:
 If your displays are wired up the other way, open `Start VJ.sh` in a
 text editor and swap `OUTPUT_DISPLAY` and `CONTROL_DISPLAY` at the top.
 
+### The control HUD on a tiny screen
+
+The HUD is a **fullscreen, landscape dashboard** sized for the small
+operator tablet: a big live preview top-left, the now-playing status and
+PARAM bars beside it, the favourite-slot grids below, then the output
+picker. The full key list is no longer always on screen — press `/` to pop
+it up as an overlay when you need it.
+
+Text size is driven by one scale factor that **starts from your desktop
+font's point size** (read from the GTK/`gsettings` UI font), so the HUD
+respects the size you set system-wide. If it's still too small or too big,
+`Ctrl + =` / `Ctrl + −` resize it live and remember the choice. To pin a
+size yourself, set `VJ_HUD_SCALE` (e.g. `1.6`) or `VJ_HUD_FONT`
+(e.g. `"PibotoLt 13"`) in the launcher before `python main.py`. The
+launchers pass `--control-size fullscreen`; a fixed `WxH` still works for a
+windowed HUD.
+
 ### Keyboard focus
 
 The keyboard sends keys to whichever window has focus — click into the
@@ -171,6 +188,8 @@ Rii mini wireless keyboards (~70 keys + trackpad).
 | `N`                 | Toggle **4K CINEMATIC mode**. While active, `−` / `=` move through the 4K playlist; `Esc` exits cinematic mode. |
 | `Esc`               | Panic: clear FX, hits, blackout/freeze. **Keeps the current clip _or_ generator playing** so you never drop to black unexpectedly. |
 | `Shift+Esc`         | Quit                                               |
+| `/`                 | Show / hide the full **key reference** as a fullscreen overlay on the HUD (on-demand now, not always-on clutter). |
+| `Ctrl + =` / `Ctrl + −` | **Bigger / smaller HUD text** — live and persisted to `vj_state.json`. The HUD also seeds its starting size from your desktop font's point size. Live mode only (in mapping `Ctrl+=/-` add/remove a space). |
 
 ## Projection mapping mode (press `M`)
 

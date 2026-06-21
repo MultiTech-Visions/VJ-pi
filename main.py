@@ -24,8 +24,10 @@ def parse_args():
                    help="Also open a Control HUD window with live preview + keys")
     p.add_argument("--control-display", type=int, default=0,
                    help="Display index for the Control HUD window")
-    p.add_argument("--control-size", default="680x720",
-                   help="Control HUD size as WxH (default 680x720)")
+    p.add_argument("--control-size", default="fullscreen",
+                   help="Control HUD size as WxH, or 'fullscreen' (default) to "
+                        "fill the control display borderless — best for the "
+                        "small operator tablet.")
     p.add_argument("--gen-render-scale", type=float, default=0.5,
                    help="Render generatives at this fraction of canvas "
                         "resolution and upscale on the way out (0.1..1.0, "
@@ -128,7 +130,28 @@ def _open_output_window(cfg):
         return pygame.display.set_mode(size, flags)
 
 
-def _open_control_window(size, display_idx):
+def _resolve_control_size(spec, display_idx):
+    """Turn a --control-size spec into ((w, h), fullscreen?).
+
+    'fullscreen' (the default) → the control display's full desktop size,
+    presented borderless so the whole tiny operator tablet is used instead of
+    a small window floating on the desktop. 'WxH' → that fixed size, windowed.
+    """
+    if spec.strip().lower() in ("fullscreen", "full", "fs"):
+        try:
+            size = pygame.display.get_desktop_sizes()[display_idx]
+        except (pygame.error, IndexError, AttributeError):
+            size = (1024, 600)
+        return size, True
+    try:
+        w, h = (int(x) for x in spec.lower().split("x"))
+        return (w, h), False
+    except ValueError:
+        print(f"[vj] bad --control-size {spec!r}, using 680x720")
+        return (680, 720), False
+
+
+def _open_control_window(size, display_idx, fullscreen=False):
     """Create the _sdl2 GPU window + renderer for the control HUD (used in the
     default CPU-output layout, where the HUD owns the single GL context)."""
     from pygame._sdl2.video import Window, Renderer
@@ -137,7 +160,8 @@ def _open_control_window(size, display_idx):
         "VJ Control",
         size=size,
         position=(centered_on_display, centered_on_display),
-        resizable=True,
+        resizable=not fullscreen,
+        borderless=fullscreen,
     )
     win.show()
     renderer = Renderer(win)
@@ -222,13 +246,11 @@ def main():
         # the GPU output window itself.
         ctrl_screen = None
         if args.control:
-            try:
-                ctrl_w, ctrl_h = (int(x) for x in args.control_size.lower().split("x"))
-            except ValueError:
-                print(f"[vj] bad --control-size {args.control_size!r}, using 680x720")
-                ctrl_w, ctrl_h = 680, 720
+            (ctrl_w, ctrl_h), ctrl_full = _resolve_control_size(
+                args.control_size, args.control_display)
+            flags = pygame.NOFRAME if ctrl_full else 0
             ctrl_screen = pygame.display.set_mode(
-                (ctrl_w, ctrl_h), 0, display=args.control_display)
+                (ctrl_w, ctrl_h), flags, display=args.control_display)
             pygame.display.set_caption("VJ Control")
 
         engine = Engine(cfg, None)   # screen set by init_gpu_output
@@ -265,13 +287,10 @@ def main():
 
         if args.control and control is None:
             from control import ControlWindow
-            try:
-                ctrl_w, ctrl_h = (int(x) for x in args.control_size.lower().split("x"))
-            except ValueError:
-                print(f"[vj] bad --control-size {args.control_size!r}, using 680x720")
-                ctrl_w, ctrl_h = 680, 720
+            (ctrl_w, ctrl_h), ctrl_full = _resolve_control_size(
+                args.control_size, args.control_display)
             ctrl_win, ctrl_renderer = _open_control_window(
-                (ctrl_w, ctrl_h), args.control_display)
+                (ctrl_w, ctrl_h), args.control_display, fullscreen=ctrl_full)
             preview_w = ctrl_w - 24
             preview_h = int(preview_w * cfg.height / cfg.width)
             control = ControlWindow(

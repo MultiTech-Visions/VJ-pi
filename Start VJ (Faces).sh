@@ -17,7 +17,7 @@
 
 OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
-CONTROL_SIZE="680x720"
+CONTROL_SIZE="fullscreen"
 
 # Render canvas resolution. Leave empty to use config.py's default.
 RENDER_WIDTH=""
