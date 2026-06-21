@@ -1367,8 +1367,14 @@ void main() {
 
 # ── Neckercube: the ambiguous / bistable spinning wireframe cube ─────
 #
-# A skeletal cube whose 12 edges are strung with coloured dots, floating
-# in a field of looser coloured "dust", slowly turning on a turntable.
+# A skeletal cube whose 12 edges are strung with coloured dots, with more
+# coloured dots scattered across its six FACES, slowly turning on a
+# turntable. The face dots are the key: each one is pinned to its plane
+# (x=+-1, y=+-1 or z=+-1) so a whole face's worth of dots moves as one
+# rigid sheet -> the brain reads each cluster as a solid rotating PLANE.
+# They are NOT a loose volume of "dust"; a 3D cloud would just look like
+# noise and wouldn't read as faces.
+#
 # The whole point is the ILLUSION: there is no actual change of
 # direction in the footage, yet the brain freely flips which way it
 # reads the spin (the spinning-dancer / Necker-cube bistable effect).
@@ -1483,13 +1489,26 @@ void main() {
     col = max(col, edgeDots(px, v2, v6, 10.0));
     col = max(col, edgeDots(px, v3, v7, 11.0));
 
-    // Floating dust inside the cube. Fixed random 3D points that tumble
-    // WITH the cube. Brightness varies per mote for life, but size is
-    // constant and there is no z fade -> still no depth cue.
-    for (int i = 0; i < 100; i++) {
+    // Dots scattered across the SIX FACES. Each point is fixed on one of
+    // the planes (x=+-1, y=+-1, z=+-1) and tumbles WITH the cube, so a
+    // face's dots move as a coherent sheet -> reads as a solid rotating
+    // plane (that is what makes the illusion, vs. a noisy volume). The
+    // near and far faces overlap on screen with no occlusion or z fade,
+    // so there is still no cue to which plane is in front. Brightness
+    // varies per dot for life, but size is constant.
+    for (int i = 0; i < 144; i++) {
         float fi = float(i);
-        vec3 pp = vec3(hash(fi + 0.1), hash(fi + 5.7), hash(fi + 11.3)) * 2.0 - 1.0;
-        vec2 sp = proj(spinPt(pp * 0.96));
+        float f = floor(hash(fi + 0.1) * 6.0);   // which face, 0..5
+        float a = (hash(fi + 5.7)  * 2.0 - 1.0) * 0.97;   // in-plane coords
+        float b = (hash(fi + 11.3) * 2.0 - 1.0) * 0.97;
+        vec3 pp;
+        if      (f < 0.5) pp = vec3( 1.0, a, b);
+        else if (f < 1.5) pp = vec3(-1.0, a, b);
+        else if (f < 2.5) pp = vec3(a,  1.0, b);
+        else if (f < 3.5) pp = vec3(a, -1.0, b);
+        else if (f < 4.5) pp = vec3(a, b,  1.0);
+        else              pp = vec3(a, b, -1.0);
+        vec2 sp = proj(spinPt(pp));
         float d = length(px - sp);
         float m = smoothstep(0.0042, 0.0018, d);
         float hue = fract(hash(fi + 3.3));
