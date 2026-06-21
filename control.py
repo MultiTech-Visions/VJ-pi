@@ -661,7 +661,7 @@ class ControlWindow:
         ap_color = (130, 220, 140) if g.autopilot_enabled else (130, 130, 150)
         self._row(surface, "NAME", g.name, x, y, width); y += lh
         self._row(surface, "SPACES", spaces_label, x, y, width); y += lh
-        self._row(surface, "CONTENT", self._group_content_label(g), x, y, width); y += lh
+        y = self._draw_content_block(surface, g, x, y, width)
         fx_on = [k for k, v in g.fx_state.items() if v]
         self._row(surface, "FX", ", ".join(fx_on) if fx_on else "—", x, y, width)
         y += lh + self._px(2)
@@ -937,18 +937,81 @@ class ControlWindow:
         disp = name[3:] if name.startswith("pm:") else name
         return f"[{idx}/{total}] {disp}"
 
-    @staticmethod
-    def _group_content_label(g):
-        if g.content_kind == "generative" and g.gen_name:
+    def _content_parts(self, g):
+        """(kind, position, name) for a mapping group's content. ``position``
+        is the '[x/n]' index string (None when there's no list position), kept
+        SEPARATE so it can be shown first and never truncated away."""
+        e = self.engine
+        kind = g.content_kind
+        if kind == "clip":
+            i = e.clips.find_by_stem(g.clip_stem)
+            n = len(e.clips)
+            pos = f"[{i + 1}/{n}]" if (i is not None and n) else None
+            return "clip", pos, (g.clip_stem or "—")
+        if kind == "generative" and g.gen_name:
             from engine import GENERATIVES
             name = g.gen_name
             disp = name[3:] if name.startswith("pm:") else name
             try:
                 idx = GENERATIVES.index(name) + 1
-                return f"gen:  [{idx}/{len(GENERATIVES)}] {disp}"
+                pos = f"[{idx}/{len(GENERATIVES)}]"
             except ValueError:
-                return f"gen:  {disp}"
-        return g.content_label()
+                pos = None
+            return "gen", pos, disp
+        if kind == "camera":
+            return "live cam", None, None
+        if kind == "blackout":
+            return "blackout", None, None
+        return (kind or "—"), None, None
+
+    def _draw_content_block(self, surface, g, x, y, width):
+        """CONTENT row: '[x/n]  kind' on the label line (number FIRST so it's
+        never lost), then the full name wrapped onto its own line(s) below."""
+        kind, pos, name = self._content_parts(g)
+        header = f"{pos}  {kind}" if pos else kind
+        self._row(surface, "CONTENT", header, x, y, width)
+        y += self.line_m
+        if name:
+            indent = self._px(12)
+            avail = max(self._px(40), width - indent)
+            for ln in self._wrap_text(name, self.font_m, avail, max_lines=2):
+                s = self.font_m.render(ln, True, (235, 235, 250))
+                surface.blit(s, (x + indent, y))
+                y += self.line_m
+        return y
+
+    def _wrap_text(self, text, font, max_w, max_lines=2):
+        """Greedy wrap `text` to `max_w` pixels, breaking on spaces / _ / -
+        where possible, hard-breaking long tokens, and ellipsizing the last
+        line if it still overflows the line budget."""
+        text = str(text)
+        if not text:
+            return []
+        lines = []
+        remaining = text
+        while remaining and len(lines) < max_lines:
+            lo, hi, fit = 1, len(remaining), 1
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if font.size(remaining[:mid])[0] <= max_w:
+                    fit = mid; lo = mid + 1
+                else:
+                    hi = mid - 1
+            if fit >= len(remaining):
+                lines.append(remaining)
+                remaining = ""
+                break
+            seg = remaining[:fit]
+            brk = max(seg.rfind(" "), seg.rfind("_"), seg.rfind("-"))
+            cut = brk + 1 if brk >= max(1, fit // 2) else fit
+            lines.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+        if remaining and lines:
+            last = lines[-1]
+            while last and font.size(last + "…")[0] > max_w:
+                last = last[:-1]
+            lines[-1] = last + "…"
+        return lines
 
     @staticmethod
     def _camera_label(e):
