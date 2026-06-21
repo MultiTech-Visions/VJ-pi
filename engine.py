@@ -1916,6 +1916,24 @@ class Engine:
                 width = cap_w
                 width -= width % 4
                 height -= height % 2
+        elif name in GPU_GENERATOR_ORDER:
+            # Same V3D glReadPixels cliff hits GLSL generators: rendering +
+            # reading back a heavy shader (e.g. neckercube's per-pixel dot
+            # loop) at the full 1920x1080 canvas saturates V3D, and the GPU
+            # output present then stalls behind it (shows up as a balloon in
+            # the 'disp' phase, not 'gen', because the GLSL bridge pipelines).
+            # Generators are upscaled like a generative anyway, so cap their
+            # render resolution well under the cliff. Tunable via
+            # VJ_GPU_RENDER_MAX_W (0 disables the cap).
+            try:
+                cap_w = int(os.environ.get("VJ_GPU_RENDER_MAX_W", "960"))
+            except ValueError:
+                cap_w = 960
+            if cap_w > 0 and width > cap_w:
+                height = max(2, int(height * cap_w / width))
+                width = cap_w
+                width -= width % 4
+                height -= height % 2
         token = self._generator_activation_token if name in IMAGE_GENERATORS else 0
         frame = self.gpu_generators.render(name, width, height, token=token,
                                            params=params)

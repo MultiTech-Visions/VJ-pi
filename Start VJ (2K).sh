@@ -20,7 +20,7 @@ RENDER_WIDTH=2048
 RENDER_HEIGHT=1152
 
 cd "$(dirname "$0")"
-LOG="$(pwd)/vj_last_run_2k.log"
+LOG="$(pwd)/vj_last_run.log"
 
 show_error() {
   local title="$1"
