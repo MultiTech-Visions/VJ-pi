@@ -1,3 +1,9 @@
+import math
+import os
+import random
+from collections import OrderedDict
+from pathlib import Path
+
 import numpy as np
 import cv2
 
@@ -250,6 +256,270 @@ def metaballs(ctx, n=6):
     val = (intensity * 255).astype(np.uint8)
     hsv = np.stack([hue, sat, val], axis=-1)
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+
+
+# ── Table-top photo slideshow ──────────────────────────────────────────
+#
+# A camera pans (forever, to the right, with a gentle sinusoidal "curve")
+# across an infinite dark-wood table. Photos from assets/images/ drop onto
+# the surface one after another — each slightly overlapping the last, at a
+# small random rotation that slowly drifts — landing with a soft shadow.
+# Near-top-down view, so photos stay rectangular and a single cv2.warpAffine
+# stamps each one (drawn once, painter's-order far→near). Pure CPU/numpy/cv2
+# — no GL, no V3D risk; it's a sibling to the GPU `cube` slideshow but the
+# many-overlapping-photos layout would be a per-pixel loop on the GPU (the
+# V3D-stalling "splatting" trap), whereas on the CPU it's O(photos).
+#
+# Everything is a deterministic function of ctx.t and the slot index, so it
+# never jitters and is resumable: slot i sits at a hashed position/rotation
+# and shows shuffled image i % N. Drop timing is keyed to where the slot is
+# on screen, so a photo always drops just as it slides in from the right.
+
+_TABLE_HERE = Path(__file__).resolve().parent
+_TABLE_IMAGES_DIR = _TABLE_HERE / "assets" / "images"
+
+# Card geometry (base resolution; on-screen size is reached by the affine
+# `scale`, so the decoded card is cached once per image, not per size).
+_CARD_LONG = 360          # longest side of the decoded photo, px
+_CARD_BORDER = 14         # white matte border baked around the photo, px
+_CARD_MATTE = (236, 234, 227)
+_CARD_CACHE_MAX = 64      # LRU cap on decoded cards (~0.4 MB each)
+
+# Shadow under a landed photo.
+_SH_STRENGTH = 0.5
+_SH_BLUR = 17             # odd Gaussian kernel
+_SH_OFF = 8              # down-right offset at scale 1
+
+
+def _table_list_images():
+    if not _TABLE_IMAGES_DIR.exists():
+        return []
+    paths = []
+    for suffix in ("*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG", "*.JPEG"):
+        paths.extend(_TABLE_IMAGES_DIR.glob(suffix))
+    return sorted(str(p) for p in paths)
+
+
+def _smoothstep(x):
+    x = min(1.0, max(0.0, x))
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _make_wood(w, h):
+    """A seamless (tileable in both axes) dark-wood-grain panel sized to the
+    canvas. Built once per resolution; the camera reveals it by np.roll, which
+    wraps cleanly because every term is periodic over the tile."""
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    u = xx / w * (2.0 * math.pi)
+    v = yy / h * (2.0 * math.pi)
+    # Fine grain runs horizontally (varies along y), waving slightly with x.
+    grain = np.sin(v * 22.0 + np.sin(u * 2.0) * 0.7)
+    # Broad rings/figure for the plank look.
+    rings = np.sin(v * 5.0 + np.sin(u * 3.0) * 0.5)
+    # Occasional darker plank streaks along the grain.
+    streak = np.sin(u * 4.0) * 0.5 + np.sin(u * 7.0) * 0.25
+    val = 0.55 + 0.18 * grain + 0.16 * rings + 0.06 * streak
+    val = np.clip(val, 0.18, 1.0)
+    # Dark walnut: deep brown that brightens with the grain value.
+    base = np.array([34.0, 22.0, 14.0])      # RGB floor
+    top = np.array([96.0, 60.0, 33.0])       # RGB at bright grain
+    wood = base[None, None, :] + val[..., None] * (top - base)[None, None, :]
+    return np.clip(wood, 0, 255).astype(np.uint8)
+
+
+class _TableTop:
+    """Stateful CPU generator: the only persistent state is the decoded-card
+    LRU and the (stable) image shuffle; all motion is derived from ctx.t."""
+
+    def __init__(self):
+        self._cards = OrderedDict()   # path -> bordered RGB card (LRU)
+        self._images = []
+        self._shuffle = []
+        self._last_scan_t = -1e9
+        self._wood = None
+        self._wood_size = None
+
+    def _refresh_images(self, t):
+        # Re-scan the folder at most ~once a second so the operator can drop
+        # new photos in mid-show without restarting.
+        if t - self._last_scan_t < 1.0 and self._images:
+            return
+        self._last_scan_t = t
+        imgs = _table_list_images()
+        if imgs != self._images:
+            self._images = imgs
+            order = list(range(len(imgs)))
+            random.Random(1234567).shuffle(order)   # stable, reproducible
+            self._shuffle = order
+
+    def _card(self, path):
+        card = self._cards.get(path)
+        if card is not None:
+            self._cards.move_to_end(path)
+            return card
+        img = cv2.imread(path, cv2.IMREAD_REDUCED_COLOR_4)
+        if img is None:
+            img = cv2.imread(path, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        ih, iw = img.shape[:2]
+        if iw == 0 or ih == 0:
+            return None
+        scale = _CARD_LONG / float(max(iw, ih))
+        nw = max(1, int(round(iw * scale)))
+        nh = max(1, int(round(ih * scale)))
+        photo = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+        photo = cv2.cvtColor(photo, cv2.COLOR_BGR2RGB)
+        b = _CARD_BORDER
+        card = np.empty((nh + 2 * b, nw + 2 * b, 3), dtype=np.uint8)
+        card[:] = _CARD_MATTE
+        card[b:b + nh, b:b + nw] = photo
+        self._cards[path] = card
+        while len(self._cards) > _CARD_CACHE_MAX:
+            self._cards.popitem(last=False)
+        return card
+
+    def _slot(self, i):
+        """Deterministic per-slot layout: (rel_x, rel_y, base_angle, drift_ph).
+        rel_x/rel_y are offsets in units of the photo target size."""
+        r = random.Random((i * 2654435761) & 0xFFFFFFFF)
+        rel_x = r.uniform(-0.10, 0.10)
+        rel_y = r.uniform(-0.32, 0.32)
+        ang = r.uniform(-0.22, 0.22)          # ~±12.5° base tilt
+        ph = r.uniform(0.0, 6.2831853)
+        return rel_x, rel_y, ang, ph
+
+    def _stamp(self, canvas, card, cx, cy, angle, scale, alpha):
+        H, W = canvas.shape[:2]
+        ch, cw = card.shape[:2]
+        ca, sa = math.cos(angle), math.sin(angle)
+        cs, ss = scale * ca, scale * sa
+        # Canvas-space corners of the (rotated, scaled) card.
+        hw, hh = cw * 0.5, ch * 0.5
+        local = ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
+        pts = np.empty((4, 2), dtype=np.float32)
+        for k, (lx, ly) in enumerate(local):
+            pts[k, 0] = cs * lx - ss * ly + cx
+            pts[k, 1] = ss * lx + cs * ly + cy
+        sdx = _SH_OFF * scale
+        sdy = _SH_OFF * scale
+        margin = int(_SH_BLUR + max(sdx, sdy) + 4)
+        minx = int(math.floor(pts[:, 0].min())) - margin
+        miny = int(math.floor(pts[:, 1].min())) - margin
+        maxx = int(math.ceil(pts[:, 0].max())) + margin
+        maxy = int(math.ceil(pts[:, 1].max())) + margin
+        ox, oy = max(0, minx), max(0, miny)
+        ex, ey = min(W, maxx), min(H, maxy)
+        if ex <= ox or ey <= oy:
+            return
+        bw, bh = ex - ox, ey - oy
+        # Affine: card image coords -> tile coords (canvas minus tile origin).
+        M = np.array([
+            [cs, -ss, cx - cs * hw + ss * hh - ox],
+            [ss, cs, cy - ss * hw - cs * hh - oy],
+        ], dtype=np.float32)
+        tile = cv2.warpAffine(card, M, (bw, bh), flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        poly = (pts - np.array([ox, oy], dtype=np.float32)).astype(np.int32)
+        mask = np.zeros((bh, bw), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, poly, 255)
+        roi = canvas[oy:ey, ox:ex]   # a writable view into the canvas
+
+        # Soft drop shadow, offset down-right, laid down before the photo.
+        # Darken in uint8 (saturating subtract) — no full-tile float pass.
+        spoly = poly + np.array([int(sdx), int(sdy)], dtype=np.int32)
+        smask = np.zeros((bh, bw), dtype=np.uint8)
+        cv2.fillConvexPoly(smask, spoly, 255)
+        smask = cv2.GaussianBlur(smask, (_SH_BLUR, _SH_BLUR), 0)
+        dark = int(_SH_STRENGTH * alpha * 255)
+        if dark > 0:
+            sh = ((smask.astype(np.uint16) * dark) >> 8).astype(np.uint8)
+            cv2.subtract(roi, cv2.cvtColor(sh, cv2.COLOR_GRAY2BGR), dst=roi)
+
+        if alpha >= 0.999:
+            # Landed photo: opaque — paste straight in, no blending.
+            cv2.copyTo(tile, mask, roi)
+        else:
+            # Still dropping (only the freshest photo): fade in by alpha.
+            a = (mask.astype(np.float32) * (alpha / 255.0))[..., None]
+            roi[:] = (roi.astype(np.float32) * (1.0 - a)
+                      + tile.astype(np.float32) * a).astype(np.uint8)
+
+    def __call__(self, ctx):
+        rw, rh, t = ctx.w, ctx.h, ctx.t
+        self._refresh_images(t)
+
+        # Render at a capped internal resolution and upscale (like the GPU
+        # generators): the per-photo compositing is the cost, so rendering at
+        # full 1080p/2K would crush the Pi's CPU. The wood + photos upscale
+        # cleanly. VJ_TABLETOP_MAX_W tunes the cap (0 = render at full res).
+        try:
+            max_w = int(os.environ.get("VJ_TABLETOP_MAX_W", "720"))
+        except ValueError:
+            max_w = 720
+        if max_w > 0 and rw > max_w:
+            w = max_w
+            h = max(2, int(round(rh * max_w / rw)))
+            h -= h % 2
+        else:
+            w, h = rw, rh
+
+        # Wood background, scrolled by the panning (and gently curving) camera.
+        if self._wood_size != (w, h):
+            self._wood = _make_wood(w, h)
+            self._wood_size = (w, h)
+        target = (0.24 + 0.12 * ctx.py) * min(w, h)   # photo longest side, px
+        target = max(48.0, target)
+        photo_scale = target / float(_CARD_LONG)
+        spacing = target * 0.74                        # ~26% overlap
+        # Camera path: pan right forever, plus a slow lateral "curve".
+        pan_speed = (0.045 + 0.11 * ctx.px) * w        # world px / sec
+        cam_x = pan_speed * t
+        cam_y = 0.06 * h * math.sin(t * 0.23)
+        ox = int(cam_x) % w
+        oy = int(cam_y) % h
+        # np.roll already returns a fresh, writable array — no .copy() needed.
+        canvas = np.roll(self._wood, (-oy, -ox), axis=(0, 1))
+
+        if not self._images:
+            return canvas if (w, h) == (rw, rh) else cv2.resize(
+                canvas, (rw, rh), interpolation=cv2.INTER_LINEAR)
+
+        n = len(self._images)
+        # Slot world-X = i*spacing; visible when its screen-x is on canvas.
+        # screen_x = w*0.5 + (X_i - cam_x). Photos drop as they cross in from
+        # the right edge.
+        entry = w                       # screen-x where a photo first lands
+        travel = 0.34 * w               # screen-x distance to finish landing
+        i_lo = int(math.floor((cam_x - 0.5 * w - target) / spacing)) - 1
+        i_hi = int(math.ceil((cam_x + 0.5 * w + target) / spacing)) + 1
+        for i in range(i_lo, i_hi + 1):
+            rel_x, rel_y, base_ang, ph = self._slot(i)
+            world_x = (i + rel_x) * spacing
+            screen_x = w * 0.5 + (world_x - cam_x)
+            if screen_x > entry + target or screen_x < -target:
+                continue
+            dp = _smoothstep((entry - screen_x) / travel)
+            if dp <= 0.0:
+                continue
+            path = self._images[self._shuffle[i % n]]
+            card = self._card(path)
+            if card is None:
+                continue
+            ease = _smoothstep(min(1.0, dp / 0.55))
+            alpha = _smoothstep(min(1.0, dp / 0.45))
+            drop_scale = photo_scale * (1.0 + 0.15 * (1.0 - ease))
+            rise = (1.0 - ease) * 0.12 * target
+            angle = base_ang + 0.05 * math.sin(t * 0.2 + ph)
+            cx = screen_x
+            cy = h * 0.5 + rel_y * h - rise
+            self._stamp(canvas, card, cx, cy, angle, drop_scale, alpha)
+        if (w, h) != (rw, rh):
+            canvas = cv2.resize(canvas, (rw, rh), interpolation=cv2.INTER_LINEAR)
+        return canvas
+
+
+tabletop = _TableTop()
 
 
 # ── Frame-transforming effects ─────────────────────────────────────────

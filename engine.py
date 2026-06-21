@@ -24,7 +24,7 @@ from state import load_state, save_state
 MUSHROOM_ADDRESS = "BE:28:55:00:10:24"
 from effects import (
     EffectContext, plasma, tunnel, starfield, warp, waves, cells,
-    lissajous, moire, metaballs,
+    lissajous, moire, metaballs, tabletop,
     kaleidoscope, mirror_h, feedback_blend, rgb_split,
     invert, posterize, edges, screen_blend,
 )
@@ -38,7 +38,13 @@ from shader_catalog import (GPU_GENERATOR_ORDER, IMAGE_GENERATORS,
 # MilkDrop presets (pm:*) join the cycle after the GLSL generators; they
 # render in the shared projectM worker and have no CPU fallback (the
 # bridge returns None if the worker is unavailable → black base layer).
-GENERATIVES = list(GPU_GENERATOR_ORDER) + list(PROJECTM_GENERATOR_ORDER)
+# `tabletop` is a CPU-only generator (no GL shader); it slots in right after
+# `cube` (the last GLSL generator) so the two photo slideshows sit together
+# in the [/] cycle. Its name isn't in GPU_GENERATORS, so the GPU bridge's
+# render() returns None for it and _render_generative falls back to its
+# GENERATIVE_FNS entry.
+GENERATIVES = (list(GPU_GENERATOR_ORDER) + ["tabletop"]
+               + list(PROJECTM_GENERATOR_ORDER))
 
 GENERATIVE_FNS = {
     "plasma": plasma,
@@ -50,6 +56,7 @@ GENERATIVE_FNS = {
     "lissajous": lissajous,
     "moire": moire,
     "metaballs": metaballs,
+    "tabletop": tabletop,
 }
 
 FX_TOGGLES = [
