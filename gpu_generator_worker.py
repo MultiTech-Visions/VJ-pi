@@ -202,6 +202,14 @@ class Renderer:
         self.src = None       # appsrc, for image/atlas generators
         self.cube = None      # CubeSlideshow when current generator is one
         self.current = None
+        # Host-integrated spin angle for generators with a live SPEED knob.
+        # A shader that did `spin = time * speed` would JUMP whenever speed
+        # changes (the new speed re-scales the whole elapsed angle). Instead
+        # we integrate angle += dt*speed here and feed it as `spin_phase`, so
+        # speed changes only affect the future rate — continuous, no glitch.
+        self.spin_phase = 0.0
+        self.spin_t = None
+        self.spin_name = None
 
     def close(self):
         if self.pipeline is not None:
@@ -281,6 +289,17 @@ class Renderer:
             ret = self.src.emit("push-buffer", buf)
             if ret != Gst.FlowReturn.OK:
                 raise RuntimeError(f"appsrc push-buffer returned {ret!r}")
+        # Integrate the generic spin angle (see __init__). Reset when the
+        # generator changes so a switch starts clean. Same speed mapping the
+        # neckercube shader used to do inline: rate = 0.30 + param_x*1.4 rad/s.
+        now = time.monotonic()
+        if name != self.spin_name:
+            self.spin_phase = 0.0
+            self.spin_t = now
+            self.spin_name = name
+        dt = 0.0 if self.spin_t is None else min(0.2, max(0.0, now - self.spin_t))
+        self.spin_t = now
+        self.spin_phase += dt * (0.30 + float(param_x) * 1.4)
         # Push the live 0..1 params as custom GLSL uniforms. glshader keeps
         # its built-in time/width/height/tex regardless, and a shader that
         # doesn't declare param_x/param_y just ignores them (unknown uniform
@@ -288,8 +307,9 @@ class Renderer:
         try:
             st = Gst.Structure.new_from_string(
                 "uniforms,param_x=(gfloat){:.6f},param_y=(gfloat){:.6f},"
-                "cube_spin=(gfloat){:.6f}".format(
-                    float(param_x), float(param_y), float(cube_spin)))
+                "cube_spin=(gfloat){:.6f},spin_phase=(gfloat){:.6f}".format(
+                    float(param_x), float(param_y), float(cube_spin),
+                    float(self.spin_phase)))
             if st is not None:
                 self.shader.set_property("uniforms", st)
         except Exception as exc:

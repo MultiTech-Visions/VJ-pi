@@ -1407,6 +1407,10 @@ uniform float width;
 uniform float height;
 uniform float param_x;   // spin speed   (arrow Left/Right)
 uniform float param_y;   // nod / wobble  (arrow Up/Down)
+uniform float spin_phase; // host-integrated spin angle: param_x sets the
+                          // RATE, but the angle is accumulated on the host
+                          // (gpu_generator_worker) so changing speed never
+                          // jumps the cube. spin = time*speed would leap.
 
 const float TILT  = -0.32;   // fixed forward tilt -> reads as a 3/4 turntable
 const float SCALE =  0.30;   // cube half-extent 1.0 -> ~0.42 of frame height
@@ -1481,7 +1485,7 @@ void main() {
     // Build the frame's rotation ONCE (the only trig in the shader now:
     // one sin for the nod plus cos/sin of spin and nod) into the globals
     // rot() reads. Everything below is pure multiply/add.
-    float spin = time * (0.30 + param_x * 1.4);
+    float spin = spin_phase;   // host-integrated (continuous across speed changes)
     float nod  = TILT + param_y * 0.35 * sin(time * 0.5);
     cosS = cos(spin); sinS = sin(spin);
     cosN = cos(nod);  sinN = sin(nod);
