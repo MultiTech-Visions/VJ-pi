@@ -3093,6 +3093,27 @@ class Engine:
                             control.toggle_preview()
                         continue
 
+                    # '/' — show / hide the full key-reference overlay on the
+                    # HUD (it's an on-demand sheet now, not permanent clutter).
+                    if (is_initial and event.key == pygame.K_SLASH
+                            and not (event.mod & pygame.KMOD_CTRL)):
+                        if control is not None:
+                            control.toggle_keys_overlay()
+                        continue
+
+                    # Ctrl + '=' / Ctrl + '-' — resize the HUD text live and
+                    # persist it. Skipped in mapping mode (there Ctrl+=/- add /
+                    # remove a space). Pure HUD dial; doesn't touch the show.
+                    if (is_initial and (event.mod & pygame.KMOD_CTRL)
+                            and self.mode != "mapping"
+                            and event.key in (pygame.K_MINUS, pygame.K_EQUALS,
+                                              pygame.K_PLUS, pygame.K_KP_MINUS,
+                                              pygame.K_KP_PLUS)):
+                        if control is not None:
+                            down = event.key in (pygame.K_MINUS, pygame.K_KP_MINUS)
+                            control.adjust_scale(-0.1 if down else 0.1)
+                        continue
+
                     # Autopilot Enter handling — engage (double-tap when off)
                     # or disengage (single tap when on). Enter itself never
                     # falls through to any further action. In MAPPING mode it

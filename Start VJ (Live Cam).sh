@@ -17,7 +17,7 @@
 
 OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
-CONTROL_SIZE="680x720"
+CONTROL_SIZE="fullscreen"
 
 # Leave empty to auto-detect the webcam; set to e.g. 0 or 2 to force one.
 CAMERA_DEVICE=""

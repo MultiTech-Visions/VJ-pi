@@ -13,7 +13,7 @@
 
 OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
-CONTROL_SIZE="680x720"
+CONTROL_SIZE="fullscreen"
 
 # Locked to the geometry the gl HEVC decode path requires. Don't change these
 # without re-baking clips to match (clips_hevc must be 2048x1152).

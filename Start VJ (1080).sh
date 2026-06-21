@@ -12,7 +12,7 @@
 
 OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
-CONTROL_SIZE="680x720"
+CONTROL_SIZE="fullscreen"
 
 # The ONE difference from Start VJ.sh: the 1080p canvas.
 RENDER_WIDTH=1920

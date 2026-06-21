@@ -14,7 +14,7 @@
 
 OUTPUT_DISPLAY=1
 CONTROL_DISPLAY=0
-CONTROL_SIZE="680x720"
+CONTROL_SIZE="fullscreen"
 
 # Render canvas resolution. Leave empty to use config.py's default (1280x720).
 # If you override this, run Process Assets.sh again so clips play at canvas
